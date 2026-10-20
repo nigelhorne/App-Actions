@@ -669,6 +669,8 @@ YAML
 is($missing_action->{exit}, 1, 'a missing local action fails');
 like($missing_action->{stderr}, qr/Local action .* does not exist/,
     'a missing local action is reported');
+unlike($missing_action->{stderr}, qr/cannot prepare the image/,
+    'the preflight leaves a missing action to the step that uses it');
 
 my $escaping_action = run_workflow(<<'YAML');
 name: Escaping action
@@ -819,6 +821,193 @@ like(
     'the failure names the action that needs it',
 );
 unlike($action_broken->{log}, qr/^run\t-d\t/m, 'no job container is started');
+
+# Images inside local composite actions are found by reading the action up
+# front, rather than when the step that uses it happens to run.
+my $image_action = <<'YAML';
+name: Run an image
+runs:
+  using: composite
+  steps:
+    - name: Say hello
+      uses: docker://busybox:1.36
+      with:
+        args: echo hi
+YAML
+
+my $local_images = run_workflow(<<'YAML', files => {
+name: Local action image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - uses: ./.github/actions/run-image
+      - run: echo hello
+YAML
+    '.github/actions/run-image/action.yml' => $image_action,
+});
+
+is($local_images->{exit}, 0, 'a composite action with a docker:// step runs');
+my $local_pull = index($local_images->{log}, "pull\tbusybox:1.36");
+my $local_start = index($local_images->{log}, "run\t-d\t");
+ok($local_pull >= 0 && $local_start >= 0 && $local_pull < $local_start,
+    'the composite action image is pulled before the job container starts');
+
+# A composite action inside a composite action is followed, and the image it
+# names can come from the caller's inputs (or the action's defaults).
+my $inner_action = <<'YAML';
+name: Inner
+inputs:
+  image:
+    default: busybox:1.35
+runs:
+  using: composite
+  steps:
+    - uses: docker://${{ inputs.image }}
+      with:
+        args: echo inner
+YAML
+
+my $wrapper_action = <<'YAML';
+name: Wrapper
+inputs:
+  image:
+    default: busybox:1.34
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/inner
+      with:
+        image: ${{ inputs.image }}
+YAML
+
+my $nested_images = run_workflow(<<'YAML', files => {
+name: Nested action image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - uses: ./.github/actions/wrapper
+        with:
+          image: busybox:1.37
+      - run: echo hello
+YAML
+    '.github/actions/inner/action.yml'    => $inner_action,
+    '.github/actions/wrapper/action.yml'  => $wrapper_action,
+});
+
+is($nested_images->{exit}, 0, 'a nested composite action runs');
+my $nested_pull = index($nested_images->{log}, "pull\tbusybox:1.37");
+my $nested_start = index($nested_images->{log}, "run\t-d\t");
+ok($nested_pull >= 0 && $nested_start >= 0 && $nested_pull < $nested_start,
+    'an image named two levels down is pulled before the job starts');
+unlike($nested_images->{log}, qr/^pull\tbusybox:1\.3[45]$/m,
+    'the input overrides the defaults of both actions');
+
+# A broken image inside a local action fails the same way as a broken service
+# image: before the first container, naming the action it came from.
+my $local_broken = run_workflow(
+    <<'YAML',
+name: Local action image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - uses: ./.github/actions/run-image
+      - run: echo hello
+YAML
+    files => { '.github/actions/run-image/action.yml' => $image_action },
+    fake_pull_failure => 'busybox:1.36',
+);
+
+is($local_broken->{exit}, 2, 'an unpullable image in a local action stops the run');
+like(
+    $local_broken->{stderr},
+    qr/cannot prepare the image 'busybox:1\.36', needed by action 'docker:\/\/busybox:1\.36' in local action '\.\/\.github\/actions\/run-image' of job 'test'/,
+    'the failure names the image, the action, and the job',
+);
+unlike($local_broken->{log}, qr/^run\t-d\t/m, 'no job container is started');
+unlike($local_broken->{log}, qr/^exec\t/m, 'no step runs');
+
+# An action that uses itself must not make the preflight descend forever.
+my $self_action = <<'YAML';
+name: Self
+runs:
+  using: composite
+  steps:
+    - uses: docker://busybox:1.38
+    - uses: ./.github/actions/self
+YAML
+
+my $loop = run_workflow(<<'YAML', files => {
+name: Self action
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - uses: ./.github/actions/self
+YAML
+    '.github/actions/self/action.yml' => $self_action,
+});
+
+my $loop_pulls = () = $loop->{log} =~ /^pull\tbusybox:1\.38$/mg;
+is($loop_pulls, 1, 'a self-referencing action is walked once, not forever');
+
+# A dry run reads no action metadata and pulls nothing for it either.
+my $local_dry = run_workflow(
+    <<'YAML',
+name: Local action image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - uses: ./.github/actions/run-image
+YAML
+    files   => { '.github/actions/run-image/action.yml' => $image_action },
+    dry_run => 1,
+);
+
+is($local_dry->{exit}, 0, 'a dry run with a local action image succeeds');
+unlike($local_dry->{log}, qr/^pull\t/m, 'a dry run pulls no local action image');
+
+# The verbose listing points at the action an image came from.
+my $local_verbose = run_workflow(
+    <<'YAML',
+name: Local action image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - uses: ./.github/actions/run-image
+YAML
+    files   => { '.github/actions/run-image/action.yml' => $image_action },
+    verbose => 1,
+);
+
+is($local_verbose->{exit}, 0, 'a verbose run with a local action image passes');
+like(
+    $local_verbose->{stdout},
+    qr/^ {2}image\s+busybox:1\.36 \(action 'docker:\/\/busybox:1\.36' in local action '\.\/\.github\/actions\/run-image' of job 'test'\)$/m,
+    'a verbose run names the composite action an image came from',
+);
 
 # An image used by two jobs is prepared once.
 my $shared = <<'YAML';

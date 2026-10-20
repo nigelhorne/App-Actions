@@ -38,7 +38,9 @@ Revision history for App-Actions - run GitHub Actions workflows locally
     - Prepare every image the run needs - job images, service images and
       docker:// action images, with matrix values resolved - before the first
       container starts, so a mistyped image is reported instead of failing
-      halfway through a job.
+      halfway through a job.  Local composite actions, including nested ones,
+      are read during the same step, so images named inside them are prepared
+      too rather than discovered when the action first runs.
     - Add "action-run check", which reports the host platform, Docker
       connectivity and whether bind mounts of the temporary and project
       directories work, and "action-run check --json", which reports the same

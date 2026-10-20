@@ -176,7 +176,11 @@ workflow anyway, and is what C<action-run --skip-check> sets.
 The images the run needs are then prepared before the first container:
 job images, service images and C<docker://> action images, with matrix values
 resolved.  A missing image is pulled at that point, so a mistyped image is
-reported before any job has started rather than halfway through one.
+reported before any job has started rather than halfway through one.  Local
+composite actions are read up front for the same reason, including actions
+used inside other actions, so an image named within one is known before its
+first step; only an image whose name the run alone can resolve is left until
+it is used.
 
 C<docker> and C<docker_bin> name the Docker command.  It may also be a wrapper
 script; a wrapper written in Perl is run with the current Perl interpreter, so

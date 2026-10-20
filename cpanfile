@@ -1,3 +1,5 @@
+# Generated from Makefile.PL using makefilepl2cpanfile
+
 requires 'perl', '5.010';
 
 requires 'Carp';
@@ -18,25 +20,25 @@ requires 'YAML::PP';
 requires 'YAML::PP::Common';
 
 on 'configure' => sub {
-    requires 'ExtUtils::MakeMaker', '6.64';
+	requires 'ExtUtils::MakeMaker', '6.64';
 };
 
 on 'test' => sub {
-    requires 'Capture::Tiny';
-    requires 'Exporter';
-    requires 'File::Copy';
-    requires 'File::Find';
-    requires 'File::Temp';
-    requires 'FindBin';
-    requires 'JSON::PP';
-    requires 'Test::DescribeMe';
-    requires 'Test::Exception';
-    requires 'Test::Most';
+	requires 'Capture::Tiny';
+	requires 'Exporter';
+	requires 'File::Copy';
+	requires 'File::Find';
+	requires 'File::Temp';
+	requires 'FindBin';
+	requires 'JSON::PP';
+	requires 'Test::DescribeMe';
+	requires 'Test::Exception';
+	requires 'Test::Most';
 };
 
 on 'develop' => sub {
-    requires 'Devel::Cover';
-    requires 'Perl::Critic';
-    requires 'Test::Pod';
-    requires 'Test::Pod::Coverage';
+	requires 'Devel::Cover';
+	requires 'Perl::Critic';
+	requires 'Test::Pod';
+	requires 'Test::Pod::Coverage';
 };

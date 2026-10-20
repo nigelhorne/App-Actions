@@ -219,6 +219,9 @@ The images the run needs are prepared after that and before the first
 container starts: the job images, the service images and the images of
 C<docker://> actions, with matrix values resolved.  An image that cannot be
 pulled stops the run there, naming the job, service or action that needs it.
+Local composite actions are read at that point as well, including actions
+used inside other actions, so the images their steps name are prepared before
+the action is first reached.
 
 =head1 COMMANDS
 
