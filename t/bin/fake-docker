@@ -2,8 +2,14 @@
 
 use strict;
 use warnings;
+use FindBin;
 use File::Basename qw(basename dirname);
 use File::Path qw(make_path);
+
+# The path helpers live in t/lib so that they can be unit tested on any
+# platform, including for Windows-style volume specifications.
+use lib "$FindBin::Bin/../lib";
+use App::Actions::FakeDocker qw(split_volume mounts to_host);
 
 my $state_dir = $ENV{FAKE_DOCKER_STATE};
 if (!defined $state_dir || !length $state_dir) {
@@ -16,6 +22,7 @@ make_path($state_dir);
 my $log_file = $ENV{FAKE_DOCKER_LOG};
 if (defined $log_file && length $log_file) {
     open my $log, '>>', $log_file or die "fake-docker: cannot open log: $!";
+    binmode $log;
     print {$log} join("\t", @ARGV), "\n";
     close $log;
 }
@@ -50,6 +57,7 @@ if ($command eq 'image') {
 if ($command eq 'pull') {
     my $image = $args[-1];
     open my $marker, '>', _image_marker($image) or die "fake-docker: $!";
+    binmode $marker;
     print {$marker} $image;
     close $marker;
     print "Pulled $image\n";
@@ -84,6 +92,7 @@ if ($command eq 'run') {
     my $name = _option_value(\@run_args, '--name');
     if (defined $name) {
         open my $state, '>', _container_file($name) or die "fake-docker: $!";
+        binmode $state;
         print {$state} join("\t", @run_args);
         close $state;
         print "fake-container-$name\n";
@@ -92,7 +101,7 @@ if ($command eq 'run') {
 
     # A one-shot "docker run --rm" action.  If it contains a mount and an
     # action marker, emulate the files the action would write.
-    my $mounts = _mounts(\@run_args);
+    my $mounts = mounts(\@run_args);
     my $environment = _environment(\@run_args);
     _write_action_files($mounts, $environment, join(' ', @run_args));
     exit 0;
@@ -118,7 +127,7 @@ if ($command eq 'exec') {
     my ($node_script, $node_container) = _node_script(\@exec_args);
     if (defined $node_script) {
         my $mounts = _container_mounts($node_container);
-        my $host_script = _to_host($node_script, $mounts);
+        my $host_script = to_host($node_script, $mounts);
         my $contents = -f $host_script ? _slurp($host_script) : '';
         print "[fake-docker] executing node $node_script\n";
         exit _emulate($contents, $mounts, _environment(\@exec_args));
@@ -130,7 +139,7 @@ if ($command eq 'exec') {
 
     my $contents = '';
     if (defined $script) {
-        my $host_script = _to_host($script, $mounts);
+        my $host_script = to_host($script, $mounts);
         if (defined $host_script && -f $host_script) {
             $contents = _slurp($host_script);
             print "[fake-docker] executing $script\n";
@@ -162,20 +171,6 @@ sub _option_value {
         return $args->[$index + 1] if $args->[$index] eq $option;
     }
     return undef;
-}
-
-sub _mounts {
-    my ($args) = @_;
-    my %mounts;
-    for my $index (0 .. $#$args - 1) {
-        next unless $args->[$index] eq '-v' || $args->[$index] eq '--volume';
-        my $value = $args->[$index + 1];
-        next unless defined $value;
-        my ($host, $container) = split /:/, $value, 2;
-        next unless defined $container;
-        $mounts{$container} = $host;
-    }
-    return \%mounts;
 }
 
 sub _environment {
@@ -223,7 +218,7 @@ sub _container_mounts {
     local $/;
     my $line = <$state>;
     close $state;
-    return _mounts([ split /\t/, defined $line ? $line : '' ]);
+    return mounts([ split /\t/, defined $line ? $line : '' ]);
 }
 
 sub _slurp {
@@ -278,22 +273,13 @@ sub _script_path {
     return undef;
 }
 
-sub _to_host {
-    my ($container_path, $mounts) = @_;
-    for my $container (sort { length $b <=> length $a } keys %$mounts) {
-        next unless index($container_path, $container) == 0;
-        my $rest = substr($container_path, length $container);
-        return $mounts->{$container} . $rest;
-    }
-    return undef;
-}
-
 sub _append_to_file {
     my ($mounts, $container_path, $text) = @_;
     return unless defined $container_path && length $container_path;
-    my $host = _to_host($container_path, $mounts);
+    my $host = to_host($container_path, $mounts);
     return unless defined $host;
     open my $handle, '>>', $host or die "fake-docker: $!";
+    binmode $handle;
     print {$handle} $text;
     close $handle;
 }

@@ -127,6 +127,11 @@ steps are honoured.  If an image has no C<sudo> and the container is running
 as root, a small C<sudo> shim is placed on C<PATH> so that steps such as
 C<sudo apt update> work locally.
 
+The host may run Unix or Windows; only the containers are Linux.  Command
+output is captured without C<fork> or a piped C<open>, and paths, volumes and
+permissions are handled in a platform-neutral way, so the same code and test
+suite run on both.
+
 =head1 METHODS
 
 =head2 new

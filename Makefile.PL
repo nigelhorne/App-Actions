@@ -28,6 +28,7 @@ WriteMakefile(
         'File::Spec'       => 0,
         'File::Temp'       => 0,
         'Getopt::Long'     => 0,
+        'IO::Handle'       => 0,
         'JSON::PP'         => 0,
         'Pod::Usage'       => 0,
         'Scalar::Util'     => 0,
@@ -41,7 +42,9 @@ WriteMakefile(
     },
     TEST_REQUIRES  => {
         'Capture::Tiny'    => 0,
+        'Exporter'         => 0,
         'File::Temp'       => 0,
+        'FindBin'          => 0,
         'JSON::PP'         => 0,
         'Test::DescribeMe' => 0,
         'Test::Exception'  => 0,

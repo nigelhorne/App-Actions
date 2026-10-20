@@ -9,6 +9,14 @@ use App::Actions::Docker;
 
 my $dir = tempdir(CLEANUP => 1);
 
+# Windows writes CRLF when output is redirected to a file.
+sub useful_text {
+    my ($text) = @_;
+    return '' unless defined $text;
+    $text =~ s/\r\n/\n/g;
+    return $text;
+}
+
 # A Docker wrapper written in Perl.  It deliberately has no file extension and
 # is not executable, which is how such a wrapper looks on Windows.
 my $wrapper = File::Spec->catfile($dir, 'fake-docker');
@@ -31,6 +39,8 @@ print join('|', @ARGV), "\n";
 exit 0;
 PERL
 close $handle;
+# On Unix this removes the execute bit; on Windows there is no execute bit and
+# the missing .exe/.bat extension is what makes the file unrunnable.
 chmod 0644, $wrapper;
 
 my $docker = App::Actions::Docker->new(bin => $wrapper, quiet => 1);
@@ -54,7 +64,7 @@ my ($stdout, $stderr) = capture {
     $run_rc = $docker->run('pull', 'perl:5.38');
 };
 is($run_rc, 0, 'run executes the wrapper');
-like($stdout, qr/^pull\|perl:5\.38$/m, 'run streams the wrapper output');
+like(useful_text($stdout), qr/^pull\|perl:5\.38$/m, 'run streams the wrapper output');
 
 my $native = App::Actions::Docker->new(bin => $^X, quiet => 1);
 my ($native_out, $native_rc) = $native->capture_silent('-e', 'print "native\n"');

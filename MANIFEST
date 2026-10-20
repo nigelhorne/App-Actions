@@ -7,6 +7,7 @@ lib/App/Actions.pm
 lib/App/Actions/Action.pm
 lib/App/Actions/Docker.pm
 lib/App/Actions/Expression.pm
+lib/App/Actions/Process.pm
 lib/App/Actions/Runner.pm
 lib/App/Actions/Workflow.pm
 LICENSE
@@ -20,6 +21,9 @@ t/bin/fake-docker
 t/cli.t
 t/docker.t
 t/expression.t
+t/fake-docker.t
+t/lib/App/Actions/FakeDocker.pm
 t/matrix.t
+t/process.t
 t/runner.t
 t/workflow.t

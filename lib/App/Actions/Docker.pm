@@ -3,7 +3,8 @@ package App::Actions::Docker;
 use strict;
 use warnings;
 use Carp qw(croak);
-use File::Spec;
+
+use App::Actions::Process;
 
 our $VERSION = '0.01';
 
@@ -180,7 +181,7 @@ sub run {
     print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
 
     system($self->_command(@args));
-    return _exit_code($?);
+    return App::Actions::Process::exit_code($?);
 }
 
 sub run_silent {
@@ -195,19 +196,7 @@ sub run_silent {
 
     print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
 
-    my $pid = fork;
-    croak "Unable to fork for '$self->{bin}': $!" unless defined $pid;
-
-    if ($pid == 0) {
-        open STDOUT, '>', File::Spec->devnull;
-        open STDERR, '>', File::Spec->devnull;
-        my @command = $self->_command(@args);
-        exec { $command[0] } @command;
-        exit 127;
-    }
-
-    waitpid($pid, 0);
-    return _exit_code($?);
+    return App::Actions::Process::run_quiet([ $self->_command(@args) ]);
 }
 
 sub capture {
@@ -232,22 +221,10 @@ sub _capture {
 
     print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
 
-    my $pid = open my $handle, '-|';
-    croak "Unable to run '$self->{bin}': $!" unless defined $pid;
-
-    if ($pid == 0) {
-        open STDERR, '>', File::Spec->devnull if $quiet_stderr;
-        my @command = $self->_command(@args);
-        exec { $command[0] } @command;
-        exit 127;
-    }
-
-    local $/;
-    my $output = <$handle>;
-    $output = '' unless defined $output;
-    close $handle;
-
-    return ($output, _exit_code($?));
+    return App::Actions::Process::capture(
+        [ $self->_command(@args) ],
+        quiet_stderr => $quiet_stderr,
+    );
 }
 
 sub redact {
@@ -287,14 +264,6 @@ sub _quote {
     my $copy = $argument;
     $copy =~ s/'/'\\''/g;
     return "'$copy'";
-}
-
-sub _exit_code {
-    my ($status) = @_;
-
-    return 0 unless $status;
-    return 128 + ($status & 127) if $status & 127;
-    return $status >> 8;
 }
 
 1;

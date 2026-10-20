@@ -7,13 +7,10 @@ use File::Path qw(make_path);
 use File::Spec;
 use File::Temp qw(tempdir);
 
-my $script = File::Spec->rel2abs(
-    File::Spec->catfile(dirname(__FILE__), '..', 'bin', 'action-run'),
-);
-my $fake_docker = File::Spec->rel2abs(
-    File::Spec->catfile(dirname(__FILE__), 'bin', 'fake-docker'),
-);
-chmod 0755, $fake_docker;
+my $root = File::Spec->rel2abs(File::Spec->catdir(dirname(__FILE__), '..'));
+my $lib = File::Spec->catdir($root, 'lib');
+my $script = File::Spec->catfile($root, 'bin', 'action-run');
+my $fake_docker = File::Spec->catfile($root, 't', 'bin', 'fake-docker');
 
 sub make_project {
     my ($yaml) = @_;
@@ -28,14 +25,24 @@ sub make_project {
     return ($project, $workflow);
 }
 
+# Windows writes CRLF when a program's output is redirected to a file, and
+# the tests below match against the end of the line.
+sub useful_text {
+    my ($text) = @_;
+    return '' unless defined $text;
+    $text =~ s/\r\n/\n/g;
+    return $text;
+}
+
 sub run_cli {
     my (@args) = @_;
 
     my ($stdout, $stderr, $status) = capture {
-        system($^X, '-Ilib', $script, @args);
+        system($^X, '-I' . $lib, $script, @args);
     };
 
-    return ($stdout, $stderr, $status >> 8);
+    # $? carries the POSIX-compatible status on Windows too.
+    return (useful_text($stdout), useful_text($stderr), $status >> 8);
 }
 
 my ($version_out, $version_err, $version_exit) = run_cli('--version');

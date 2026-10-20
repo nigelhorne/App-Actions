@@ -12,7 +12,15 @@ use App::Actions;
 my $fake_docker = File::Spec->rel2abs(
     File::Spec->catfile(dirname(__FILE__), 'bin', 'fake-docker'),
 );
-chmod 0755, $fake_docker;
+
+# Windows writes CRLF when output is redirected to a file, and several tests
+# match against the end of a line.
+sub useful_text {
+    my ($text) = @_;
+    return '' unless defined $text;
+    $text =~ s/\r\n/\n/g;
+    return $text;
+}
 
 sub run_workflow {
     my ($yaml, %options) = @_;
@@ -51,6 +59,8 @@ sub run_workflow {
     );
 
     my ($stdout, $stderr, $exit) = capture { $actions->run };
+    $stdout = useful_text($stdout);
+    $stderr = useful_text($stderr);
 
     my $log_text = '';
     if (-f $log) {

@@ -16,6 +16,7 @@ use Time::HiRes qw(sleep);
 use App::Actions::Action;
 use App::Actions::Docker;
 use App::Actions::Expression;
+use App::Actions::Process;
 
 our $VERSION = '0.01';
 
@@ -347,18 +348,11 @@ sub _build_base_env {
 sub _git {
     my ($self, @args) = @_;
 
-    my $pid = open my $handle, '-|';
-    return '' unless defined $pid;
-
-    if ($pid == 0) {
-        open STDERR, '>', File::Spec->devnull;
-        exec 'git', '-C', $self->{project_dir}, @args;
-        exit 127;
-    }
-
-    local $/;
-    my $output = <$handle>;
-    close $handle;
+    # Not fork() plus a piped open, which Windows does not reliably support.
+    my ($output) = App::Actions::Process::capture(
+        [ 'git', '-C', $self->{project_dir}, @args ],
+        quiet_stderr => 1,
+    );
 
     return defined $output ? $output : '';
 }

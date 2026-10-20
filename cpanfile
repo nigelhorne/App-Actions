@@ -7,6 +7,7 @@ requires 'File::Path';
 requires 'File::Spec';
 requires 'File::Temp';
 requires 'Getopt::Long';
+requires 'IO::Handle';
 requires 'JSON::PP';
 requires 'Pod::Usage';
 requires 'Scalar::Util';
@@ -21,7 +22,9 @@ on 'configure' => sub {
 
 on 'test' => sub {
     requires 'Capture::Tiny';
+    requires 'Exporter';
     requires 'File::Temp';
+    requires 'FindBin';
     requires 'JSON::PP';
     requires 'Test::DescribeMe';
     requires 'Test::Exception';

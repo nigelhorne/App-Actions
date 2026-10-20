@@ -17,3 +17,7 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       post steps.
     - Run a Docker wrapper script written in Perl with the current Perl
       interpreter, so the test suite works on Windows.
+    - Capture command output without fork() or a piped open(), which Windows
+      does not reliably support, and use the same code for git.
+    - Make the test suite Windows-safe: no POSIX-only paths, permissions or
+      shell commands, and CRLF-tolerant output matching.
