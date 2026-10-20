@@ -1,0 +1,307 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use File::Basename qw(basename dirname);
+use File::Path qw(make_path);
+
+my $state_dir = $ENV{FAKE_DOCKER_STATE};
+if (!defined $state_dir || !length $state_dir) {
+    print STDERR "fake-docker: FAKE_DOCKER_STATE is not set\n";
+    exit 2;
+}
+
+make_path($state_dir);
+
+my $log_file = $ENV{FAKE_DOCKER_LOG};
+if (defined $log_file && length $log_file) {
+    open my $log, '>>', $log_file or die "fake-docker: cannot open log: $!";
+    print {$log} join("\t", @ARGV), "\n";
+    close $log;
+}
+
+my @args = @ARGV;
+my $command = shift @args || '';
+
+if ($command eq '--version') {
+    print "Docker version 26.0.0, build fake\n";
+    exit 0;
+}
+
+if ($command eq 'info') {
+    print "26.0.0\n";
+    exit 0;
+}
+
+if ($command eq 'image') {
+    my $subcommand = shift @args || '';
+    if ($subcommand eq 'inspect') {
+        my $image = $args[-1];
+        exit(-e _image_marker($image) ? 0 : 1);
+    }
+    if ($subcommand eq 'rm') {
+        my $image = $args[-1];
+        unlink _image_marker($image);
+        exit 0;
+    }
+    exit 0;
+}
+
+if ($command eq 'pull') {
+    my $image = $args[-1];
+    open my $marker, '>', _image_marker($image) or die "fake-docker: $!";
+    print {$marker} $image;
+    close $marker;
+    print "Pulled $image\n";
+    exit 0;
+}
+
+if ($command eq 'network') {
+    my $subcommand = shift @args || '';
+    exit 0;
+}
+
+if ($command eq 'rm') {
+    my $index = 0;
+    $index++ while $index < @args && $args[$index] =~ /^-/;
+    my $name = $args[$index];
+    unlink _container_file($name) if defined $name;
+    exit 0;
+}
+
+if ($command eq 'inspect') {
+    print "true\n";
+    exit 0;
+}
+
+if ($command eq 'logs') {
+    print "fake container logs\n";
+    exit 0;
+}
+
+if ($command eq 'run') {
+    my @run_args = @args;
+    my $name = _option_value(\@run_args, '--name');
+    if (defined $name) {
+        open my $state, '>', _container_file($name) or die "fake-docker: $!";
+        print {$state} join("\t", @run_args);
+        close $state;
+        print "fake-container-$name\n";
+        exit 0;
+    }
+
+    # A one-shot "docker run --rm" action.  If it contains a mount and an
+    # action marker, emulate the files the action would write.
+    my $mounts = _mounts(\@run_args);
+    my $environment = _environment(\@run_args);
+    _write_action_files($mounts, $environment, join(' ', @run_args));
+    exit 0;
+}
+
+if ($command eq 'exec') {
+    my @exec_args = @args;
+    my $name = _exec_container(\@exec_args);
+
+    if ($ENV{FAKE_NO_BASH} && $args[-1] =~ /command -v bash/) {
+        exit 1;
+    }
+
+    if ($ENV{FAKE_NO_NODE} && $args[-1] =~ /command -v node/) {
+        exit 1;
+    }
+
+    if ($ENV{FAKE_NO_SUDO} && $args[-1] =~ /command -v sudo/) {
+        exit 1;
+    }
+
+    # A JavaScript action step: docker exec ... <container> node <script>.
+    my ($node_script, $node_container) = _node_script(\@exec_args);
+    if (defined $node_script) {
+        my $mounts = _container_mounts($node_container);
+        my $host_script = _to_host($node_script, $mounts);
+        my $contents = -f $host_script ? _slurp($host_script) : '';
+        print "[fake-docker] executing node $node_script\n";
+        exit _emulate($contents, $mounts, _environment(\@exec_args));
+    }
+
+    my $script = _script_path(\@exec_args);
+    my $environment = _environment(\@exec_args);
+    my $mounts = _container_mounts($name);
+
+    my $contents = '';
+    if (defined $script) {
+        my $host_script = _to_host($script, $mounts);
+        if (defined $host_script && -f $host_script) {
+            $contents = _slurp($host_script);
+            print "[fake-docker] executing $script\n";
+        }
+    }
+
+    exit _emulate($contents, $mounts, $environment);
+}
+
+exit 0;
+
+sub _image_marker {
+    my ($image) = @_;
+    $image = '' unless defined $image;
+    $image =~ s/[^A-Za-z0-9_.-]/_/g;
+    return "$state_dir/image-$image";
+}
+
+sub _container_file {
+    my ($name) = @_;
+    $name = '' unless defined $name;
+    $name =~ s/[^A-Za-z0-9_.-]/_/g;
+    return "$state_dir/container-$name";
+}
+
+sub _option_value {
+    my ($args, $option) = @_;
+    for my $index (0 .. $#$args - 1) {
+        return $args->[$index + 1] if $args->[$index] eq $option;
+    }
+    return undef;
+}
+
+sub _mounts {
+    my ($args) = @_;
+    my %mounts;
+    for my $index (0 .. $#$args - 1) {
+        next unless $args->[$index] eq '-v' || $args->[$index] eq '--volume';
+        my $value = $args->[$index + 1];
+        next unless defined $value;
+        my ($host, $container) = split /:/, $value, 2;
+        next unless defined $container;
+        $mounts{$container} = $host;
+    }
+    return \%mounts;
+}
+
+sub _environment {
+    my ($args) = @_;
+    my %environment;
+    for my $index (0 .. $#$args - 1) {
+        next unless $args->[$index] eq '-e' || $args->[$index] eq '--env';
+        my $value = $args->[$index + 1];
+        next unless defined $value;
+        my ($key, $val) = split /=/, $value, 2;
+        $environment{$key} = defined $val ? $val : '';
+    }
+    return \%environment;
+}
+
+sub _exec_container {
+    my ($args) = @_;
+    for my $index (0 .. $#$args - 1) {
+        return $args->[$index - 1] if $args->[$index] eq 'sh'
+            && $index > 0 && $args->[$index + 1] eq '-c';
+    }
+    return undef;
+}
+
+sub _node_script {
+    my ($args) = @_;
+
+    for my $index (0 .. $#$args - 1) {
+        next unless $args->[$index] eq 'node' && $index > 0;
+        my $script = $args->[$index + 1];
+        next unless defined $script && $script =~ m{^/};
+        return ($script, $args->[$index - 1]);
+    }
+
+    return;
+}
+
+sub _container_mounts {
+    my ($name) = @_;
+
+    my $mounts = {};
+    return $mounts unless defined $name && -f _container_file($name);
+
+    open my $state, '<', _container_file($name) or die "fake-docker: $!";
+    local $/;
+    my $line = <$state>;
+    close $state;
+    return _mounts([ split /\t/, defined $line ? $line : '' ]);
+}
+
+sub _slurp {
+    my ($file) = @_;
+
+    open my $handle, '<', $file or die "fake-docker: $!";
+    local $/;
+    my $contents = <$handle>;
+    close $handle;
+
+    return defined $contents ? $contents : '';
+}
+
+# The fake shell and fake node only understand comment markers such as
+# "FAKE_ENV: NAME=value".  Both "#" comments and "//" comments are accepted.
+sub _emulate {
+    my ($contents, $mounts, $environment) = @_;
+
+    my $exit_code = 0;
+    if ($contents =~ /^\s*(?:#|\/\/)?\s*FAKE_EXIT:\s*(\d+)/m) {
+        $exit_code = $1;
+    }
+
+    while ($contents =~ /^\s*(?:#|\/\/)?\s*FAKE_ENV:\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/mg) {
+        my ($key, $value) = ($1, $2);
+        _append_to_file($mounts, $environment->{GITHUB_ENV}, "$key=$value\n");
+    }
+
+    while ($contents =~ /^\s*(?:#|\/\/)?\s*FAKE_OUTPUT:\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/mg) {
+        my ($key, $value) = ($1, $2);
+        _append_to_file($mounts, $environment->{GITHUB_OUTPUT}, "$key=$value\n");
+    }
+
+    while ($contents =~ /^\s*(?:#|\/\/)?\s*FAKE_PATH:\s*(.+)$/mg) {
+        my $path = $1;
+        _append_to_file($mounts, $environment->{GITHUB_PATH}, "$path\n");
+    }
+
+    if ($contents =~ /^\s*(?:#|\/\/)?\s*FAKE_SUMMARY:\s*(.*)$/m) {
+        my $summary = $1;
+        _append_to_file($mounts, $environment->{GITHUB_STEP_SUMMARY}, "$summary\n");
+    }
+
+    return $exit_code;
+}
+
+sub _script_path {
+    my ($args) = @_;
+    my $command = $args->[-1];
+    return undef unless defined $command;
+    return $1 if $command =~ m{(/github/actions-runner/[^\s'"]+)};
+    return undef;
+}
+
+sub _to_host {
+    my ($container_path, $mounts) = @_;
+    for my $container (sort { length $b <=> length $a } keys %$mounts) {
+        next unless index($container_path, $container) == 0;
+        my $rest = substr($container_path, length $container);
+        return $mounts->{$container} . $rest;
+    }
+    return undef;
+}
+
+sub _append_to_file {
+    my ($mounts, $container_path, $text) = @_;
+    return unless defined $container_path && length $container_path;
+    my $host = _to_host($container_path, $mounts);
+    return unless defined $host;
+    open my $handle, '>>', $host or die "fake-docker: $!";
+    print {$handle} $text;
+    close $handle;
+}
+
+sub _write_action_files {
+    my ($mounts, $environment, $description) = @_;
+    return unless $description =~ /FAKE_ACTION/;
+
+    _append_to_file($mounts, $environment->{GITHUB_ENV}, "FROM_ACTION=yes\n");
+    _append_to_file($mounts, $environment->{GITHUB_OUTPUT}, "result=ok\n");
+}

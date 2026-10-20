@@ -1,0 +1,11 @@
+^\.git/
+^Makefile$
+^MYMETA\.
+^blib/
+^pm_to_blib$
+^App-Actions-
+^\.build/
+^cover_db/
+^\.prove$
+^nytprof
+^\.DS_Store$

@@ -1,0 +1,17 @@
+Revision history for App-Actions - run GitHub Actions workflows locally
+
+0.01    2026-10-19
+    - Initial release.
+    - Load GitHub Actions workflow files with YAML::PP.
+    - Expand build matrices, including include and exclude rules.
+    - Run Linux jobs in Docker containers with service containers.
+    - Support workflow, job, and step environment variables, GITHUB_ENV,
+      GITHUB_PATH, GITHUB_OUTPUT, and step summaries.
+    - Support common expression functions and if conditions.
+    - Map actions/checkout and shogo82148/actions-setup-perl to local
+      equivalents, and run docker:// actions.
+    - Remove containers, networks, and pulled images at the end of a run.
+    - Run local composite actions, including nested ones, with inputs,
+      outputs, github.action_path, and GITHUB_ACTION_PATH.
+    - Run local JavaScript actions with node, INPUT_* variables, and pre and
+      post steps.

@@ -1,0 +1,288 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin ();
+use Getopt::Long qw(GetOptions);
+use Pod::Usage qw(pod2usage);
+
+# Run straight from a checkout as well as from an installed location.
+BEGIN {
+    my $local = "$FindBin::Bin/../lib";
+    unshift @INC, $local if -f "$local/App/Actions.pm";
+}
+
+use App::Actions;
+
+my @job_filters;
+my @env_pairs;
+my @secret_pairs;
+
+my $image;
+my $perl_image = 'perl:%s';
+my $platform;
+my $user;
+my $docker_bin;
+my $pull;
+my $no_pull;
+my $dry_run;
+my $list;
+my $keep;
+my $keep_images;
+my $strict_actions;
+my $verbose;
+my $quiet;
+my $help;
+my $version;
+
+Getopt::Long::Configure('no_auto_abbrev', 'no_ignore_case');
+
+GetOptions(
+    'job|j=s'        => \@job_filters,
+    'image=s'        => \$image,
+    'perl-image=s'   => \$perl_image,
+    'platform=s'     => \$platform,
+    'user=s'         => \$user,
+    'env=s'          => \@env_pairs,
+    'secret=s'       => \@secret_pairs,
+    'docker=s'       => \$docker_bin,
+    'pull'           => \$pull,
+    'no-pull'        => \$no_pull,
+    'dry-run|n'      => \$dry_run,
+    'list'           => \$list,
+    'keep|k'         => \$keep,
+    'keep-images'    => \$keep_images,
+    'strict-actions' => \$strict_actions,
+    'verbose|v'      => \$verbose,
+    'quiet|q'        => \$quiet,
+    'help|h'         => \$help,
+    'version|V'      => \$version,
+) or pod2usage(-exitval => 2, -verbose => 0);
+
+if ($help) {
+    pod2usage(-exitval => 0, -verbose => 1);
+}
+
+if ($version) {
+    print "action-run $App::Actions::VERSION\n";
+    exit 0;
+}
+
+if ($pull && $no_pull) {
+    print STDERR "action-run: --pull and --no-pull cannot be used together\n";
+    exit 2;
+}
+
+my %environment = _parse_pairs(\@env_pairs, '--env');
+my %secrets     = _parse_pairs(\@secret_pairs, '--secret');
+
+my $workflow_file = shift @ARGV;
+my $project_dir   = shift @ARGV;
+
+if (!defined $workflow_file || @ARGV) {
+    pod2usage(
+        -exitval => 2,
+        -verbose => 0,
+        -message => "Usage: action-run [options] <workflow.yml> [project-directory]\n",
+    );
+}
+
+my $actions = eval {
+    App::Actions->new(
+        workflow_file => $workflow_file,
+        project_dir   => $project_dir,
+        jobs          => \@job_filters,
+        image         => $image,
+        perl_image    => $perl_image,
+        platform      => $platform,
+        user          => $user,
+        env           => \%environment,
+        secrets       => \%secrets,
+        dry_run       => $dry_run,
+        verbose       => $verbose,
+        quiet         => $quiet,
+        keep          => $keep,
+        keep_images   => $keep_images,
+        pull          => $pull,
+        no_pull       => $no_pull,
+        strict_actions => $strict_actions,
+        docker_bin    => $docker_bin,
+    );
+};
+
+if (my $error = $@) {
+    $error =~ s/\s+$//;
+    print STDERR "action-run: $error\n";
+    exit 2;
+}
+
+if ($list) {
+    my $exit = eval { $actions->list_jobs };
+    if (my $error = $@) {
+        $error =~ s/\s+$//;
+        print STDERR "action-run: $error\n";
+        exit 2;
+    }
+    exit $exit;
+}
+
+my $exit = eval { $actions->run };
+if (my $error = $@) {
+    $error =~ s/\s+$//;
+    print STDERR "action-run: $error\n";
+    exit 2;
+}
+
+exit $exit;
+
+sub _parse_pairs {
+    my ($pairs, $option) = @_;
+
+    my %values;
+    for my $pair (@$pairs) {
+        my ($name, $value) = split /=/, $pair, 2;
+        if (!defined $value || $name !~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+            print STDERR "action-run: $option expects NAME=VALUE, got '$pair'\n";
+            exit 2;
+        }
+        $values{$name} = $value;
+    }
+
+    return %values;
+}
+
+__END__
+
+=head1 NAME
+
+action-run - run a GitHub Actions workflow locally with Docker
+
+=head1 SYNOPSIS
+
+    action-run [options] <workflow.yml> [project-directory]
+
+=head1 DESCRIPTION
+
+C<action-run> reads a GitHub Actions workflow file and executes its Linux jobs
+inside Docker.  Each job gets a private Docker network, any service containers
+declared by the workflow, and a long-lived job container in which each step is
+run.  Containers, networks, and images pulled by the run are removed when the
+run finishes.
+
+The project directory is optional when the workflow lives inside a
+C<.github/workflows> directory; the repository root is inferred in that case.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--job> I<name>, B<-j> I<name>
+
+Only run jobs whose id or expanded display name matches I<name>.  Repeatable.
+
+=item B<--image> I<image>
+
+Fallback image for Linux jobs that do not declare C<container:> and do not use
+C<shogo82148/actions-setup-perl>.  The default is C<ubuntu:latest>.  When a job
+uses C<runs-on: ubuntu-24.04>, the default becomes C<ubuntu:24.04>.
+
+=item B<--perl-image> I<template>
+
+Image template used for C<shogo82148/actions-setup-perl>.  The default is
+C<perl:%s>, so C<perl-version: "5.38"> uses C<perl:5.38>.
+
+=item B<--platform> I<platform>
+
+Pass C<--platform> to Docker, for example C<linux/amd64>.
+
+=item B<--user> I<user[:group]>
+
+Run the job and service containers as this user.  By default containers run as
+their image's default user, usually root.
+
+=item B<--env> I<NAME=VALUE>
+
+Add or override an environment variable.  Repeatable.
+
+=item B<--secret> I<NAME=VALUE>
+
+Make a secret available to C<${{ secrets.NAME }}>.  Values are redacted from
+the Docker commands that C<action-run> prints.  Repeatable.
+
+=item B<--pull>, B<--no-pull>
+
+Force an image pull, or fail instead of pulling a missing image.
+
+=item B<--dry-run>, B<-n>
+
+Print the Docker commands and run scripts without starting containers.
+
+=item B<--list>
+
+List the expanded jobs and exit.
+
+=item B<--keep>, B<-k>
+
+Keep containers, networks, images, and the temporary directory for debugging.
+
+=item B<--keep-images>
+
+Remove containers and networks but keep images that were pulled.
+
+=item B<--strict-actions>
+
+Treat unsupported actions as failures instead of skipping them.
+
+=item B<--verbose>, B<-v>
+
+Print Docker commands and extra diagnostics.
+
+=item B<--quiet>, B<-q>
+
+Suppress C<action-run> progress output.  Command output is still shown.
+
+=item B<--help>, B<-h>
+
+Show this help.
+
+=item B<--version>, B<-V>
+
+Show the version.
+
+=back
+
+=head1 EXAMPLES
+
+    action-run ~/src/njh/CGI-Info/.github/workflows/perl-ci.yml \
+               ~/src/njh/CGI-Info
+
+    action-run --job test --image perl:5.40 \
+               .github/workflows/test.yml .
+
+    action-run --dry-run --verbose \
+               .github/workflows/alpine.yml .
+
+=head1 EXIT STATUS
+
+0 if every runnable job succeeded, 1 if a job failed, and 2 for a usage,
+Docker, or infrastructure error.
+
+=head1 LIMITATIONS
+
+Only Linux jobs are supported; macOS and Windows matrix entries are skipped.
+JavaScript actions cannot be executed.  C<actions/checkout> and
+C<shogo82148/actions-setup-perl> become no-ops because the project is already
+mounted and the container image is chosen from the requested Perl version.
+Cache, artifact, and Codecov actions are also no-ops.  Unknown actions are
+skipped with a warning unless C<--strict-actions> is used.
+
+=head1 AUTHOR
+
+Nigel Horne, C<njh@nigelhorne.com>
+
+=head1 LICENSE
+
+This library is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=cut
