@@ -51,43 +51,8 @@ reports the platform, the Docker client and daemon versions, whether the
 daemon runs Linux containers, and whether Docker can bind-mount a temporary
 directory and the project directory.  Each problem it finds is followed by the
 step that fixes it, such as starting Docker Desktop, switching it to Linux
-containers, or sharing the drive that holds the project.  The text report ends
-with the version of the schema its JSON document is written against, before
-the verdict, so a report pasted into an issue says which contract it came
-from; `preflight` names its own version the same way.  See [action-run](https://metacpan.org/pod/action-run)
+containers, or sharing the drive that holds the project.  See [action-run](https://metacpan.org/pod/action-run)
 for the details.
-
-`action-run schema check` and `action-run schema preflight` print the JSON
-schema of the `check --json` and `preflight --json` documents, so a CI job can
-fetch the contract rather than keeping its own copy:
-
-```
-action-run schema preflight > preflight-schema.json
-action-run preflight --json .github/workflows/test.yml . \
-    | check-jsonschema --schemafile preflight-schema.json -
-```
-
-`action-run validate <check|preflight> <document.json>` checks a saved document
-against that schema with no Docker and no workflow, so a job can verify a
-result produced by another job or on another machine:
-
-```
-action-run preflight --json .github/workflows/test.yml . > preflight.json
-action-run validate preflight preflight.json
-```
-
-It exits 0 when the document matches and 70 when it does not (a file that is
-not JSON is rejected the same way), with the first mismatch on standard error;
-an unknown document name or an unreadable file is a usage error.
-
-Those documents are held to their schemas before they are printed, so a key
-that is added, removed or retyped without the schema changing stops the
-command with exit 70 (`EX_SOFTWARE`) and a message naming the first mismatch,
-rather than handing a job a document its own contract would reject.  The
-status is not 2, which means the environment needs fixing, so a CI job can
-tell a broken document from a host it has to repair.  The validator is
-[App::Actions::Schema](https://metacpan.org/pod/App%3A%3AActions%3A%3ASchema), which is also what
-the test suite uses.
 
 ## Methods
 
@@ -105,12 +70,12 @@ my $actions = App::Actions->new(
 `.github/workflows` directory; the repository root is then used.
 
 Options include `jobs`, `image`, `perl_image`, `platform`, `user`, `env`,
-`secrets`, `dry_run`, `explain`, `verbose`, `quiet`, `keep`, `keep_images`,
-`pull`, `no_pull`, `strict_actions`, `skip_check`, `pull_concurrency`,
-`docker`, and `docker_bin`.  `pull_concurrency` says how many images may
-be pulled at the same time; it defaults to `ACTION_RUN_PULL_CONCURRENCY` from
-the environment, and to four when that is not set or empty.  It must be a
-positive integer.
+`secrets`, `dry_run`, `explain`, `verbose`, `quiet`, `keep`,
+`keep_images`, `pull`, `no_pull`, `strict_actions`, `skip_check`,
+`pull_concurrency`, `docker`, and `docker_bin`.  `pull_concurrency` says
+how many images may be pulled at the same time; it defaults to
+`ACTION_RUN_PULL_CONCURRENCY` from the environment, and to four when that is
+not set or empty.  It must be a positive integer.
 
 `explain` is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per
@@ -172,17 +137,16 @@ be named from the values available before the run, because a job has not
 produced it yet; it carries `expression` instead of `image`, and the job
 prepares it with its own values before it starts.  `summary` also carries
 `schema_version`, which is
-["preflight\_schema\_version" in App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner#preflight_schema_version).  The schema is what
-`action-run schema preflight` prints, and the checked-in examples in
-`t/fixtures/preflight.json` and `t/fixtures/preflight-unready.json` are
-validated against it in `t/schema.t`, which also fails when the schema names a
-key that neither example carries.  With
-`json => 1` nothing is printed, so the caller's output can be a single
-document; `summary->{ready}` is then a JSON boolean rather than 0 or 1, and
-the document has already been validated against that schema, so a mismatch
-dies with the first key at fault instead of being returned.
+["preflight\_schema\_version" in App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner#preflight_schema_version); the schema and a checked-in
+example are validated in `t/schema.t`.  With `json => 1` nothing is
+printed, so the caller's output can be a single document; `ready` is then a
+JSON boolean and the summary is the document `action-run preflight --json`
+prints, already validated against that schema, so a mismatch dies with an
+[App::Actions::Schema::Invalid](https://metacpan.org/pod/App%3A%3AActions%3A%3ASchema#App::Actions::Schema::Invalid)
+exception naming the first key at fault rather than being returned; the
+command gives that exit 70.
 
-### json\_schema
+### Json\_Schema
 
 ```perl
 my $schema = App::Actions->json_schema('check');
@@ -190,8 +154,10 @@ my $schema = App::Actions->json_schema('preflight');
 ```
 
 Returns the JSON schema of one of the machine-readable documents as a hash,
-which is what `action-run schema` prints.  The name is `check` or `preflight`;
-anything else is an error naming the two that exist.
+which is what `action-run schema` prints.  The name is `check` or
+`preflight`; anything else is an error naming the two that exist.  The
+schemas live in [App::Actions::Check](https://metacpan.org/pod/App%3A%3AActions%3A%3ACheck) and [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner), so the
+contract is available from an installed distribution.
 
 ### List\_Jobs
 
@@ -228,10 +194,7 @@ The same ground is covered by `action-run-smoke`, which does not need `prove`
 and reports the environment before it runs anything; use it when Docker, not
 the code, is in doubt.  On Windows it is the check to run against Docker
 Desktop, whose Linux engine `action-run-smoke` verifies before it starts a
-container.  `action-run-smoke --scenario deferred` adds the one part of the
-image preparation the default scenario never reaches: a workflow whose action
-image is decided by a step, which the preflight reports as deferred before the
-step prepares and runs it.
+container.
 
 The opt-in _Real Docker on Windows_ workflow runs the same test on a Windows
 host.  Dispatch it on a self-hosted Windows runner with Docker Desktop, or set

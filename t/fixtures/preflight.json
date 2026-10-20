@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "ready": true,
   "problems": 0,
   "pull_concurrency": 4,

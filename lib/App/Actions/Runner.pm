@@ -28,7 +28,12 @@ our $VERSION = '0.01';
 # from the check document because the two can gain keys independently, but a
 # change to the shared part bumps both.  Keep the schema below and the examples
 # in t/fixtures/ in step.
-our $PREFLIGHT_SCHEMA_VERSION = 2;
+#
+# 3: docker.bin stopped being nullable, with the check document's 2.  It is
+# always the resolved command, so the null type promised a shape no document
+# can produce; t/schema.t requires every enum value and null variant to appear
+# in the examples, which is what found it.
+our $PREFLIGHT_SCHEMA_VERSION = 3;
 
 # The schema of the document preflight --json prints, so that the installed
 # action-run can hand the contract to a caller instead of leaving it in the
