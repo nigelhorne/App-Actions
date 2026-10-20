@@ -77,6 +77,23 @@ my $both = write_program("print \"out\\n\";\nprint STDERR \"noise\\n\";\n");
 is($output, "out\n", 'quiet_stderr still captures standard output');
 is($status, 0, 'quiet_stderr reports success');
 
+# A caller that builds a message from a command's output wants the child's
+# standard error in it too, in the order the child wrote it and without
+# escaping to the caller's own streams.
+my $both_streams = write_program(
+    "\$| = 1;\nprint \"out\\n\";\nprint STDERR \"err\\n\";\n"
+);
+my ($merged_out, $merged_status);
+my ($unexpected) = capture {
+    ($merged_out, $merged_status) = App::Actions::Process::capture(
+        [ $^X, $both_streams ],
+        merge_stderr => 1,
+    );
+};
+is($merged_status, 0, 'merge_stderr reports success');
+is($merged_out, "out\nerr\n", 'merge_stderr captures both streams in the order written');
+is($unexpected, '', 'the merged streams do not also reach the caller');
+
 my $crlf = write_program("binmode STDOUT;\nprint \"a\\r\\nb\\r\\n\";\n");
 ($output, $status) = App::Actions::Process::capture([ $^X, $crlf ]);
 is($output, "a\nb\n", 'CRLF output is normalised on every platform');

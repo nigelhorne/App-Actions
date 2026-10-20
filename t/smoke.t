@@ -61,9 +61,13 @@ like($out, qr/^ {2}host\s+\S.*perl \d/m, 'the host platform is reported');
 like($out, qr/^ {2}daemon\s+26\.0\.0, linux containers$/m, 'the daemon is reported');
 like($out, qr{^ {2}mount\s+\S.* -> /check-project: OK \(\d+ entr}m,
     'the directory is mounted');
+like($out, qr/^ {2}image {5}\S+ \(job 'smoke'\): (?:pulled|present)$/m,
+    'the image the workflow needs is reported');
 like($out, qr/^ {2}workflow\s+one job, four steps/m, 'the workflow is described');
 like($out, qr/Workflow succeeded/, 'the workflow runs against Docker');
 like($out, qr/^Result: smoke test passed$/m, 'the result is reported once');
+unlike($out, qr/^ {2}schema/m,
+    'the smoke report names no document contract, because it prints none');
 unlike($out, qr/^Result: ready$/m, 'the environment report leaves the verdict alone');
 is($err, '', 'a passing smoke test writes nothing to standard error');
 
@@ -100,6 +104,87 @@ is($err, '', 'a passing smoke test writes nothing to standard error');
     is($mount_exit, 2, 'a broken bind mount fails the smoke test');
     like($mount_out, qr/^ {2}problem\s+the container could not read the mounted/m,
         'the mount problem is explained');
+}
+
+# An image the workflow needs but the daemon cannot fetch is what the preflight
+# adds: it is named, with the reason, before any workflow step runs.
+{
+    # A daemon that has never seen the image, so the pull is attempted rather
+    # than answered from an earlier smoke test's state directory.
+    local $ENV{FAKE_DOCKER_STATE} = tempdir(CLEANUP => 1);
+    local $ENV{FAKE_PULL_FAILURE} = 'alpine:3.20';
+
+    my ($image_out, undef, $image_exit) = run_smoke(
+        '--docker', $fake_docker, '--directory', $project,
+    );
+    is($image_exit, 2, 'an image that cannot be prepared fails the smoke test');
+    like($image_out, qr/^ {2}image {5}alpine:3\.20 \(job 'smoke'\): failed$/m,
+        'the image that could not be prepared is named');
+    like($image_out,
+        qr/^ {2}problem\s+cannot prepare the image 'alpine:3\.20', needed by job 'smoke'/m,
+        'the failure names the image and what needed it');
+    like($image_out, qr/^ {2}remedy\s+\S/m, 'the image failure comes with a remedy');
+    like($image_out, qr/^Result: smoke test failed$/m, 'the failure is reported');
+    unlike($image_out, qr/Workflow succeeded/, 'no workflow runs when an image cannot be prepared');
+}
+
+# The deferred scenario is opt-in: it exercises an image that only a step can
+# name, which the preflight reports as deferred and the step prepares when it
+# runs.
+{
+    my $deferred_state = tempdir(CLEANUP => 1);
+    my $deferred_log   = File::Spec->catfile($deferred_state, 'docker.log');
+    local $ENV{FAKE_DOCKER_STATE} = $deferred_state;
+    local $ENV{FAKE_DOCKER_LOG}   = $deferred_log;
+
+    my ($deferred_out, $deferred_err, $deferred_exit) = run_smoke(
+        '--docker', $fake_docker, '--directory', $project,
+        '--scenario', 'deferred',
+    );
+
+    my $expression = '${{ steps.pick.outputs.image }}';
+
+    is($deferred_exit, 0, 'the deferred scenario passes');
+    like(
+        $deferred_out,
+        qr/^ {2}workflow\s+one job, two steps, an image a step decides$/m,
+        'the scenario describes the workflow it runs',
+    );
+    like(
+        $deferred_out,
+        qr/^ {2}image {5}\Q$expression\E \(action 'docker:\/\/\Q$expression\E' in job 'smoke'\): deferred$/m,
+        'the preflight reports the step-decided image as deferred',
+    );
+    like($deferred_out, qr/^ {2}deferred {2}unable to resolve/m,
+        'the report says why the image could not be named');
+    like($deferred_out, qr/Workflow succeeded/,
+        'the workflow runs when the step supplies the image');
+    unlike($deferred_err, qr/skipped: remote/,
+        'the deferred action is not skipped');
+
+    open my $log_handle, '<', $deferred_log or die $!;
+    local $/;
+    my $log_text = <$log_handle>;
+    close $log_handle;
+    $log_text = '' unless defined $log_text;
+
+    is(
+        scalar(() = $log_text =~ /^pull\thello-world:latest$/mg),
+        1,
+        'the step pulls the image it decided on, once, after the preflight',
+    );
+}
+
+{
+    my (undef, $scenario_err, $scenario_exit) = run_smoke(
+        '--scenario', 'nonsense',
+    );
+    is($scenario_exit, 2, 'an unknown scenario is a usage error');
+    like(
+        $scenario_err,
+        qr/Unknown scenario 'nonsense'; expected smoke or deferred/,
+        'the error names the scenarios that exist',
+    );
 }
 
 # An environment that is fine but a workflow that is not has its own exit

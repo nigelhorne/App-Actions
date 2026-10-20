@@ -86,6 +86,15 @@ sub run_workflow {
     local $ENV{FAKE_PULL_SLEEP}   = $options{fake_pull_sleep};
     local $ENV{FAKE_PULL_TIMING}  = $options{fake_pull_timing} ? 1 : 0;
     local $ENV{FAKE_RUN_NEEDS_IMAGE} = $options{fake_run_needs_image} ? 1 : 0;
+    local $ENV{FAKE_CONTAINER_EXITS}  = $options{fake_container_exits};
+    local $ENV{FAKE_CONTAINER_RESTARTS}  = $options{fake_container_restarts};
+    local $ENV{FAKE_RESTART_COUNT}       = $options{fake_restart_count};
+    local $ENV{FAKE_CONTAINER_STATE}     = $options{fake_container_state};
+    local $ENV{FAKE_RESTART_AFTER_EXEC}  = $options{fake_restart_after_exec} ? 1 : 0;
+    local $ENV{FAKE_CONTAINER_STATUS} = $options{fake_container_status};
+    local $ENV{FAKE_CONTAINER_LOGS}   = $options{fake_container_logs};
+    local $ENV{FAKE_CONTAINER_ERR}    = $options{fake_container_err};
+    local $ENV{FAKE_INSPECT_FAILURE}  = $options{fake_inspect_failure} ? 1 : 0;
 
     my $actions = App::Actions->new(
         workflow_file => $workflow_file,
@@ -247,6 +256,73 @@ YAML
 is($dry_run->{exit}, 0, 'dry run succeeds without Docker');
 like($dry_run->{stdout}, qr/\[dry-run\]/, 'dry run prints Docker commands');
 
+# An explain run is the same dry run with the containers as its output: it
+# needs no daemon at all, which the missing Docker command below proves, and
+# says what each container would be told to run.
+{
+    my $absent = File::Spec->catfile(tempdir(CLEANUP => 1), 'absent-docker');
+
+    my $explained = run_workflow(
+        <<'YAML',
+name: Explained
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    services:
+      helper:
+        image: postgres:16
+        options: --restart always --entrypoint /bin/sh
+    steps:
+      - uses: docker://hello-world:latest
+        with:
+          args: /hello
+      - run: echo hi
+YAML
+        explain    => 1,
+        docker_bin => $absent,
+    );
+
+    is($explained->{exit}, 0, 'an explain run succeeds without a Docker daemon');
+    is($explained->{log}, '', 'an explain run starts nothing');
+
+    like($explained->{stdout}, qr/^==> Service 'helper' of job 'test'$/m,
+        'the service container is reported');
+    like(
+        $explained->{stdout},
+        qr/^ {4}container {2}action-run-\S+-svc-test-0-helper$/m,
+        'the service container is named',
+    );
+    like($explained->{stdout}, qr/^ {4}entrypoint \/bin\/sh$/m,
+        'the entrypoint the service options ask for is reported');
+    like($explained->{stdout}, qr/^ {4}command {4}\(the image's own\)$/m,
+        'a service with no command of its own says so, which is what diagnoses it');
+
+    like($explained->{stdout}, qr/^==> Job 'test'$/m, 'the job container is reported');
+    like($explained->{stdout}, qr/^ {4}image {6}alpine:3\.20$/m,
+        'the job container image is reported');
+    like($explained->{stdout}, qr/^ {4}entrypoint \/bin\/sh$/m,
+        'the job container entrypoint is reported');
+    like(
+        $explained->{stdout},
+        qr/^ {4}command {4}-c 'while :; do sleep 3600; done'$/m,
+        'the job container command is reported',
+    );
+
+    like(
+        $explained->{stdout},
+        qr/^==> Action 'docker:\/\/hello-world:latest' in job 'test'$/m,
+        'the action container is reported',
+    );
+    like($explained->{stdout}, qr/^ {4}command {4}\/hello$/m,
+        'the argument the action is given is reported');
+
+    unlike($explained->{stdout}, qr/^\[dry-run\]/m,
+        'an explain run lists containers, not Docker commands');
+}
+
 my $outputs = run_workflow(<<'YAML');
 name: Outputs
 on: push
@@ -323,6 +399,281 @@ like($services->{log}, qr/\t-e\tPOSTGRES_PASSWORD=secret\t/, 'service environmen
 like($services->{log}, qr/\t-p\t5432:5432\t/, 'service ports are published');
 my @service_removals = ($services->{log} =~ /^rm\t-f\t/gm);
 is(scalar @service_removals, 2, 'job and service containers are removed');
+
+# A service container that stops instead of serving is an infrastructure
+# failure, and "did not stay running" on its own says nothing about why: the
+# status it exited with and what it printed are what tell a bad command from a
+# bad image or a port already in use.
+my $stopped_service = run_workflow(
+    <<'YAML',
+name: Stopped service
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    services:
+      helper:
+        image: postgres:16
+    steps:
+      - run: echo never
+YAML
+    fake_container_exits  => '-svc-',
+    fake_container_status => 7,
+    fake_container_logs   => "starting up\nport 5432 is already in use\n",
+    fake_container_err    => "fatal: could not bind\n",
+);
+
+is($stopped_service->{exit}, 2, 'a service that stops is an infrastructure failure');
+like(
+    $stopped_service->{stderr},
+    qr/^action-run: Service 'helper' did not stay running \(exit 7\);/m,
+    'the failure names the service and the status it exited with',
+);
+like($stopped_service->{stderr}, qr/^ {2}starting up$/m,
+    'the service output is quoted');
+like($stopped_service->{stderr}, qr/^ {2}port 5432 is already in use$/m,
+    'the last lines are quoted, not the first ones');
+like($stopped_service->{stderr}, qr/^ {2}fatal: could not bind$/m,
+    'the service standard error is quoted too');
+unlike($stopped_service->{stderr}, qr/\s+at\s+\S+ line \d+/,
+    'the failure reads as a sentence, not a source location');
+unlike($stopped_service->{stdout}, qr/--- Step:/,
+    'no step runs when its service has stopped');
+
+# A service that said nothing at all is reported as silent rather than being
+# left with an empty quotation.
+my $silent_service = run_workflow(
+    <<'YAML',
+name: Silent service
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    services:
+      helper:
+        image: postgres:16
+    steps:
+      - run: echo never
+YAML
+    fake_container_exits => '-svc-',
+    fake_container_logs  => '',
+);
+
+is($silent_service->{exit}, 2, 'a silent service is still a failure');
+like(
+    $silent_service->{stderr},
+    qr/did not stay running \(exit 1\); it printed nothing/m,
+    'a service that printed nothing says so',
+);
+
+# A container the daemon will not describe, because it has already gone, is
+# not the same as one that exited 0: the message says the status is unknown
+# rather than inventing one.
+my $unreadable = run_workflow(
+    <<'YAML',
+name: Unreadable service
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    services:
+      helper:
+        image: postgres:16
+    steps:
+      - run: echo never
+YAML
+    fake_container_exits => '-svc-',
+    fake_container_logs  => "gone before it could be asked\n",
+    fake_inspect_failure => 1,
+);
+
+is($unreadable->{exit}, 2, 'an unreadable service status is a failure');
+like(
+    $unreadable->{stderr},
+    qr/did not stay running \(its exit status could not be read\); its last output was:/m,
+    'a status that cannot be read is reported as unknown, not guessed',
+);
+like($unreadable->{stderr}, qr/^ {2}gone before it could be asked$/m,
+    'the output is still quoted when the status is unknown');
+
+# A service whose restart policy brings it back is not serving, even though
+# Docker reports it as running between attempts: asking only whether it is
+# running would let the steps talk to a container that keeps dying.
+my $restarting_service = run_workflow(
+    <<'YAML',
+name: Restarting service
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    services:
+      helper:
+        image: postgres:16
+        options: --restart always
+    steps:
+      - run: echo never
+YAML
+    fake_container_restarts => '-svc-',
+    fake_restart_count      => 3,
+    fake_container_logs     => "starting up\nport 5432 is already in use\n",
+);
+
+is($restarting_service->{exit}, 2, 'a service that keeps restarting is an infrastructure failure');
+like(
+    $restarting_service->{stderr},
+    qr/^action-run: Service 'helper' is restarting \(restart count 3\);/m,
+    'the failure names the service and how often it was restarted',
+);
+like($restarting_service->{stderr}, qr/^ {2}port 5432 is already in use$/m,
+    'the output the restarts repeat is quoted');
+unlike($restarting_service->{stdout}, qr/--- Step:/,
+    'no step runs against a service that is restarting');
+unlike($restarting_service->{log}, qr/^run\t-d\t.*-job-/m,
+    'no job container is started for a restarting service');
+like($restarting_service->{log}, qr/^rm\t-f\taction-run-\S+-svc-\S+$/m,
+    'the restarting service is removed');
+
+# A service caught between attempts is described as restarting rather than as
+# one that never stayed up, which is what its restart policy is doing.
+my $backing_off = run_workflow(
+    <<'YAML',
+name: Backing off service
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    services:
+      helper:
+        image: postgres:16
+        options: --restart always
+    steps:
+      - run: echo never
+YAML
+    fake_container_restarts => '-svc-',
+    fake_restart_count      => 0,
+    fake_container_state    => 'restarting',
+    fake_container_logs     => "could not connect to the server\n",
+);
+
+is($backing_off->{exit}, 2, 'a service backing off is an infrastructure failure');
+like(
+    $backing_off->{stderr},
+    qr/^action-run: Service 'helper' is restarting; its last output was:/m,
+    'a service between attempts is described as restarting',
+);
+like($backing_off->{stderr}, qr/^ {2}could not connect to the server$/m,
+    'the output that made it give up is quoted');
+
+# A restart that happens while the job runs is caught too: the service was
+# serving when it was started, so only the check after the steps can see it.
+my $restarted_later = run_workflow(
+    <<'YAML',
+name: Restarted during the run
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    services:
+      helper:
+        image: postgres:16
+        options: --restart always
+    steps:
+      - run: echo the step runs first
+YAML
+    fake_container_restarts   => '-svc-',
+    fake_restart_count        => 2,
+    fake_restart_after_exec   => 1,
+    fake_container_logs       => "server closed the connection unexpectedly\n",
+);
+
+is($restarted_later->{exit}, 2, 'a service that restarts during the run fails it');
+like($restarted_later->{stdout}, qr/--- Step: /,
+    'the step had already run when the restart was noticed');
+like(
+    $restarted_later->{stderr},
+    qr/^action-run: Service 'helper' is restarting \(restart count 2\);/m,
+    'the late restart is reported with its count',
+);
+like($restarted_later->{stderr}, qr/^ {2}server closed the connection unexpectedly$/m,
+    'the late restart quotes what the container printed');
+
+# The job container is held to the same standard.  A container that stops
+# before any step has run is an infrastructure failure, and its status and last
+# output are what tell a bad image from a bad entrypoint or a missing command.
+my $stopped_job = run_workflow(
+    <<'YAML',
+name: Stopped job container
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    steps:
+      - run: echo never
+YAML
+    fake_container_exits  => '-job-',
+    fake_container_status => 7,
+    fake_container_logs   => "could not set up the runner\n",
+    fake_container_err    => "fatal: no such entrypoint\n",
+);
+
+is($stopped_job->{exit}, 2, 'a job container that stops is an infrastructure failure');
+like(
+    $stopped_job->{stderr},
+    qr/^action-run: Job container '\S+' did not stay running \(exit 7\);/m,
+    'the failure names the job container and its exit status',
+);
+like($stopped_job->{stderr}, qr/^ {2}could not set up the runner$/m,
+    'the job container output is quoted');
+like($stopped_job->{stderr}, qr/^ {2}fatal: no such entrypoint$/m,
+    'the job container standard error is quoted too');
+unlike($stopped_job->{stderr}, qr/\s+at\s+\S+ line \d+/,
+    'the failure reads as a sentence, not a source location');
+unlike($stopped_job->{stdout}, qr/--- Step:/,
+    'no step runs in a job container that stopped');
+like(
+    $stopped_job->{log},
+    qr/^rm\t-f\taction-run-\S+-job-\S+$/m,
+    'the job container that stopped is removed',
+);
+
+# A job container that printed nothing is reported as silent rather than left
+# with an empty quotation.
+my $silent_job = run_workflow(
+    <<'YAML',
+name: Silent job container
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    steps:
+      - run: echo never
+YAML
+    fake_container_exits => '-job-',
+    fake_container_logs  => '',
+);
+
+is($silent_job->{exit}, 2, 'a silent job container is still a failure');
+like(
+    $silent_job->{stderr},
+    qr/Job container '\S+' did not stay running \(exit 1\); it printed nothing/m,
+    'a job container that printed nothing says so',
+);
 
 my $docker_action = run_workflow(<<'YAML');
 name: Docker action
@@ -1609,11 +1960,68 @@ unlike($preflight_no_pull->{log}, qr/^pull\t/m, 'nothing is pulled with --no-pul
 my $preflight_text = preflight_workflow($with_images);
 is($preflight_text->{result}{exit}, 0, 'a text preflight exits 0');
 like($preflight_text->{stdout}, qr/^Pulling image/m, 'a text preflight shows the pulls');
+like(
+    $preflight_text->{stdout},
+    qr/^ {2}image {5}perl:5\.38 \(job 'test'\): pulled$/m,
+    'a text preflight names each image and what happened to it',
+);
+like(
+    $preflight_text->{stdout},
+    qr/^ {2}image {5}postgres:15 \(service 'db' of job 'test'\): pulled$/m,
+    'the image line names the service that needs it',
+);
+unlike($preflight_text->{stdout}, qr/^ {2}deferred/m,
+    'no deferral is claimed for an image the preflight could name');
+
+# A pasted preflight report says which document version produced it, and it is
+# the preflight's version rather than the check's it embeds.
+my $preflight_version = App::Actions::Runner->preflight_schema_version;
+like(
+    $preflight_text->{stdout},
+    qr/^ {2}schema {4}version \Q$preflight_version\E \(action-run schema preflight\)$/m,
+    'a text preflight names the schema it was written against',
+);
+unlike($preflight_text->{stdout}, qr/action-run schema check/,
+    'the preflight names its own contract, not the check document it embeds');
+
+# Even a verbose preflight, where the check report is printed in full, leaves
+# the check's own schema line out.
+my $verbose_text = preflight_workflow($with_images, verbose => 1);
+like($verbose_text->{stdout}, qr/^ {2}host\s+\S/m,
+    'a verbose preflight shows the check report');
+like(
+    $verbose_text->{stdout},
+    qr/^ {2}schema {4}version \Q$preflight_version\E \(action-run schema preflight\)$/m,
+    'a verbose preflight still names its own contract',
+);
+unlike($verbose_text->{stdout}, qr/action-run schema check/,
+    'a verbose preflight does not name the check contract as well');
+
+# An image only a step can name is reported by its expression, with the
+# reason, since there is no name to print yet.
+my $deferred_text = preflight_workflow($step_decided);
+my $step_image    = '${{ steps.pick.outputs.image }}';
+is($deferred_text->{result}{exit}, 0, 'a deferred image leaves a text preflight ready');
+like(
+    $deferred_text->{stdout},
+    qr/^ {2}image {5}\Q$step_image\E \(action 'docker:\/\/\Q$step_image\E' in job 'test'\): deferred$/m,
+    'a deferred image is reported by its expression, not a guessed name',
+);
+like(
+    $deferred_text->{stdout},
+    qr/^ {2}deferred {2}unable to resolve '\Q$step_image\E'/m,
+    'the reason the image could not be named is printed with it',
+);
 
 my $preflight_text_failure = preflight_workflow(
     $with_images, fake_pull_failure => 'postgres:15',
 );
 is($preflight_text_failure->{result}{exit}, 2, 'a text preflight reports a failure');
+like(
+    $preflight_text_failure->{stdout},
+    qr/^ {2}schema {4}version \Q$preflight_version\E \(action-run schema preflight\)$/m,
+    'a failing preflight report names its contract too',
+);
 like($preflight_text_failure->{result}{error},
     qr/cannot prepare the image 'postgres:15', needed by service 'db' of job 'test'/,
     'the failure names the image and the service');

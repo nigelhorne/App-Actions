@@ -6,6 +6,7 @@ use Carp qw(croak);
 use Cwd qw(abs_path);
 use File::Spec;
 
+use App::Actions::Check;
 use App::Actions::Workflow;
 use App::Actions::Runner;
 
@@ -59,9 +60,28 @@ sub run {
 sub preflight {
     my ($self, %overrides) = @_;
 
-    my $json = delete $overrides{json};
+    my $json        = delete $overrides{json};
+    my $schema_line = delete $overrides{schema_line};
 
-    return $self->_runner(%overrides)->preflight(json => $json);
+    return $self->_runner(%overrides)->preflight(
+        json        => $json,
+        schema_line => $schema_line,
+    );
+}
+
+# The JSON schema of one of the machine-readable documents, as a hash that a
+# caller can print.  The schemas live in the modules that own the documents,
+# so the contract is available from an installed distribution rather than only
+# from the test directory.
+sub json_schema {
+    my ($class, $name) = @_;
+
+    croak 'A document name is required' unless defined $name && length $name;
+
+    return App::Actions::Check->json_schema       if $name eq 'check';
+    return App::Actions::Runner->json_schema      if $name eq 'preflight';
+
+    croak "Unknown document '$name'; expected check or preflight";
 }
 
 sub _runner {
@@ -78,6 +98,7 @@ sub _runner {
         env           => exists $overrides{env} ? $overrides{env} : $self->{env},
         secrets       => exists $overrides{secrets} ? $overrides{secrets} : $self->{secrets},
         dry_run       => exists $overrides{dry_run} ? $overrides{dry_run} : $self->{dry_run},
+        explain       => exists $overrides{explain} ? $overrides{explain} : $self->{explain},
         verbose       => exists $overrides{verbose} ? $overrides{verbose} : $self->{verbose},
         quiet         => exists $overrides{quiet} ? $overrides{quiet} : $self->{quiet},
         keep          => exists $overrides{keep} ? $overrides{keep} : $self->{keep},
@@ -141,9 +162,12 @@ environment files, working directories, shells, and C<if> conditions.
 
 Each job gets a private Docker network, its own service containers, and a
 long-lived job container.  Steps are executed in that container with
-C<docker exec>, so files and installed modules persist between steps.  When a
-job finishes, its containers and network are removed; images that this run
-pulled are removed at the end as well.  The C<GITHUB_ENV>, C<GITHUB_PATH>,
+C<docker exec>, so files and installed modules persist between steps.  A
+service must stay up: one that stops, or that a restart policy keeps bringing
+back, stops the run with the state and restart count the daemon reports and
+the last lines the container printed.  When a job finishes, its containers and
+network are removed; images that this run pulled are removed at the end as
+well.  The C<GITHUB_ENV>, C<GITHUB_PATH>,
 C<GITHUB_OUTPUT>, C<GITHUB_STATE>, and C<GITHUB_STEP_SUMMARY> files written by
 steps are honoured.  If an image has no C<sudo> and the container is running
 as root, a small C<sudo> shim is placed on C<PATH> so that steps such as
@@ -181,12 +205,17 @@ C<project_dir> may be omitted when the workflow is inside a repository's
 C<.github/workflows> directory; the repository root is then used.
 
 Options include C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>, C<env>,
-C<secrets>, C<dry_run>, C<verbose>, C<quiet>, C<keep>, C<keep_images>,
-C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>, C<pull_concurrency>,
-C<docker>, and C<docker_bin>.  C<pull_concurrency> says how many images may
-be pulled at the same time; it defaults to C<ACTION_RUN_PULL_CONCURRENCY> from
-the environment, and to four when that is not set or empty.  It must be a
-positive integer.
+C<secrets>, C<dry_run>, C<explain>, C<verbose>, C<quiet>, C<keep>,
+C<keep_images>, C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>,
+C<pull_concurrency>, C<docker>, and C<docker_bin>.  C<pull_concurrency> says
+how many images may be pulled at the same time; it defaults to
+C<ACTION_RUN_PULL_CONCURRENCY> from the environment, and to four when that is
+not set or empty.  It must be a positive integer.
+
+C<explain> is a dry run whose output is the containers rather than the Docker
+commands: nothing is started and no daemon is contacted, and one block per
+container says what it would be told to run, which is how a service that stops
+on start-up can be diagnosed without running it.
 
 Before any job starts, the environment is probed exactly as C<action-run>
 C<check> does: the daemon must be reachable and run Linux containers, and the
@@ -241,7 +270,23 @@ prepares it with its own values before it starts.  C<summary> also carries
 C<schema_version>, which is
 L<App::Actions::Runner/preflight_schema_version>; the schema and a checked-in
 example are validated in F<t/schema.t>.  With C<json =E<gt> 1> nothing is
-printed, so the caller's output can be a single document.
+printed, so the caller's output can be a single document; C<ready> is then a
+JSON boolean and the summary is the document C<action-run preflight --json>
+prints, already validated against that schema, so a mismatch dies with an
+L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
+exception naming the first key at fault rather than being returned; the
+command gives that exit 70.
+
+=head2 json_schema
+
+    my $schema = App::Actions->json_schema('check');
+    my $schema = App::Actions->json_schema('preflight');
+
+Returns the JSON schema of one of the machine-readable documents as a hash,
+which is what C<action-run schema> prints.  The name is C<check> or
+C<preflight>; anything else is an error naming the two that exist.  The
+schemas live in L<App::Actions::Check> and L<App::Actions::Runner>, so the
+contract is available from an installed distribution.
 
 =head2 list_jobs
 

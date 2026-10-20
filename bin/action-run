@@ -16,6 +16,7 @@ BEGIN {
 
 use App::Actions;
 use App::Actions::Check;
+use App::Actions::Schema;
 
 my @job_filters;
 my @env_pairs;
@@ -29,6 +30,7 @@ my $docker_bin;
 my $pull;
 my $no_pull;
 my $dry_run;
+my $explain;
 my $list;
 my $keep;
 my $keep_images;
@@ -55,6 +57,7 @@ GetOptions(
     'pull'           => \$pull,
     'no-pull'        => \$no_pull,
     'dry-run|n'      => \$dry_run,
+    'explain'        => \$explain,
     'list'           => \$list,
     'keep|k'         => \$keep,
     'keep-images'    => \$keep_images,
@@ -83,8 +86,20 @@ if ($pull && $no_pull) {
 }
 
 my $command = 'run';
-if (@ARGV && ($ARGV[0] eq 'check' || $ARGV[0] eq 'preflight')) {
+if (@ARGV && ($ARGV[0] eq 'check' || $ARGV[0] eq 'preflight'
+        || $ARGV[0] eq 'schema' || $ARGV[0] eq 'validate')) {
     $command = shift @ARGV;
+}
+
+# Before the commands run: an explain run reports the containers a workflow
+# would start, so there is nothing for check, preflight, schema or validate to
+# explain.
+if ($explain && $command ne 'run') {
+    pod2usage(
+        -exitval => 2,
+        -verbose => 0,
+        -message => "--explain is only used when running a workflow\n",
+    );
 }
 
 if ($command eq 'check') {
@@ -104,7 +119,15 @@ if ($command eq 'check') {
         json       => $json,
     );
 
-    exit $check->run;
+    # A check refuses to print a document that does not match its schema, so
+    # its exception is reported like any other rather than escaping the
+    # program as a stack trace.
+    my $exit = eval { $check->run };
+    if (my $error = $@) {
+        exit _fail($error);
+    }
+
+    exit $exit;
 }
 
 if ($json && $command ne 'preflight') {
@@ -113,6 +136,74 @@ if ($json && $command ne 'preflight') {
         -verbose => 0,
         -message => "--json is only used by the check and preflight commands\n",
     );
+}
+
+if ($command eq 'schema') {
+    if (@ARGV != 1) {
+        pod2usage(
+            -exitval => 2,
+            -verbose => 0,
+            -message => "Usage: action-run [options] schema <check|preflight>\n",
+        );
+    }
+
+    my $schema = eval { App::Actions->json_schema($ARGV[0]) };
+    if (my $error = $@) {
+        print STDERR 'action-run: ', _error_text($error), "\n";
+        exit 2;
+    }
+
+    print JSON::PP->new->canonical->encode($schema), "\n";
+    exit 0;
+}
+
+if ($command eq 'validate') {
+    if (@ARGV != 2) {
+        pod2usage(
+            -exitval => 2,
+            -verbose => 0,
+            -message => "Usage: action-run [options] validate <check|preflight> <document.json>\n",
+        );
+    }
+
+    my ($name, $path) = @ARGV;
+
+    my $schema = eval { App::Actions->json_schema($name) };
+    if (my $error = $@) {
+        print STDERR 'action-run: ', _error_text("$error"), "\n";
+        exit 2;
+    }
+
+    # Read the bytes as they are: a JSON document saved on Windows still has
+    # its LF line endings, and the parser accepts either.
+    open my $handle, '<', $path
+        or do {
+            print STDERR "action-run: cannot read '$path': $!\n";
+            exit 2;
+        };
+    binmode $handle;
+    my $text = do { local $/; <$handle> };
+    close $handle;
+    $text = '' unless defined $text;
+
+    my $document = eval { JSON::PP->new->decode($text) };
+    if (my $error = $@) {
+        print STDERR "action-run: '$path' is not valid JSON: ",
+            _error_text("$error"), "\n";
+        exit App::Actions::Schema::invalid_exit();
+    }
+
+    my @errors = App::Actions::Schema::validate($document, $schema);
+    if (@errors) {
+        my $more = @errors == 1 ? '' : sprintf(' (and %d more)', @errors - 1);
+        print STDERR
+            "action-run: '$path' does not match the $name schema: ",
+            $errors[0], "$more\n";
+        exit App::Actions::Schema::invalid_exit();
+    }
+
+    print "'$path' is a valid $name document (schema version $schema->{version})\n";
+    exit 0;
 }
 
 my %environment = _parse_pairs(\@env_pairs, '--env');
@@ -143,6 +234,7 @@ my $actions = eval {
         env           => \%environment,
         secrets       => \%secrets,
         dry_run       => $dry_run,
+        explain       => $explain,
         verbose       => $verbose,
         quiet         => $quiet,
         keep          => $keep,
@@ -174,16 +266,13 @@ if ($list) {
 if ($command eq 'preflight') {
     my $result = eval { $actions->preflight(json => $json) };
     if (my $error = $@) {
-        print STDERR 'action-run: ', _error_text($error), "\n";
-        exit 2;
+        exit _fail($error);
     }
 
     if ($json) {
-        my $document = $result->{summary};
-        $document->{ready} = $result->{exit} == 0
-            ? JSON::PP::true()
-            : JSON::PP::false();
-        print JSON::PP->new->canonical->encode($document), "\n";
+        # The preflight builds the document the command prints, including the
+        # JSON booleans, and has already validated it against the schema.
+        print JSON::PP->new->canonical->encode($result->{summary}), "\n";
     }
     elsif (defined $result->{error} && length $result->{error}) {
         print STDERR "action-run: $result->{error}\n" unless $quiet;
@@ -200,13 +289,30 @@ if (my $error = $@) {
 
 exit $exit;
 
+# Report an exception and say what the command should exit with.  A document
+# that does not match its schema is a fault in this distribution rather than in
+# the environment, so it has a status of its own: 2 means "fix the host", and
+# a CI job reading it that way would look in the wrong place.
+sub _fail {
+    my ($error) = @_;
+
+    print STDERR 'action-run: ', _error_text("$error"), "\n";
+
+    return App::Actions::Schema::invalid_exit()
+        if ref $error && eval { $error->isa('App::Actions::Schema::Invalid') };
+
+    return 2;
+}
+
 # A croak() carries the source location, which is useful in a stack trace and
-# noise in a message someone reads.
+# noise in a message someone reads.  Only the final location is removed:
+# JSON::PP puts its own position, such as "at character offset 9", ahead of it,
+# and that is part of the diagnosis rather than noise.
 sub _error_text {
     my ($error) = @_;
 
     $error =~ s/\s+$//;
-    $error =~ s/\s+at\s+.+? line \d+\.?\z//;
+    $error =~ s/\s+at\s+\S+\s+line\s+\d+\.?\z//;
     $error =~ s/\s+$//;
 
     return $error;
@@ -239,6 +345,8 @@ action-run - run a GitHub Actions workflow locally with Docker
     action-run [options] <workflow.yml> [project-directory]
     action-run [options] check [directory]
     action-run [options] preflight <workflow.yml> [project-directory]
+    action-run [options] schema <check|preflight>
+    action-run [options] validate <check|preflight> <document.json>
 
 =head1 DESCRIPTION
 
@@ -328,10 +436,28 @@ C<"daemon": null> rather than a missing key.  Each entry in C<mounts> carries
 C<host>, C<container> and C<ok>, and the project entry also carries C<entries>
 and C<expected>.  The exit status is the same as for the text report.
 
+The text report ends with a C<schema> line naming the version of the document
+it is written against, before the verdict, so a report pasted into an issue
+says which contract its lines belong to:
+
+  host      Linux (linux), perl 5.40.0, x86_64-linux
+  ...
+  schema    version 1 (action-run schema check)
+  Result: ready
+
 C<schema_version> names the shape of the document, so an assertion can say
 which shape it was written for instead of failing on a key that moved.  The
-schema, a checked-in example and the test that validates both are
-F<t/fixtures/check-schema.json>, F<t/fixtures/check.json> and F<t/schema.t>.
+schema is what C<action-run schema check> prints, and the checked-in examples
+F<t/fixtures/check.json> and F<t/fixtures/check-unready.json> are validated
+against it in F<t/schema.t>, which also fails when a property or required key
+the schema names appears in neither of them.
+
+Before the document is printed it is checked against that schema, so a key
+that was added, removed or retyped without the schema changing exits 70 (see
+L</EXIT STATUS>) with a message naming the first mismatch, and nothing is
+written to standard output.  A CI job therefore never receives a document its
+own contract would reject.  The same applies to C<preflight --json>, whose
+document is validated before it is returned.
 
 =head2 preflight
 
@@ -342,8 +468,16 @@ environment probes, then the preparation of every image the selected jobs
 need.  Nothing is started, so this is the cheap way to ask whether a workflow
 could start on this host.
 
-The text output is what a run would print at that point, and the exit status
-is 0 when the images are ready and 2 when they are not.  With C<--json> the
+The text output is the check report, the pull progress, and one line per image
+naming the job, service or action that needs it and whether it was pulled,
+already present, failed, skipped or deferred.  A deferred image is one whose
+name only a step can supply: it is printed by its expression, with the reason
+it could not be resolved, and the step prepares it when the workflow runs.
+It ends with a C<schema> line naming the version of the preflight document, so
+a pasted report says which contract it belongs to; the check report it embeds
+leaves its own version line out, because that is not the document printed.
+The exit status is 0 when the images are ready and 2 when they are not.  With
+C<--json> the
 document is the one C<check --json> prints, with C<images> listing every image
 in the order the run would need it and C<pull_concurrency> reporting the
 number of pulls it was allowed at once:
@@ -392,13 +526,61 @@ an image that was verified from one that could not be named yet.
 The preflight document is versioned separately, because C<images> can change
 without the check document changing.  Its C<schema_version> is
 C<App::Actions::Runner-E<gt>preflight_schema_version>, and the check
-document's is C<App::Actions::Check-E<gt>json_schema_version>.
-F<t/fixtures/preflight-schema.json> and F<t/fixtures/preflight.json> are
-validated in F<t/schema.t>.
+document's is C<App::Actions::Check-E<gt>json_schema_version>.  The schema is
+what C<action-run schema preflight> prints, and F<t/fixtures/preflight.json>
+and F<t/fixtures/preflight-unready.json> are validated against it in
+F<t/schema.t>, which also fails when a key the schema names appears in neither
+of them.
 
 Unlike a run, C<preflight> keeps the images it pulled, so a run that follows
 starts warm.  C<--pull> and C<--no-pull> apply as they do to a run, and
 C<--skip-check> drops the probes while still preparing the images.
+
+The schema of this document is what C<action-run schema preflight> prints, so
+an assertion can be written against the contract itself rather than against a
+copy of it in a test directory.
+
+=head2 schema
+
+    action-run [options] schema <check|preflight>
+
+Prints the JSON schema of the named document and exits: C<check> for the
+C<check --json> document, C<preflight> for the C<preflight --json> one.  The
+output is a single JSON object, so a CI job can fetch the contract the
+document is written against rather than keeping its own copy:
+
+    action-run schema preflight > preflight-schema.json
+    action-run preflight --json .github/workflows/test.yml . \
+        | check-jsonschema --schemafile preflight-schema.json -
+
+It always prints JSON, so C<--json> is not needed and is rejected as it is for
+a run.  The schema and the version it declares come from the module that
+produces the document, so the two cannot disagree; C<version> is the same
+number as the document's C<schema_version>.
+
+=head2 validate
+
+    action-run [options] validate <check|preflight> <document.json>
+
+Checks a saved document against the schema that C<action-run schema> prints,
+without Docker and without a workflow.  The name is C<check> or C<preflight>,
+because a document says which shape its C<schema_version> refers to but not
+which command produced it.  A matching document prints one line and exits 0:
+
+    action-run validate preflight preflight.json
+    'preflight.json' is a valid preflight document (schema version 2)
+
+A document that does not match prints the first mismatch, and how many others
+there are, and exits 70 (see L</EXIT STATUS>); a file that is not JSON is
+rejected the same way, since the schema cannot judge what cannot be parsed.
+An unknown document name or a file that cannot be read is a usage error, and
+exits 2.
+
+This is what lets a CI job check a result produced by another job or on
+another machine, where Docker and the workflow are not available:
+
+    action-run preflight --json .github/workflows/test.yml . > preflight.json
+    action-run validate preflight preflight.json
 
 =head1 OPTIONS
 
@@ -447,6 +629,25 @@ every job.
 =item B<--dry-run>, B<-n>
 
 Print the Docker commands and run scripts without starting containers.
+
+=item B<--explain>
+
+A dry run for containers rather than commands: it starts nothing and does not
+even need a Docker daemon, and prints one block per container the workflow
+would start, saying what each one would be told to run.  A service has no
+command of its own in a workflow, so its block reports C<(the image's own)>
+for the entrypoint and the command, or the entrypoint its C<options> replace;
+that is what tells a service that stops on start-up from one that was given a
+bad command:
+
+    ==> Service 'helper' of job 'test'
+        container  action-run-0123abcd-2-svc-test-0-helper
+        image      postgres:16
+        entrypoint (the image's own)
+        command    (the image's own)
+
+It belongs to a run: C<check>, C<preflight>, C<schema> and C<validate> have no
+containers to explain and reject it.
 
 =item B<--list>
 
@@ -533,11 +734,20 @@ time.  The option wins over it, and it wins over the built-in four.
 
     action-run check --json | jq -e '.ready and .docker.containers == "linux"'
 
+    action-run schema preflight | jq '.version'
+
 =head1 EXIT STATUS
 
 0 if every runnable job succeeded, 1 if a job failed, and 2 for a usage,
 Docker, or infrastructure error.  C<check> exits 0 when the environment is
 ready and 2 otherwise.
+
+70 means a document did not match the schema it was checked against: either
+C<check --json> or C<preflight --json> refused to print one of its own (so
+nothing was printed), or C<validate> was given a saved document that does not
+match, including one that is not JSON at all.  It is C<EX_SOFTWARE> from
+F<sysexits.h> and is deliberately separate from 2: a document is at fault,
+not the host a CI job would otherwise repair.
 
 =head1 LIMITATIONS
 

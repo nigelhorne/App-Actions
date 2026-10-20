@@ -19,14 +19,165 @@ use App::Actions::Check;
 use App::Actions::Docker;
 use App::Actions::Expression;
 use App::Actions::Process;
+use App::Actions::Schema;
 
 our $VERSION = '0.01';
 
 # The shape of the preflight JSON document, which is the check document with
 # an images array and the pull concurrency added.  It is versioned separately
 # from the check document because the two can gain keys independently, but a
-# change to the shared part bumps both.  Keep t/fixtures/ in step.
+# change to the shared part bumps both.  Keep the schema below and the examples
+# in t/fixtures/ in step.
 our $PREFLIGHT_SCHEMA_VERSION = 2;
+
+# The schema of the document preflight --json prints, so that the installed
+# action-run can hand the contract to a caller instead of leaving it in the
+# tests.  A change to the document belongs here, in $JSON_SCHEMA_VERSION and
+# in the examples in t/fixtures/, which t/schema.t holds against this and
+# fails when a key it names appears in none of them.
+my $JSON_SCHEMA = <<'JSON';
+{
+  "title": "action-run preflight --json",
+  "description": "The document action-run preflight --json prints: the check document with an images array and the pull concurrency added.  Objects reject keys this file does not name, so a new key is a schema change.",
+  "version": 3,
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "The version of this shape; App::Actions::Runner->preflight_schema_version returns it.",
+      "type": "integer",
+      "const": 3
+    },
+    "ready": {
+      "description": "True only when the checks passed and every image was prepared; a deferred image does not make the run unready.",
+      "type": "boolean"
+    },
+    "problems": {
+      "description": "How many problems were found, counting the failed images.",
+      "type": "integer"
+    },
+    "pull_concurrency": {
+      "description": "How many pulls the preflight allowed at once: the configured setting, but 1 on Windows, where images are pulled one at a time.  It is the number the puller was given, not how many pulls happened to overlap.",
+      "type": "integer"
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "os": { "type": "string" },
+        "name": { "type": "string" },
+        "perl": { "type": "string" },
+        "archname": { "type": "string" }
+      },
+      "required": [ "os", "name", "perl", "archname" ]
+    },
+    "docker": {
+      "type": "object",
+      "properties": {
+        "bin": { "type": "string" },
+        "client": { "type": [ "string", "null" ] },
+        "daemon": { "type": [ "string", "null" ] },
+        "containers": { "type": [ "string", "null" ] }
+      },
+      "required": [ "bin", "client", "daemon", "containers" ]
+    },
+    "image": {
+      "description": "The probe image, or null when no container was run.",
+      "type": [ "string", "null" ]
+    },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "description": "The temporary directory the probe reads back from.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "ok" ]
+          },
+          {
+            "description": "The project directory, whose entry count is compared with the host's.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "entries": { "type": [ "integer", "null" ] },
+              "expected": { "type": [ "integer", "null" ] },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "entries", "expected", "ok" ]
+          }
+        ]
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "problem": { "type": "string" },
+          "remedies": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": [ "problem", "remedies" ]
+      }
+    },
+    "images": {
+      "description": "Every image the selected jobs need, in the order the run would need it.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "description": "The image name, or null when it could not be resolved yet.",
+            "type": [ "string", "null" ]
+          },
+          "source": {
+            "description": "The job, service or action that needs it.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [ "pulled", "present", "failed", "skipped", "deferred" ]
+          },
+          "expression": {
+            "description": "Only on a deferred entry: the image name as it was written.",
+            "type": "string"
+          },
+          "error": {
+            "description": "Only on a failed or deferred entry: why it was not prepared or named.",
+            "type": "string"
+          }
+        },
+        "required": [ "image", "source", "status" ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "ready",
+    "problems",
+    "pull_concurrency",
+    "host",
+    "docker",
+    "image",
+    "mounts",
+    "issues",
+    "images"
+  ]
+}
+JSON
+
+sub json_schema {
+    my ($class) = @_;
+
+    return JSON::PP->new->decode($JSON_SCHEMA);
+}
+
 
 sub new {
     my ($class, %args) = @_;
@@ -48,7 +199,10 @@ sub new {
         user          => $args{user},
         env           => $args{env} || {},
         secrets       => $args{secrets} || {},
-        dry_run       => $args{dry_run} ? 1 : 0,
+        # An explain run starts nothing, so it is a dry run whose output is
+        # the containers rather than the commands that would start them.
+        dry_run       => ($args{dry_run} || $args{explain}) ? 1 : 0,
+        explain       => $args{explain} ? 1 : 0,
         verbose       => $args{verbose} ? 1 : 0,
         quiet         => $args{quiet} ? 1 : 0,
         keep          => $args{keep} ? 1 : 0,
@@ -79,6 +233,7 @@ sub new {
         $self->{docker} = App::Actions::Docker->new(
             bin      => $args{docker_bin},
             dry_run  => $self->{dry_run},
+            explain  => $self->{explain},
             verbose  => $self->{verbose},
             quiet    => $self->{quiet},
             platform => $self->{platform},
@@ -215,6 +370,10 @@ sub preflight {
 
     my $json = $options{json} ? 1 : 0;
 
+    # Whether the text report names the document version at the end.  A caller
+    # that prints its own report, such as the smoke test, turns it off.
+    my $schema_line = defined $options{schema_line} && !$options{schema_line} ? 0 : 1;
+
     # The number of pulls this preflight was allowed to make at once.  It is
     # reported even when nothing was pulled, so that a caller can assert that
     # a setting reached the puller rather than inferring it from the run.
@@ -238,7 +397,9 @@ sub preflight {
             ready    => $reachable ? 1 : 0,
             problems => $reachable ? 0 : 1,
             pull_concurrency => $concurrency,
-            host     => {},
+            # The host needs no probe, so it is reported even here: a
+            # consumer of the document sees the same keys either way.
+            host     => App::Actions::Check->host_info,
             docker   => {
                 bin        => $self->_docker_bin,
                 client     => undef,
@@ -254,7 +415,14 @@ sub preflight {
 
         return {
             exit    => $reachable ? 0 : 2,
-            summary => { %$summary, images => [] },
+            summary => $self->_preflight_document(
+                summary     => $summary,
+                ready       => $reachable,
+                issues      => $summary->{issues},
+                images      => [],
+                concurrency => $concurrency,
+                json        => $json,
+            ),
             error   => $error,
         } unless $reachable;
 
@@ -270,6 +438,9 @@ sub preflight {
             # Silent when everything works, a full report with remedies when
             # not.  A JSON caller keeps even that out of its streams.
             quiet      => $json ? 1 : ($self->{verbose} ? 0 : 1),
+            # The preflight has a document of its own, with a version of its
+            # own; the line below names that one, not the check's.
+            schema_line => 0,
         );
 
         if ($json) {
@@ -322,24 +493,71 @@ sub preflight {
         };
     }
 
+    # A text caller reads the images rather than the JSON document, so each
+    # one is named with what needed it and what became of it.  A deferred
+    # image is named by its expression, because that is all there is until its
+    # step has run.
+    _report_images(\@records) unless $json;
+
+    # The version comes last, where the check report puts it, so a pasted
+    # preflight report says which contract the lines above were written
+    # against.
+    print '  schema    version ', $PREFLIGHT_SCHEMA_VERSION,
+        " (action-run schema preflight)\n" if $schema_line && !$json;
+
     my $ready = $summary->{ready} && !@failures;
 
     return {
         exit    => $ready ? 0 : 2,
-        summary => {
-            %$summary,
-            schema_version => $PREFLIGHT_SCHEMA_VERSION,
-            ready    => $ready ? 1 : 0,
-            problems => scalar @issues,
-            pull_concurrency => $concurrency,
-            issues   => \@issues,
-            images   => \@records,
-        },
+        summary => $self->_preflight_document(
+            summary     => $summary,
+            ready       => $ready,
+            issues      => \@issues,
+            images      => \@records,
+            concurrency => $concurrency,
+            json        => $json,
+        ),
         error => @failures
             ? _image_failure_message($failures[0])
             : ($ready ? undef
                 : 'the environment is not ready; fix what the report above asks for, or pass --skip-check to run anyway'),
     };
+}
+
+# The document the preflight reports, built in one place so that a text
+# caller, a JSON caller and a JSON caller whose daemon is unreachable all get
+# the same keys.  A JSON document is validated against the schema shipped with
+# this module before the caller can print it, so a key that was added, removed
+# or retyped without the schema changing fails here rather than in the
+# assertion that reads the document.
+sub _preflight_document {
+    my ($self, %args) = @_;
+
+    my $summary = $args{summary} || {};
+    my $ready   = $args{ready} ? 1 : 0;
+
+    my $document = {
+        %$summary,
+        schema_version => $PREFLIGHT_SCHEMA_VERSION,
+        ready    => $ready ? 1 : 0,
+        problems => scalar @{ $args{issues} || [] },
+        pull_concurrency => $args{concurrency},
+        issues   => $args{issues} || [],
+        images   => $args{images} || [],
+    };
+
+    if ($args{json}) {
+        # The printed document says true or false, so it is validated in the
+        # form it is printed in rather than after a conversion.
+        $document->{ready} = $ready ? JSON::PP::true() : JSON::PP::false();
+
+        App::Actions::Schema::assert_valid(
+            $document, $self->json_schema,
+            'the action-run preflight --json document does not match App::Actions::Runner->json_schema',
+        );
+    }
+
+    return $document;
 }
 
 # Pull or verify every image the run will need, so that a mistyped service
@@ -558,6 +776,32 @@ sub _trim_error {
     $error =~ s/\s+$//;
 
     return $error;
+}
+
+# One line per image for a preflight that reports as text: what needs it,
+# and whether it was pulled, already there, failed, skipped or deferred.  The
+# reason a deferred image could not be named follows it, since the caller
+# cannot see the JSON record that carries it otherwise.
+sub _report_images {
+    my ($records) = @_;
+
+    for my $record (@$records) {
+        my $name = $record->{image};
+        $name = $record->{expression} if !defined $name && defined $record->{expression};
+        $name = '(unnamed)' unless defined $name && length $name;
+
+        my $source = defined $record->{source} && length $record->{source}
+            ? $record->{source}
+            : 'the workflow';
+
+        print "  image     $name ($source): $record->{status}\n";
+
+        next unless $record->{status} eq 'deferred';
+        next unless defined $record->{error} && length $record->{error};
+        print "  deferred  $record->{error}\n";
+    }
+
+    return;
 }
 
 # The message a failed image preparation ends a run with: the image, what
@@ -1326,7 +1570,8 @@ sub _run_instance {
         }
         push @{ $self->{networks} }, $network;
 
-        $self->_start_services($job, $network, $context, \@containers);
+        my @services;
+        $self->_start_services($job, $network, $context, \@containers, \@services);
 
         my $job_env = $self->_resolve_env(
             [
@@ -1351,6 +1596,11 @@ sub _run_instance {
         $result = $self->_execute_steps(
             $job, $container, $network, $base_path, $has_bash, $has_node, $job_env, $context,
         );
+
+        # A service that has restarted during the run is not the one the steps
+        # talked to, so the job fails as an infrastructure fault rather than
+        # passing with a container that its restart policy kept alive.
+        $self->_check_services(\@services);
     };
     $error = $@;
 
@@ -1361,8 +1611,47 @@ sub _run_instance {
     return $result || { result => 'failure', reason => 'job did not run' };
 }
 
+# In an explain run nothing is started, so the report is all the reader gets.
+# One block per container says what it would be told to run, which is what a
+# stopped service's diagnosis needs: a service has no command in the workflow,
+# so its entrypoint and command are the image's own.
+sub _explain_container {
+    my ($self, %what) = @_;
+
+    return unless $self->{explain};
+
+    print "==> $what{title}\n";
+    print "    container  $what{container}\n" if defined $what{container};
+    print "    image      $what{image}\n";
+    print "    entrypoint $what{entrypoint}\n";
+    print "    command    $what{command}\n";
+
+    return;
+}
+
+# A service's options can replace the image's entrypoint, which is part of
+# what the container would be told to run.
+sub _service_entrypoint {
+    my ($self, $service, $context) = @_;
+
+    return undef unless defined $service->{options};
+
+    my $options = $self->{expression}->interpolate("$service->{options}", $context);
+    my @tokens = shellwords($options);
+
+    for my $index (0 .. $#tokens) {
+        my $token = $tokens[$index];
+
+        return $tokens[ $index + 1 ]
+            if $token eq '--entrypoint' && defined $tokens[ $index + 1 ];
+        return $1 if $token =~ /\A--entrypoint=(.*)\z/s;
+    }
+
+    return undef;
+}
+
 sub _start_services {
-    my ($self, $job, $network, $context, $containers) = @_;
+    my ($self, $job, $network, $context, $containers, $services_started) = @_;
 
     my $services = $job->{services} || {};
     return unless %$services;
@@ -1417,6 +1706,15 @@ sub _start_services {
 
         push @args, $image;
 
+        $self->_explain_container(
+            title      => "Service '$id' of job '$job->{base_id}'",
+            container  => $name,
+            image      => $image,
+            entrypoint => $self->_service_entrypoint($service, $context)
+                || "(the image's own)",
+            command    => "(the image's own)",
+        );
+
         my $rc = $self->{docker}->container_start(@args);
         push @{ $self->{containers} }, $name;
         push @$containers, $name;
@@ -1425,13 +1723,109 @@ sub _start_services {
             die "Failed to start service '$id' (exit $rc)\n";
         }
 
+        # Before asking whether it is running at all: a service whose restart
+        # policy is bringing it back is reported as restarting, which is a
+        # better account than "did not stay running" for a container Docker
+        # considers up between attempts.
+        $self->_check_services([ [ $id, $name ] ]);
+
         if (!$self->{docker}->container_running($name)) {
-            $self->{docker}->container_logs($name);
-            die "Service '$id' did not stay running\n";
+            die _stopped_message(
+                "Service '$id'",
+                $self->{docker}->container_exit_code($name),
+                $self->{docker}->container_log_text($name),
+            );
         }
+
+        push @$services_started, [ $id, $name ] if $services_started;
     }
 
     return;
+}
+
+# A service that is restarting, or dead once its restart policy gave up, is not
+# serving: Docker reports it as running between attempts, so asking only
+# whether it is running passes a container that is backing off.  The restart
+# count says how many attempts the policy has already made.
+sub _check_services {
+    my ($self, $services) = @_;
+
+    for my $entry (@$services) {
+        my ($id, $name) = @$entry;
+
+        my $status   = $self->{docker}->container_status($name);
+        my $restarts = $self->{docker}->container_restart_count($name);
+
+        my $restarting = (defined $status && $status =~ /\A(?:restarting|dead)\z/)
+            || (defined $restarts && $restarts > 0);
+
+        next unless $restarting;
+
+        die _restart_message(
+            "Service '$id'",
+            $status,
+            $restarts,
+            $self->{docker}->container_log_text($name),
+        );
+    }
+
+    return;
+}
+
+# What a restarting service's failure looks like: the state the daemon reports,
+# how many attempts the policy has made, and the last lines the container
+# printed, which are what say whether the image or its command is at fault.
+sub _restart_message {
+    my ($what, $status, $restarts, $logs) = @_;
+
+    my $message = "$what is "
+        . (defined $status && $status eq 'dead' ? 'dead' : 'restarting');
+
+    if (defined $restarts && $restarts > 0) {
+        $message .= " (restart count $restarts)";
+    }
+    elsif (!defined $restarts) {
+        $message .= ' (its restart count could not be read)';
+    }
+
+    my @lines = _log_lines($logs);
+    return "$message; it printed nothing\n" unless @lines;
+
+    return "$message; its last output was:\n"
+        . join('', map { "  $_\n" } @lines);
+}
+
+# A container that was started and has stopped is reported with the status it
+# left behind and the last lines it printed.  "Did not stay running" alone
+# leaves the reader unable to tell a command that exited from an entrypoint
+# that failed, and the container's own words are usually the answer.
+sub _stopped_message {
+    my ($what, $status, $logs) = @_;
+
+    my $message = "$what did not stay running";
+    $message .= defined $status
+        ? " (exit $status)"
+        : ' (its exit status could not be read)';
+
+    my @lines = _log_lines($logs);
+    return "$message; it printed nothing\n" unless @lines;
+
+    return "$message; its last output was:\n"
+        . join('', map { "  $_\n" } @lines);
+}
+
+# Container output as message lines: no CR from a Windows capture, no trailing
+# blank lines, and nothing before the tail that docker was asked for.
+sub _log_lines {
+    my ($text) = @_;
+
+    return () unless defined $text && length $text;
+
+    my @lines = split /\n/, $text, -1;
+    pop @lines while @lines && $lines[-1] =~ /\A\s*\z/;
+    s/\r\z// for @lines;
+
+    return @lines;
 }
 
 sub _start_job_container {
@@ -1480,6 +1874,14 @@ sub _start_job_container {
     push @args, $image;
     push @args, '-c', 'while :; do sleep 3600; done';
 
+    $self->_explain_container(
+        title      => "Job '$job->{base_id}'",
+        container  => $container,
+        image      => $image,
+        entrypoint => '/bin/sh',
+        command    => "-c 'while :; do sleep 3600; done'",
+    );
+
     my $rc = $self->{docker}->container_start(@args);
     if ($rc != 0) {
         $self->{docker}->container_remove($container);
@@ -1487,9 +1889,16 @@ sub _start_job_container {
     }
 
     if (!$self->{docker}->container_running($container)) {
-        $self->{docker}->container_logs($container);
+        # Read what the container said before removing it: the same account
+        # a service gets, because "did not stay running" alone leaves the
+        # reader unable to tell a bad image from a bad entrypoint.
+        my $message = _stopped_message(
+            "Job container '$container'",
+            $self->{docker}->container_exit_code($container),
+            $self->{docker}->container_log_text($container),
+        );
         $self->{docker}->container_remove($container);
-        die "The job container '$container' did not stay running\n";
+        die $message;
     }
 
     return $container;
@@ -1962,8 +2371,9 @@ sub _run_docker_action {
         push @args, '--user', $self->{user};
     }
 
+    my $entrypoint;
     if (defined $step->{with}{entrypoint}) {
-        my $entrypoint = $self->{expression}->interpolate(
+        $entrypoint = $self->{expression}->interpolate(
             "$step->{with}{entrypoint}", $context, $status,
         );
         push @args, '--entrypoint', $entrypoint;
@@ -1975,11 +2385,21 @@ sub _run_docker_action {
 
     push @args, $image;
 
-    my $arguments = $step->{with}{args};
-    if (defined $arguments) {
-        $arguments = $self->{expression}->interpolate("$arguments", $context, $status);
-        push @args, shellwords($arguments);
+    my @arguments;
+    if (defined $step->{with}{args}) {
+        my $arguments = $self->{expression}->interpolate(
+            "$step->{with}{args}", $context, $status,
+        );
+        @arguments = shellwords($arguments);
+        push @args, @arguments;
     }
+
+    $self->_explain_container(
+        title      => "Action '$step->{uses}' in job '$job->{base_id}'",
+        image      => $image,
+        entrypoint => defined $entrypoint ? $entrypoint : "(the image's own)",
+        command    => @arguments ? join(' ', @arguments) : "(the image's own)",
+    );
 
     my $rc = $self->{docker}->run(@args);
 
@@ -2856,6 +3276,12 @@ network, its own service containers, and a long-lived job container.  Steps
 are executed with C<docker exec>, so filesystem changes persist between
 steps while each step gets a fresh shell, just as on GitHub.
 
+A service has to stay up.  One that stops is reported with the status it
+exited with and the last lines it printed; one that its restart policy keeps
+bringing back, or that is caught between attempts, fails the run the same way,
+with the restart count, rather than being taken for a working service because
+Docker reports it as running.
+
 Containers, networks, and any images that this run pulled are removed when the
 job or run finishes.  Use C<keep> for debugging.
 
@@ -2878,13 +3304,38 @@ once, which is 1 on Windows whatever was configured.  Its C<schema_version> is
 L</preflight_schema_version> rather than the check's, because the document is
 its own shape.
 
+Unless C<json> is set it also prints, one line per image, what needs the image
+and whether it was pulled, already present, failed, skipped or deferred; a
+deferred image is printed by its expression with the reason it could not be
+resolved, since no name exists until its step has run.  The text report ends
+with the version of the schema the preflight document is written against, and
+the check report it embeds leaves its own version line out; pass
+C<schema_line =E<gt> 0> when the caller prints a report that is not this
+document, as the smoke test does.  With C<json> the summary is the document
+that C<action-run preflight --json> prints, C<ready>
+is already a JSON boolean rather than 0 or 1, and the document is validated
+against L</json_schema> before it is returned: a key that was added, removed
+or retyped without the schema changing dies here with an
+L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
+exception naming the first mismatch, rather than surprising whatever reads the
+document.  C<action-run> turns that exception into exit 70, so a caller is not
+left thinking the host needs fixing.
+
 =head2 preflight_schema_version
 
     my $version = App::Actions::Runner->preflight_schema_version;
 
 Returns the version of the preflight JSON document, which is also its
-C<schema_version> key.  The checked-in schema and example are validated in
-F<t/schema.t>.
+C<schema_version> key.  The checked-in example is validated against the schema
+in F<t/schema.t>.
+
+=head2 json_schema
+
+    my $schema = App::Actions::Runner->json_schema;
+
+Returns the JSON schema of the preflight document as a hash, the same document
+C<action-run schema preflight> prints.  It is kept here so that the contract
+ships with the module rather than only with the tests.
 
 =head2 list_jobs
 

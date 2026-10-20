@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::Most;
 use Capture::Tiny qw(capture);
+use Fcntl qw(:flock);
 use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use File::Spec;
@@ -48,6 +49,23 @@ is($os, 'linux', 'the Docker daemon runs Linux containers')
         . "runner with Docker Desktop or WSL2 Linux containers, or point "
         . 'DOCKER_HOST at a Linux daemon',
     );
+
+# The live tests in this suite can overlap - a harness may run files at once,
+# and the copy with spaces in its path runs every file again - and while one
+# is running its containers are visible to all the others.  One lock in a
+# fixed place keeps this run's containers from being taken for another's leak,
+# and another's from being taken for this run's.
+my $lock_path = File::Spec->catfile(File::Spec->tmpdir, 'app-actions-real-docker.lock');
+open my $live_lock, '>>', $lock_path
+    or die "Unable to open '$lock_path': $!";
+flock($live_lock, LOCK_EX)
+    or die "Unable to lock '$lock_path': $!";
+
+# What was already running, so that the check at the end reports this test's
+# leaks rather than a container left by an interrupted run of somebody else's.
+my $before = _action_run_containers($daemon);
+diag 'action-run containers already present before this test: ' . join ' ', @$before
+    if @$before;
 
 my $project = tempdir(CLEANUP => 1);
 make_path(File::Spec->catdir($project, '.github', 'workflows'));
@@ -150,19 +168,33 @@ is($smoke_exit, 0, 'the smoke script passes against the real daemon');
 like($smoke_out, qr/^Result: smoke test passed$/m, 'the smoke script reports a pass');
 like($smoke_out, qr/^ {2}workflow\s+one job/m, 'the smoke script reports the workflow it runs');
 
-# Nothing should be left running, the smoke run included.
-my ($containers) = $daemon->capture_silent(
-    'ps', '--quiet', '--filter', 'name=action-run',
-);
-is(_trim($containers), '', 'no action-run containers are left behind');
+# Nothing this test started should be left running, the smoke run included.
+my %already = map { $_ => 1 } @$before;
+my @leftovers = grep { !$already{$_} } @{ _action_run_containers($daemon) };
+is_deeply(\@leftovers, [], 'no action-run containers are left behind');
+
+# A failure here is only actionable with the containers named, not with the
+# bare IDs the assertion prints.
+if (@leftovers) {
+    my ($detail) = $daemon->capture_silent(
+        'ps', '--all', '--format', '{{.ID}} {{.Names}} {{.Image}} {{.Status}}',
+        '--filter', 'name=action-run',
+    );
+    diag "action-run containers still present:\n" . useful_text($detail);
+}
 
 done_testing;
 
-sub _trim {
-    my ($value) = @_;
+# The containers a run starts are named action-run-*, so they can be listed
+# and compared with what was there beforehand.  Every state counts: a
+# container that stopped instead of being removed is still one the run left
+# behind.
+sub _action_run_containers {
+    my ($daemon) = @_;
 
-    return '' unless defined $value;
-    $value =~ s/\s+//g;
+    my ($output) = $daemon->capture_silent(
+        'ps', '--all', '--quiet', '--filter', 'name=action-run',
+    );
 
-    return $value;
+    return [ sort grep { length } split /\s+/, useful_text($output) ];
 }

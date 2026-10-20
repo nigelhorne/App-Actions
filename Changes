@@ -96,6 +96,71 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       first job are remembered, so the check a job makes of its own image, a
       second matrix job using the same image, and a step naming an image
       another step already used do not download it again.
+    - Add "action-run schema <check|preflight>", which prints the JSON schema
+      of the corresponding document, so a CI job can fetch the contract
+      instead of copying it.  The schemas now live in App::Actions::Check and
+      App::Actions::Runner, which serve them; the duplicate copies in
+      t/fixtures/ are gone, the examples remain, and t/schema.t validates the
+      documents against the schemas the command prints.
+    - Report a service or job container that stops with the status it exited
+      with and the last lines it printed, both streams, instead of only saying
+      that it did not stay running.  The job container used to stream its logs
+      and give a bare failure, so a job that could not start said nothing about
+      whether the image, the entrypoint or the command was at fault; it now
+      reads the status and the output before removing the container, as the
+      services do.  App::Actions::Process::capture can merge the two streams,
+      and App::Actions::Docker gained container_exit_code and
+      container_log_text for it; the fake Docker can now model a container
+      that exits, with its output.
+    - Fail the run when a service container restarts or backs off instead of
+      ignoring its restart policy.  Docker reports such a container as running
+      between attempts, so asking only whether it was running let the steps
+      talk to one that kept dying; the restart count and state are read when
+      the service starts and again after the job's steps, and the failure
+      reports the count with the last lines the container printed.
+      App::Actions::Docker gained container_status and container_restart_count,
+      and the fake Docker can report a restarting container.
+    - Add "action-run --explain", an opt-in dry run whose output is the
+      containers rather than the Docker commands.  It starts nothing and needs
+      no daemon, and prints one block per job, service and docker:// action
+      container saying what each would be told to run, including the
+      entrypoint a service's options replace, so a service that stops on
+      start-up can be diagnosed without running it.  The runner gained an
+      explain option and the Docker wrapper stops printing its commands for it.
+    - Hold the checked-in examples to every key in each shipped schema:
+      t/schema.t walks both schemas against t/fixtures/check.json,
+      check-unready.json, preflight.json and preflight-unready.json and fails
+      when a property, a required key or a oneOf alternative appears in none
+      of them, so a key the code stopped printing or the schema kept is
+      caught rather than left unreachable.  The unready examples are new and
+      carry the issues, failed images and mount mismatch a failing report
+      produces.
+    - Add "action-run-smoke --scenario deferred", an opt-in smoke scenario
+      whose workflow has an image only a step can name, so the deferred report
+      is exercised end to end against a real daemon rather than only against
+      the fake one.  The scenario fails if the preflight did not report the
+      image as deferred, and the fake Docker now understands the
+      "echo name=value >> $GITHUB_OUTPUT" idiom the scenario is written in.
+    - Name the schema version in the check and preflight text reports, on a
+      "schema" line before the verdict, so a pasted report says which contract
+      it was written against.  The preflight names its own document version and
+      leaves the check version out of the report it embeds, and the smoke test,
+      which prints no document, leaves it out too.
+    - Add "action-run validate <check|preflight> <document.json>", which checks
+      a saved document against the schema the distribution ships, without
+      Docker or a workflow, so a CI job can validate a result from another job
+      or machine.  A mismatch, including a file that is not JSON, exits 70;
+      an unknown name or an unreadable file stays a usage error.
+    - Hold check --json and preflight --json to those schemas before printing
+      them.  The validator now lives in App::Actions::Schema, which both
+      commands and t/schema.t share, and a document that no longer matches
+      its schema is reported on standard error and exits 70, EX_SOFTWARE,
+      instead of being handed to a CI job.  The status is deliberately not 2,
+      so a CI job can tell a broken document from a host it has to fix; the
+      exception is an App::Actions::Schema::Invalid object, which t/schema.t
+      checks from a copy of the tree with a drifted schema.  The first document to trip it was a preflight with
+      --skip-check, which reported an empty host; the host needs no probe, so
+      it is now reported there too.
     - Report the pull concurrency the preflight used in its JSON document, so
       a CI job can assert that --pull-concurrency or
       ACTION_RUN_PULL_CONCURRENCY reached the puller rather than inferring it

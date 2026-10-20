@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::Most;
 use Capture::Tiny qw(capture);
+use File::Basename qw(dirname);
 use File::Copy qw(copy);
 use File::Path qw(make_path);
 use File::Spec;
@@ -92,6 +93,74 @@ my $spaced_docker = App::Actions::Docker->new(bin => $spaced_wrapper, quiet => 1
 my ($spaced_out, $spaced_rc) = $spaced_docker->capture_silent('--version');
 is($spaced_rc, 0, 'a wrapper below a path with spaces runs');
 is($spaced_out, "Wrapper version 1.0\n", 'its output is captured');
+
+# A container that has stopped: the daemon answers with its status and the
+# last lines it printed, both streams, which is what a run quotes back.
+{
+    my $fake = File::Spec->rel2abs(
+        File::Spec->catfile(dirname(__FILE__), 'bin', 'fake-docker'),
+    );
+
+    local $ENV{FAKE_DOCKER_STATE} = tempdir(CLEANUP => 1);
+    local $ENV{FAKE_CONTAINER_EXITS}  = 'svc';
+    local $ENV{FAKE_CONTAINER_STATUS} = '7';
+    local $ENV{FAKE_CONTAINER_LOGS}   = "out\n";
+    local $ENV{FAKE_CONTAINER_ERR}    = "err\n";
+
+    my $daemon = App::Actions::Docker->new(bin => $fake, quiet => 1);
+
+    ok(!$daemon->container_running('run-svc-1'), 'a stopped container is not running');
+    is($daemon->container_exit_code('run-svc-1'), 7, 'its exit status is read');
+    is($daemon->container_log_text('run-svc-1'), "out\nerr\n",
+        'its last output is returned with standard error merged in');
+
+    ok($daemon->container_running('run-job-1'), 'a running container is running');
+    is($daemon->container_exit_code('run-job-1'), 0, 'a running container has status 0');
+    is($daemon->container_status('run-job-1'), 'running', 'a running container reports its state');
+    is($daemon->container_restart_count('run-job-1'), 0,
+        'a container that has stayed up has not been restarted');
+    is($daemon->container_log_text('run-job-1'), "fake container logs\n",
+        'a running container logs as before');
+
+    is($daemon->container_status('run-svc-1'), 'exited',
+        'a stopped container reports the state it stopped in');
+
+    # A restart policy keeps a container going, and the count is what says so:
+    # the daemon reports it as running between attempts.
+    {
+        local $ENV{FAKE_CONTAINER_RESTARTS} = 'run-loop-1';
+        local $ENV{FAKE_RESTART_COUNT}      = '4';
+
+        is($daemon->container_status('run-loop-1'), 'running',
+            'a restarting container is running between attempts');
+        is($daemon->container_restart_count('run-loop-1'), 4,
+            'the restart count is read');
+    }
+
+    # A container caught between attempts is reported as restarting rather
+    # than as running.
+    {
+        local $ENV{FAKE_CONTAINER_RESTARTS} = 'run-loop-2';
+        local $ENV{FAKE_CONTAINER_STATE}    = 'restarting';
+
+        is($daemon->container_status('run-loop-2'), 'restarting',
+            'a container between attempts reports that it is restarting');
+        is($daemon->container_restart_count('run-loop-2'), 1,
+            'a restart count defaults to one attempt');
+    }
+
+    # A container that has already been removed answers nothing, and that is
+    # not the same as exiting 0.
+    {
+        local $ENV{FAKE_INSPECT_FAILURE} = 1;
+        ok(!defined $daemon->container_exit_code('run-svc-1'),
+            'a status the daemon cannot read is undef rather than a guess');
+        ok(!defined $daemon->container_status('run-svc-1'),
+            'a state the daemon cannot read is undef rather than a guess');
+        ok(!defined $daemon->container_restart_count('run-svc-1'),
+            'a restart count the daemon cannot read is undef rather than 0');
+    }
+}
 
 my $missing = App::Actions::Docker->new(bin => File::Spec->catfile($dir, 'absent'), quiet => 1);
 my (undef, $missing_rc) = $missing->capture_silent('--version');

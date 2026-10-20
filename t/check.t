@@ -86,6 +86,26 @@ like($ready->{stdout}, qr/^ {2}daemon\s+26\.0\.0, linux containers$/m,
 like($ready->{stdout}, qr{^ {2}mount\s+\S.* -> /action-run-check: OK$}m,
     'the temporary directory is mounted and read back');
 like($ready->{stdout}, qr/^Result: ready$/m, 'the result is reported');
+
+# A report pasted into an issue says which contract its lines were written
+# against, and the version comes before the verdict.
+my $version = App::Actions::Check->json_schema_version;
+like(
+    $ready->{stdout},
+    qr/^ {2}schema {4}version \Q$version\E \(action-run schema check\)$/m,
+    'the report names the schema it was written against',
+);
+my $schema_at = index($ready->{stdout}, 'schema    version');
+my $verdict_at = index($ready->{stdout}, 'Result: ready');
+ok(
+    $schema_at >= 0 && $schema_at < $verdict_at,
+    'the schema is named, and before the verdict',
+);
+
+my $untold = run_check(args => { schema_line => 0 });
+unlike($untold->{stdout}, qr/^ {2}schema/m,
+    'a caller that prints its own contract can leave the line out');
+
 unlike($ready->{stdout}, qr{/check-project}, 'no project directory is probed unless asked');
 unlike($ready->{stdout}, qr/^ {2}remedy/m, 'a ready environment suggests nothing');
 is($ready->{stderr}, '', 'nothing is written to standard error');

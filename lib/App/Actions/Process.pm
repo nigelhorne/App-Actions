@@ -38,6 +38,7 @@ sub capture {
         $command,
         stdout => $temp->filename,
         stderr => $options{quiet_stderr} ? File::Spec->devnull : undef,
+        merge_stderr => $options{merge_stderr} ? 1 : 0,
     );
 
     seek $temp, 0, 0 or croak "Unable to rewind captured output: $!";
@@ -265,7 +266,12 @@ sub run {
 
     my $error;
     my $redirected = open STDOUT, '>', $stdout;
-    if ($redirected && defined $options{stderr}) {
+    if ($redirected && $options{merge_stderr}) {
+        # The shell's 2>&1: standard error is a duplicate of the handle
+        # standard output was just opened to, so the two share one offset and
+        # the child's writes arrive in the order it made them.
+        $redirected = open STDERR, '>&', \*STDOUT;
+    } elsif ($redirected && defined $options{stderr}) {
         $redirected = open STDERR, '>', $options{stderr};
     }
     $error = $! unless $redirected;
@@ -322,10 +328,14 @@ gives up on any argument containing a double quote.
 =head2 capture
 
     my ($output, $status) = capture(\@command, quiet_stderr => 1);
+    my ($merged) = capture(\@command, merge_stderr => 1);
 
 Runs the command, capturing its standard output.  Standard error is passed
-through unless C<quiet_stderr> is true.  Newlines in the captured output are
-normalised to C<"\n">.  The command is not run through a shell.
+through unless C<quiet_stderr> is true.  With C<merge_stderr> it is captured
+too, as if the command had been run with C<2>&1>, which is what a caller wants
+when the message it is building has room for both streams.  Newlines in the
+captured output are normalised to C<"\n">.  The command is not run through a
+shell.
 
 =head2 run_quiet
 

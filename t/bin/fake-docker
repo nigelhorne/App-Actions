@@ -120,11 +120,52 @@ if ($command eq 'rm') {
 }
 
 if ($command eq 'inspect') {
-    print "true\n";
+    exit 1 if $ENV{FAKE_INSPECT_FAILURE};
+
+    my $format = _option_value(\@args, '--format') || '';
+    my $name   = $args[-1];
+
+    if ($format =~ /ExitCode/) {
+        print _container_died($name) ? _died_status() : 0, "\n";
+        exit 0;
+    }
+
+    if ($format =~ /RestartCount/) {
+        print _restart_count($name), "\n";
+        exit 0;
+    }
+
+    if ($format =~ /State\.Status/) {
+        print _container_state($name), "\n";
+        exit 0;
+    }
+
+    print _container_died($name) ? "false\n" : "true\n";
     exit 0;
 }
 
 if ($command eq 'logs') {
+    my $name = $args[-1];
+
+    # FAKE_CONTAINER_EXITS names a container that has stopped, and its last
+    # output is what a run is expected to quote back: FAKE_CONTAINER_LOGS on
+    # standard output, FAKE_CONTAINER_ERR on standard error, so a capture that
+    # loses one of the two streams is noticed.  A restarting container prints
+    # the same thing after every attempt, which is why its policy cannot cure
+    # it, so it quotes the same output.
+    if (_container_died($name) || _restarting_container($name)) {
+        my $stdout = $ENV{FAKE_CONTAINER_LOGS};
+        my $stderr = $ENV{FAKE_CONTAINER_ERR};
+
+        # The two streams are written to the same file description when a
+        # caller merges them, so the buffered one has to go first for the
+        # lines to keep the order the container printed them in.
+        local $| = 1;
+        print defined $stdout ? $stdout : "fake container logs\n";
+        print STDERR $stderr if defined $stderr && length $stderr;
+        exit 0;
+    }
+
     print "fake container logs\n";
     exit 0;
 }
@@ -204,6 +245,14 @@ if ($command eq 'exec') {
     my @exec_args = @args;
     my $name = _exec_container(\@exec_args);
 
+    # A service that only begins restarting once the job is under way: the
+    # marker is what the restart count below reads, so a run that checks only
+    # at startup cannot see the restarts that happened during its steps.
+    if ($ENV{FAKE_RESTART_AFTER_EXEC}) {
+        open my $marker, '>', "$state_dir/exec-seen" or die "fake-docker: $!";
+        close $marker;
+    }
+
     if ($ENV{FAKE_NO_BASH} && $args[-1] =~ /command -v bash/) {
         exit 1;
     }
@@ -254,6 +303,65 @@ if ($command eq 'exec') {
 }
 
 exit 0;
+
+# A container the restart policy keeps bringing back: FAKE_CONTAINER_RESTARTS
+# holds a substring of its name, for the same reason as FAKE_CONTAINER_EXITS,
+# and FAKE_CONTAINER_STATE is the state the daemon reports for it, running by
+# default because a container between attempts is up and about to fail again.
+sub _restarting_container {
+    my ($name) = @_;
+
+    my $pattern = $ENV{FAKE_CONTAINER_RESTARTS};
+    return 0 unless defined $pattern && length $pattern;
+    return 0 unless defined $name && length $name;
+
+    return index($name, $pattern) >= 0 ? 1 : 0;
+}
+
+sub _restart_count {
+    my ($name) = @_;
+
+    return 0 unless _restarting_container($name);
+
+    # Until a step has run, the container has not restarted yet.
+    return 0 if $ENV{FAKE_RESTART_AFTER_EXEC} && !-e "$state_dir/exec-seen";
+
+    my $count = $ENV{FAKE_RESTART_COUNT};
+    return 1 unless defined $count && $count =~ /\A\d+\z/;
+
+    return $count + 0;
+}
+
+sub _container_state {
+    my ($name) = @_;
+
+    return 'exited' if _container_died($name);
+    return 'running' unless _restarting_container($name);
+
+    my $state = $ENV{FAKE_CONTAINER_STATE};
+    return defined $state && length $state ? $state : 'running';
+}
+
+# A container that the daemon reports as stopped rather than running.
+# FAKE_CONTAINER_EXITS holds a substring of the container name, because a test
+# knows which service it asked for but not the run's generated name.
+sub _container_died {
+    my ($name) = @_;
+
+    my $pattern = $ENV{FAKE_CONTAINER_EXITS};
+    return 0 unless defined $pattern && length $pattern;
+    return 0 unless defined $name && length $name;
+
+    return index($name, $pattern) >= 0 ? 1 : 0;
+}
+
+sub _died_status {
+    my $status = $ENV{FAKE_CONTAINER_STATUS};
+
+    return 1 unless defined $status && $status =~ /\A-?\d+\z/;
+
+    return $status + 0;
+}
 
 sub _image_marker {
     my ($image) = @_;
@@ -418,6 +526,16 @@ sub _emulate {
     while ($contents =~ /^\s*(?:#|\/\/)?\s*FAKE_OUTPUT:\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/mg) {
         my ($key, $value) = ($1, $2);
         _append_to_file($mounts, $environment->{GITHUB_OUTPUT}, "$key=$value\n");
+    }
+
+    # The shell idiom a real workflow uses for the same thing, so a scenario
+    # written as a user would write it can be exercised without a daemon:
+    #     echo "name=value" >> "$GITHUB_OUTPUT"
+    while ($contents =~ /^\s*echo\s+"([A-Za-z_][A-Za-z0-9_]*)=(.*?)"\s*>>\s*"?\$GITHUB_OUTPUT"?\s*$/mg) {
+        _append_to_file($mounts, $environment->{GITHUB_OUTPUT}, "$1=$2\n");
+    }
+    while ($contents =~ /^\s*echo\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)\s*>>\s*"?\$GITHUB_OUTPUT"?\s*$/mg) {
+        _append_to_file($mounts, $environment->{GITHUB_OUTPUT}, "$1=$2\n");
     }
 
     while ($contents =~ /^\s*(?:#|\/\/)?\s*FAKE_PATH:\s*(.+)$/mg) {

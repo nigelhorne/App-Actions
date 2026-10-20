@@ -5,6 +5,7 @@ requires 'perl', '5.010';
 requires 'Carp';
 requires 'Config';
 requires 'Cwd';
+requires 'Exporter';
 requires 'File::Basename';
 requires 'File::Path';
 requires 'File::Spec';
@@ -14,6 +15,7 @@ requires 'IO::Handle';
 requires 'JSON::PP';
 requires 'Pod::Usage';
 requires 'Scalar::Util';
+requires 'overload';
 requires 'Text::ParseWords';
 requires 'Time::HiRes';
 requires 'YAML::PP';
@@ -25,7 +27,6 @@ on 'configure' => sub {
 
 on 'test' => sub {
 	requires 'Capture::Tiny';
-	requires 'Exporter';
 	requires 'File::Copy';
 	requires 'File::Find';
 	requires 'File::Temp';

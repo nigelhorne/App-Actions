@@ -63,6 +63,7 @@ my ($help_out, $help_err, $help_exit) = run_cli('--help');
 is($help_exit, 0, '--help exits 0');
 like($help_out, qr/Usage:/, '--help prints usage');
 like($help_out, qr/--dry-run/, '--help lists options');
+like($help_out, qr/--explain/, '--help lists the container report');
 
 my $yaml = <<'YAML';
 name: CLI test
@@ -92,6 +93,28 @@ my ($dry_out, $dry_err, $dry_exit) = run_cli('--dry-run', '--verbose', $workflow
 is($dry_exit, 0, '--dry-run exits 0');
 like($dry_out, qr/\[dry-run\]/, '--dry-run prints Docker commands');
 like($dry_out, qr/--- script ---/, '--dry-run --verbose prints scripts');
+
+# --explain is the same dry run with the containers as its output, so it must
+# not need the Docker command it is given.
+my ($explain_out, $explain_err, $explain_exit) = run_cli(
+    '--explain', '--docker', File::Spec->catfile($project, 'absent-docker'),
+    $workflow, $project,
+);
+is($explain_exit, 0, '--explain exits 0 without a Docker daemon');
+is($explain_err, '', '--explain writes nothing to standard error');
+like($explain_out, qr/^==> Job 'test'$/m, '--explain reports the job container');
+like($explain_out, qr/^ {4}command {4}-c 'while :; do sleep 3600; done'$/m,
+    '--explain reports what the job container would be told to run');
+unlike($explain_out, qr/^\[dry-run\]/m, '--explain lists containers, not commands');
+
+{
+    my (undef, $explain_bad_err, $explain_bad_exit) = run_cli(
+        '--explain', 'check', $project,
+    );
+    is($explain_bad_exit, 2, '--explain with the check command is a usage error');
+    like($explain_bad_err, qr/--explain is only used when running a workflow/,
+        'the error says which command --explain belongs to');
+}
 
 my $state = tempdir(CLEANUP => 1);
 local $ENV{FAKE_DOCKER_STATE} = $state;
@@ -296,8 +319,8 @@ for my $bad ('0', '-1', 'lots') {
     local $ENV{ACTION_RUN_PULL_CONCURRENCY} = 'zero';
 
     my ($override_out, undef, $override_exit) = run_cli(
-        '--docker', $fake_docker, '--pull-concurrency', '2', 'preflight',
-        $preflight_workflow, $preflight_project,
+        '--docker', $fake_docker, '--pull-concurrency', '2', '--json',
+        'preflight', $preflight_workflow, $preflight_project,
     );
     is($override_exit, 0, 'the option wins over a bad value in the environment');
     is((eval { JSON::PP->new->decode($override_out) } || {})->{pull_concurrency},
@@ -337,6 +360,10 @@ for my $bad ('0', '-1', 'lots') {
     );
     is($text_exit, 2, 'preflight reports the same failure as text');
     like($text_out, qr/^Pulling image/m, 'text mode still shows the pulls');
+    like($text_out, qr/^ {2}image {5}postgres:15 \(service 'db' of job 'test'\): failed$/m,
+        'text mode says which image could not be prepared');
+    like($text_out, qr/^ {2}image {5}perl:5\.38 \(job 'test'\): pulled$/m,
+        'text mode says what happened to each image');
     unlike($text_out, qr/^\{"docker":/, 'text mode prints no JSON');
     like($text_err, qr/cannot prepare the image 'postgres:15'/,
         'text mode explains the failure on standard error');

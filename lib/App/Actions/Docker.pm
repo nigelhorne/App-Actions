@@ -30,6 +30,9 @@ sub new {
         bin           => $bin,
         interpreter   => [ _interpreter_prefix($bin) ],
         dry_run       => $args{dry_run} ? 1 : 0,
+        # A dry run can also be the one that reports containers rather than
+        # commands: the report is the point, so the commands stay out of it.
+        explain       => $args{explain} ? 1 : 0,
         verbose       => $args{verbose} ? 1 : 0,
         quiet         => $args{quiet} ? 1 : 0,
         platform      => $args{platform},
@@ -69,6 +72,7 @@ sub _command {
 
 sub bin     { return $_[0]->{bin} }
 sub dry_run { return $_[0]->{dry_run} }
+sub explain { return $_[0]->{explain} }
 sub verbose { return $_[0]->{verbose} }
 sub quiet   { return $_[0]->{quiet} }
 
@@ -139,7 +143,7 @@ sub pull_many {
         for my $image (@$images) {
             print "[dry-run] $self->{bin} ",
                 $self->_display('pull', $self->platform_args, $image), "\n"
-                unless $self->{quiet} || $quiet;
+                unless $self->{quiet} || $quiet || $self->{explain};
         }
         return { map { $_ => 0 } @$images };
     }
@@ -222,6 +226,77 @@ sub container_logs {
     return $self->run('logs', '--tail', $lines, $name);
 }
 
+# The last lines a container printed, as text rather than streamed to the
+# caller, with the container's standard error merged in: a container that
+# stopped is as likely to have said why on one stream as the other, and a
+# message that quotes it has room for both.
+sub container_log_text {
+    my ($self, $name, $lines) = @_;
+
+    $lines = 10 unless defined $lines;
+
+    return '' if $self->{dry_run};
+
+    my ($output) = $self->capture_merged('logs', '--tail', $lines, $name);
+
+    return defined $output ? $output : '';
+}
+
+# The status a container exited with, or undef when the daemon cannot say -
+# the container may have been removed already, or the inspect may have raced a
+# cleanup.
+sub container_exit_code {
+    my ($self, $name) = @_;
+
+    return 0 if $self->{dry_run};
+
+    my ($output, $rc) = $self->capture_silent(
+        'inspect', '--format', '{{.State.ExitCode}}', $name,
+    );
+    return undef if $rc != 0;
+
+    $output = '' unless defined $output;
+    $output =~ s/\s+//g;
+
+    return $output =~ /\A-?\d+\z/ ? $output + 0 : undef;
+}
+
+# The state the daemon reports for the container: running, restarting,
+# exited, dead, or undef when the daemon cannot describe it.
+sub container_status {
+    my ($self, $name) = @_;
+
+    return 'running' if $self->{dry_run};
+
+    my ($output, $rc) = $self->capture_silent(
+        'inspect', '--format', '{{.State.Status}}', $name,
+    );
+    return undef if $rc != 0;
+
+    $output = '' unless defined $output;
+    $output =~ s/\s+//g;
+
+    return length $output ? $output : undef;
+}
+
+# How many times the restart policy has restarted the container, or undef when
+# the daemon cannot say.  0 is the normal answer for one that has stayed up.
+sub container_restart_count {
+    my ($self, $name) = @_;
+
+    return 0 if $self->{dry_run};
+
+    my ($output, $rc) = $self->capture_silent(
+        'inspect', '--format', '{{.RestartCount}}', $name,
+    );
+    return undef if $rc != 0;
+
+    $output = '' unless defined $output;
+    $output =~ s/\s+//g;
+
+    return $output =~ /\A\d+\z/ ? $output + 0 : undef;
+}
+
 sub container_remove {
     my ($self, $name) = @_;
     return $self->run_silent('rm', '-f', $name);
@@ -233,7 +308,8 @@ sub run {
     my $display = $self->_display(@args);
 
     if ($self->{dry_run}) {
-        print "[dry-run] $self->{bin} $display\n" unless $self->{quiet};
+        print "[dry-run] $self->{bin} $display\n"
+            unless $self->{quiet} || $self->{explain};
         return 0;
     }
 
@@ -248,7 +324,8 @@ sub run_silent {
     my $display = $self->_display(@args);
 
     if ($self->{dry_run}) {
-        print "[dry-run] $self->{bin} $display\n" unless $self->{quiet};
+        print "[dry-run] $self->{bin} $display\n"
+            unless $self->{quiet} || $self->{explain};
         return 0;
     }
 
@@ -259,21 +336,28 @@ sub run_silent {
 
 sub capture {
     my ($self, @args) = @_;
-    return $self->_capture(0, @args);
+    return $self->_capture(0, 0, @args);
 }
 
 sub capture_silent {
     my ($self, @args) = @_;
-    return $self->_capture(1, @args);
+    return $self->_capture(1, 0, @args);
+}
+
+# Capture both of the command's streams, as if it had been run with 2>&1.
+sub capture_merged {
+    my ($self, @args) = @_;
+    return $self->_capture(1, 1, @args);
 }
 
 sub _capture {
-    my ($self, $quiet_stderr, @args) = @_;
+    my ($self, $quiet_stderr, $merge_stderr, @args) = @_;
 
     my $display = $self->_display(@args);
 
     if ($self->{dry_run}) {
-        print "[dry-run] $self->{bin} $display\n" unless $self->{quiet};
+        print "[dry-run] $self->{bin} $display\n"
+            unless $self->{quiet} || $self->{explain};
         return ('', 0);
     }
 
@@ -282,6 +366,7 @@ sub _capture {
     return App::Actions::Process::capture(
         [ $self->_command(@args) ],
         quiet_stderr => $quiet_stderr,
+        merge_stderr => $merge_stderr,
     );
 }
 
@@ -375,6 +460,38 @@ and the exit status as a list.
 =head2 container_start, container_exec, container_running, container_logs, container_remove
 
 Convenience wrappers for the corresponding Docker subcommands.
+
+=head2 container_exit_code
+
+    my $status = $docker->container_exit_code($name);
+
+Returns the status the container exited with, or C<undef> when the daemon
+cannot say, for example because the container has already been removed.
+
+=head2 container_status
+
+    my $state = $docker->container_status($name);
+
+Returns the state the daemon reports for the container, such as C<running>,
+C<restarting>, C<exited> or C<dead>, or C<undef> when it cannot say, for
+example because the container has already been removed.
+
+=head2 container_restart_count
+
+    my $count = $docker->container_restart_count($name);
+
+Returns how many times the container's restart policy has restarted it, or
+C<undef> when the daemon cannot say.  A container that has stayed up reports
+0; one that is being restarted reports 1 or more even while it is up between
+attempts, which is what a running check alone cannot see.
+
+=head2 container_log_text
+
+    my $text = $docker->container_log_text($name, $lines);
+
+Returns the last C<$lines> (default 10) lines the container printed, with its
+standard error merged in, for quoting in an error message.  Unlike
+C<container_logs>, nothing is written to the caller's streams.
 
 =head1 AUTHOR
 

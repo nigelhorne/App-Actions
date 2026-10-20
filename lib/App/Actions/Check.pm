@@ -8,14 +8,133 @@ use File::Temp ();
 use JSON::PP ();
 
 use App::Actions::Docker;
+use App::Actions::Schema;
 
 our $VERSION = '0.01';
 
 # The shape of the JSON document this module prints.  Bump it whenever a key,
-# a value type or an enum changes, and update the example and schema in
-# t/fixtures/ with it; a CI job asserts the number rather than discovering a
-# changed shape at the point where its assertion fails for another reason.
-our $JSON_SCHEMA_VERSION = 1;
+# a value type or an enum changes, and update the schema below and the examples
+# in t/fixtures/ with it; a CI job asserts the number rather than discovering
+# a changed shape at the point where its assertion fails for another reason.
+#
+# 2: docker.bin stopped being nullable.  It is always the resolved command, so
+# the null type promised a shape no document can produce; t/schema.t requires
+# every enum value and null variant to appear in the examples, which is what
+# found it.
+our $JSON_SCHEMA_VERSION = 2;
+
+# The schema of the document check --json prints, so that the installed
+# action-run can hand the contract to a caller instead of leaving it in the
+# tests.  A change to the document belongs here, in $JSON_SCHEMA_VERSION and
+# in the examples in t/fixtures/, which t/schema.t holds against this and
+# fails when a key it names appears in none of them.
+my $JSON_SCHEMA = <<'JSON';
+{
+  "title": "action-run check --json",
+  "description": "The document action-run check --json prints.  Objects reject keys this file does not name, so a new key is a schema change.",
+  "version": 2,
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "The version of this shape; App::Actions::Check->json_schema_version returns it.",
+      "type": "integer",
+      "const": 2
+    },
+    "ready": {
+      "description": "True only when every check passed.",
+      "type": "boolean"
+    },
+    "problems": {
+      "description": "How many problems were found.",
+      "type": "integer"
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "os": { "type": "string" },
+        "name": { "type": "string" },
+        "perl": { "type": "string" },
+        "archname": { "type": "string" }
+      },
+      "required": [ "os", "name", "perl", "archname" ]
+    },
+    "docker": {
+      "type": "object",
+      "properties": {
+        "bin": { "type": "string" },
+        "client": { "type": [ "string", "null" ] },
+        "daemon": { "type": [ "string", "null" ] },
+        "containers": { "type": [ "string", "null" ] }
+      },
+      "required": [ "bin", "client", "daemon", "containers" ]
+    },
+    "image": {
+      "description": "The probe image, or null when no container was run.",
+      "type": [ "string", "null" ]
+    },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "description": "The temporary directory the probe reads back from.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "ok" ]
+          },
+          {
+            "description": "The project directory, whose entry count is compared with the host's.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "entries": { "type": [ "integer", "null" ] },
+              "expected": { "type": [ "integer", "null" ] },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "entries", "expected", "ok" ]
+          }
+        ]
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "problem": { "type": "string" },
+          "remedies": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": [ "problem", "remedies" ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "ready",
+    "problems",
+    "host",
+    "docker",
+    "image",
+    "mounts",
+    "issues"
+  ]
+}
+JSON
+
+sub json_schema {
+    my ($class) = @_;
+
+    return JSON::PP->new->decode($JSON_SCHEMA);
+}
+
 
 my %PLATFORM_NAME = (
     linux   => 'Linux',
@@ -50,6 +169,12 @@ sub new {
         quiet      => $args{quiet} ? 1 : 0,
         # A machine-readable report instead of the text one, for CI.
         json       => $args{json} ? 1 : 0,
+        # The text report names the schema the JSON document is written
+        # against, so a pasted report says which contract it came from.  A
+        # caller whose own report is not that document - the preflight, which
+        # has a document of its own, and the smoke test, which prints none -
+        # turns the line off.
+        schema_line => exists $args{schema_line} && !$args{schema_line} ? 0 : 1,
         problems   => 0,
         data       => { mounts => [], issues => [] },
     }, $class;
@@ -99,12 +224,7 @@ sub _run_checks {
     print {$out} "$self->{title}\n" if defined $self->{title} && length $self->{title};
     print {$out} '  host      ', $self->_host_description, "\n";
 
-    $self->{data}{host} = {
-        os       => $self->{os},
-        name     => $PLATFORM_NAME{ $self->{os} } || $self->{os},
-        perl     => sprintf('%vd', $^V),
-        archname => $Config{archname},
-    };
+    $self->{data}{host} = $self->host_info;
 
     my $docker = App::Actions::Docker->new(
         bin      => $self->{docker_bin},
@@ -118,6 +238,13 @@ sub _run_checks {
         $self->_check_mounts($docker);
     }
 
+    # The version comes before the verdict, so a report pasted into an issue
+    # says which contract the lines above were written against.
+    if ($self->{schema_line}) {
+        print {$out} '  schema    version ', $JSON_SCHEMA_VERSION,
+            " (action-run schema check)\n";
+    }
+
     if ($self->{problems}) {
         if ($self->{summary}) {
             my $plural = $self->{problems} == 1 ? '' : 's';
@@ -128,6 +255,23 @@ sub _run_checks {
 
     print {$out} "Result: ready\n" if $self->{summary};
     return 0;
+}
+
+# The host part of the report.  It is local knowledge rather than probe
+# knowledge, so a caller that skips the checks (a preflight with --skip-check)
+# can still report a host instead of an empty object the schema would reject.
+sub host_info {
+    my ($invocant, $os) = @_;
+
+    $os = $invocant->{os} if !defined $os && ref $invocant eq 'HASH';
+    $os = $^O unless defined $os && length $os;
+
+    return {
+        os       => $os,
+        name     => $PLATFORM_NAME{$os} || $os,
+        perl     => sprintf('%vd', $^V),
+        archname => $Config{archname},
+    };
 }
 
 sub _host_description {
@@ -360,12 +504,20 @@ sub summary {
     };
 }
 
-# The machine-readable form of the report, for CI.
+# The machine-readable form of the report, for CI.  The document is held to
+# its own schema before it is encoded, so a key that was added, removed or
+# retyped without the schema changing stops the report here rather than in an
+# assertion at the far end of a pipeline.
 sub _json_report {
     my ($self, $exit) = @_;
 
     my $summary = $self->summary($exit);
     $summary->{ready} = $exit == 0 ? JSON::PP::true() : JSON::PP::false();
+
+    App::Actions::Schema::assert_valid(
+        $summary, $self->json_schema,
+        'the action-run check --json document does not match App::Actions::Check->json_schema',
+    );
 
     return JSON::PP->new->canonical->encode($summary);
 }
@@ -424,6 +576,12 @@ Linux containers, sharing the drive that holds the temporary or project
 directory, pulling the probe image by hand, or choosing another directory.
 The remedies name the tools of the platform the check runs on.
 
+The text report names the version of the schema that its JSON document is
+written against, on a C<schema> line before the verdict, so a report pasted
+into an issue says which contract its lines belong to.  Set C<schema_line> to
+false in a caller whose own report is not that document, such as the
+preflight, which has one of its own.
+
 =head1 METHODS
 
 =head2 new
@@ -436,9 +594,11 @@ test), C<output> (a filehandle, default C<STDOUT>), C<title> (the heading,
 default C<action-run check>; an empty string leaves it out), C<summary>
 (default true; set it to false to leave the final C<Result:> line to the
 caller), C<quiet> (print nothing unless a problem was found), C<json> (print
-one JSON object instead of the text report) and C<os> (the platform whose
-remedies are printed, default C<$^O>; set it to report for another host, for
-example when pasting a report into a bug tracker).
+one JSON object instead of the text report), C<schema_line> (default true;
+set it to false to leave the schema version out of a report that is not the
+check document) and C<os> (the platform whose remedies are printed, default
+C<$^O>; set it to report for another host, for example when pasting a report
+into a bug tracker).
 
 =head2 run
 
@@ -458,6 +618,15 @@ described under L</JSON OUTPUT>.  C<ready> is a plain 0 or 1 here, so a caller
 that encodes it as JSON should convert it to a JSON boolean.  The preflight
 uses this to add the images it prepared.
 
+=head2 json_schema
+
+    my $schema = App::Actions::Check->json_schema;
+
+Returns the JSON schema of the C<check --json> document as a hash, the same
+document C<action-run schema check> prints.  It lives here rather than in the
+test directory so that an installed distribution can hand the contract to a
+caller; F<t/schema.t> validates the example and the document against it.
+
 =head2 json_schema_version
 
     my $version = App::Actions::Check->json_schema_version;
@@ -472,7 +641,7 @@ With C<json> the report is a single object, with every key always present and
 C<null> for a value that could not be discovered:
 
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "ready": true,
       "problems": 0,
       "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
@@ -486,8 +655,19 @@ C<null> for a value that could not be discovered:
     }
 
 C<schema_version> names the shape of the document; it is the number
-L</json_schema_version> returns.  The checked-in schema, example and the test
-that validates them live in F<t/fixtures/> and F<t/schema.t>.
+L</json_schema_version> returns.  The schema is what C<action-run schema
+check> prints, and the checked-in examples are F<t/fixtures/check.json> and
+F<t/fixtures/check-unready.json>: F<t/schema.t> validates them against it and
+fails when a property or required key it names appears in neither, so a key
+left behind by the code or by the schema cannot hide there.
+
+Before the document is printed it is validated against that schema, so a key
+that was added, removed or retyped without the schema being updated is an
+error here rather than a surprise in the assertion that reads it.  Nothing is
+printed when that happens: the exception is an
+L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
+carrying the first mismatch and the number of others, which C<action-run>
+turns into exit 70.
 
 The exit status is unchanged, so a caller may use either.
 

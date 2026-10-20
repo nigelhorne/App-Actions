@@ -77,6 +77,18 @@ jobs:
           perl -Ilib bin/action-run-smoke --directory .
           exit $LASTEXITCODE
 
+      # The deferred report against a real daemon: an image only a step can
+      # name is reported as deferred, then prepared and run by that step.  It
+      # is a separate scenario because it needs an extra image and because a
+      # deferral is what the plain smoke workflow never reaches.
+      - name: Smoke test a deferred image
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:USERPROFILE\perl5\bin;$env:PATH"
+          $env:PERL5LIB = "$env:USERPROFILE\perl5\lib\perl5"
+          perl -Ilib bin/action-run-smoke --directory . --scenario deferred
+          exit $LASTEXITCODE
+
       # The preflight on a real daemon: a probe that cannot run its container,
       # images prepared before the first container, and an unpullable image
       # reported before anything starts.

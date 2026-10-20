@@ -12,6 +12,7 @@ lib/App/Actions/Docker.pm
 lib/App/Actions/Expression.pm
 lib/App/Actions/Process.pm
 lib/App/Actions/Runner.pm
+lib/App/Actions/Schema.pm
 lib/App/Actions/Workflow.pm
 LICENSE
 Makefile.PL
@@ -26,9 +27,9 @@ t/cli.t
 t/docker.t
 t/expression.t
 t/fake-docker.t
-t/fixtures/check-schema.json
+t/fixtures/check-unready.json
 t/fixtures/check.json
-t/fixtures/preflight-schema.json
+t/fixtures/preflight-unready.json
 t/fixtures/preflight.json
 t/lib/App/Actions/FakeDocker.pm
 t/matrix.t
