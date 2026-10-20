@@ -165,7 +165,10 @@ long-lived job container.  Steps are executed in that container with
 C<docker exec>, so files and installed modules persist between steps.  A
 service must stay up: one that stops, or that a restart policy keeps bringing
 back, stops the run with the state and restart count the daemon reports and
-the last lines the container printed.  When a job finishes, its containers and
+the last lines the container printed.  A container the daemon refuses to start
+is reported the same way: its message is quoted and the image, entrypoint or
+published port it names is called out, because there is nothing of the
+container's own to quote.  When a job finishes, its containers and
 network are removed; images that this run pulled are removed at the end as
 well.  The C<GITHUB_ENV>, C<GITHUB_PATH>,
 C<GITHUB_OUTPUT>, C<GITHUB_STATE>, and C<GITHUB_STEP_SUMMARY> files written by
@@ -268,8 +271,10 @@ be named from the values available before the run, because a job has not
 produced it yet; it carries C<expression> instead of C<image>, and the job
 prepares it with its own values before it starts.  C<summary> also carries
 C<schema_version>, which is
-L<App::Actions::Runner/preflight_schema_version>; the schema and a checked-in
-example are validated in F<t/schema.t>.  With C<json =E<gt> 1> nothing is
+L<App::Actions::Runner/preflight_schema_version>; the schema and the
+checked-in examples in F<t/fixtures/> are validated in F<t/schema.t>, which
+also fails when a key, an enum value or a null variant the schema names
+appears in none of them.  With C<json =E<gt> 1> nothing is
 printed, so the caller's output can be a single document; C<ready> is then a
 JSON boolean and the summary is the document C<action-run preflight --json>
 prints, already validated against that schema, so a mismatch dies with an

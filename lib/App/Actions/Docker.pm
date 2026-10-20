@@ -202,6 +202,20 @@ sub container_start {
     return $self->run_silent('run', '-d', @args);
 }
 
+# The same start, with what the daemon said kept rather than discarded.  A
+# start that fails explains itself on standard error - the image it cannot
+# use, the entrypoint the image does not have, the port already taken - and
+# that text is the only account of the failure; the exit status alone leaves a
+# reader comparing the command with the number.  Returns the output and the
+# status, in the order capture uses.
+sub container_start_captured {
+    my ($self, @args) = @_;
+
+    my ($output, $rc) = $self->capture_merged('run', '-d', @args);
+
+    return (defined $output ? $output : '', $rc);
+}
+
 sub container_exec {
     my ($self, @args) = @_;
     return $self->run('exec', @args);
@@ -460,6 +474,16 @@ and the exit status as a list.
 =head2 container_start, container_exec, container_running, container_logs, container_remove
 
 Convenience wrappers for the corresponding Docker subcommands.
+
+=head2 container_start_captured
+
+    my ($output, $status) = $docker->container_start_captured(@args);
+
+Starts a container detached like C<container_start>, but returns what the
+daemon said as well as the status, with its standard error merged in.  A start
+that fails says why on standard error, and that text is what distinguishes an
+image the daemon could not use from an entrypoint the image does not have or a
+port already taken; nothing is written to the caller's streams.
 
 =head2 container_exit_code
 

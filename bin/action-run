@@ -417,7 +417,7 @@ With C<--json> it prints a single JSON object instead of the text report, for a
 CI job to assert on:
 
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "ready": true,
       "problems": 0,
       "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
@@ -442,15 +442,19 @@ says which contract its lines belong to:
 
   host      Linux (linux), perl 5.40.0, x86_64-linux
   ...
-  schema    version 1 (action-run schema check)
+  schema    version 2 (action-run schema check)
   Result: ready
 
 C<schema_version> names the shape of the document, so an assertion can say
 which shape it was written for instead of failing on a key that moved.  The
 schema is what C<action-run schema check> prints, and the checked-in examples
-F<t/fixtures/check.json> and F<t/fixtures/check-unready.json> are validated
-against it in F<t/schema.t>, which also fails when a property or required key
-the schema names appears in neither of them.
+are validated against it in F<t/schema.t>: F<t/fixtures/check.json> for a
+passing report, F<t/fixtures/check-unready.json> for one that found a mount
+mismatch, F<t/fixtures/check-unreachable.json> for one whose Docker command
+could not be run and F<t/fixtures/check-uncounted.json> for one whose probe
+could not count the project's entries.  F<t/schema.t> also fails when a
+property, an enum value or a null variant the schema names appears in none of
+them.
 
 Before the document is printed it is checked against that schema, so a key
 that was added, removed or retyped without the schema changing exits 70 (see
@@ -483,7 +487,7 @@ in the order the run would need it and C<pull_concurrency> reporting the
 number of pulls it was allowed at once:
 
     {
-      "schema_version": 2,
+      "schema_version": 3,
       "ready": true,
       "problems": 0,
       "pull_concurrency": 4,
@@ -527,10 +531,11 @@ The preflight document is versioned separately, because C<images> can change
 without the check document changing.  Its C<schema_version> is
 C<App::Actions::Runner-E<gt>preflight_schema_version>, and the check
 document's is C<App::Actions::Check-E<gt>json_schema_version>.  The schema is
-what C<action-run schema preflight> prints, and F<t/fixtures/preflight.json>
-and F<t/fixtures/preflight-unready.json> are validated against it in
-F<t/schema.t>, which also fails when a key the schema names appears in neither
-of them.
+what C<action-run schema preflight> prints, and F<t/fixtures/preflight.json>,
+F<t/fixtures/preflight-unready.json>,
+F<t/fixtures/preflight-unreachable.json> and F<t/fixtures/preflight-not-ready.json>
+are validated against it in F<t/schema.t>, which also fails when a key, an enum
+value or a null variant the schema names appears in none of them.
 
 Unlike a run, C<preflight> keeps the images it pulled, so a run that follows
 starts warm.  C<--pull> and C<--no-pull> apply as they do to a run, and
@@ -568,7 +573,7 @@ because a document says which shape its C<schema_version> refers to but not
 which command produced it.  A matching document prints one line and exits 0:
 
     action-run validate preflight preflight.json
-    'preflight.json' is a valid preflight document (schema version 2)
+    'preflight.json' is a valid preflight document (schema version 3)
 
 A document that does not match prints the first mismatch, and how many others
 there are, and exits 70 (see L</EXIT STATUS>); a file that is not JSON is

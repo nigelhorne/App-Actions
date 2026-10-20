@@ -196,6 +196,22 @@ if ($command eq 'run') {
     }
 
     my $name = _option_value(\@run_args, '--name');
+
+    # A daemon that refuses to start a container says why on standard error and
+    # exits non-zero, which is the only account of a bad image or a missing
+    # entrypoint a run gets.  FAKE_START_FAILURE holds a substring of the name,
+    # FAKE_START_ERROR what the daemon says, and FAKE_START_EXIT the status it
+    # gives: 125 when it could not create the container, 127 when the runtime
+    # could not exec the entrypoint.
+    if (_start_fails($name)) {
+        my $error = $ENV{FAKE_START_ERROR};
+        print STDERR $error if defined $error && length $error;
+
+        my $status = $ENV{FAKE_START_EXIT};
+        $status = 125 unless defined $status && $status =~ /\A-?\d+\z/;
+        exit $status + 0;
+    }
+
     if (defined $name) {
         open my $state, '>', _container_file($name) or die "fake-docker: $!";
         binmode $state;
@@ -303,6 +319,19 @@ if ($command eq 'exec') {
 }
 
 exit 0;
+
+# A container the daemon refuses to start.  FAKE_START_FAILURE holds a
+# substring of the name, for the same reason as FAKE_CONTAINER_EXITS: a test
+# knows which job it asked for but not the run's generated container name.
+sub _start_fails {
+    my ($name) = @_;
+
+    my $pattern = $ENV{FAKE_START_FAILURE};
+    return 0 unless defined $pattern && length $pattern;
+    return 0 unless defined $name && length $name;
+
+    return index($name, $pattern) >= 0 ? 1 : 0;
+}
 
 # A container the restart policy keeps bringing back: FAKE_CONTAINER_RESTARTS
 # holds a substring of its name, for the same reason as FAKE_CONTAINER_EXITS,

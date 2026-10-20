@@ -1800,6 +1800,62 @@ sub _restart_message {
         . join('', map { "  $_\n" } @lines);
 }
 
+# A container the daemon refused to start has no output of its own to quote:
+# the daemon's message is the account, and it names the part of the request it
+# could not use.  Naming that part here is what turns a status into a fix, and
+# when nothing in the message is recognised the quotation is left to speak for
+# itself rather than a guess being made.
+sub _start_failure_message {
+    my ($what, $rc, $output, %ran) = @_;
+
+    my $message = "$what could not be started (exit $rc)";
+
+    my $fault = _start_fault($output, %ran);
+    $message .= "; at fault: $fault" if defined $fault;
+
+    my @lines = _log_lines($output);
+    return "$message; the daemon said nothing\n" unless @lines;
+
+    return "$message; the daemon said:\n"
+        . join('', map { "  $_\n" } @lines);
+}
+
+# Which part of the request the daemon's message names: Docker says "No such
+# image", "Unable to find image ... locally" or "manifest unknown" for an
+# image it cannot use, "port is already allocated" for a port the host has
+# given away, and "exec: ...: no such file or directory" for an entrypoint the
+# image does not have.  A message that says none of those names no fault, and
+# so does one that names an entrypoint the job did not ask for.
+sub _start_fault {
+    my ($output, %ran) = @_;
+
+    return undef unless defined $output && length $output;
+
+    # The daemon's complaints are matched as phrases rather than as a pattern
+    # with spaces in it: a regex written for readability would have to escape
+    # them all, because /x drops the ones that make the words.
+    my $lowered = lc $output;
+    for my $complaint (
+        'no such image', 'unable to find image', 'manifest unknown',
+        'pull access denied', 'invalid reference format',
+    ) {
+        next unless index($lowered, $complaint) >= 0;
+        return defined $ran{image} ? "the image '$ran{image}'" : 'the image';
+    }
+
+    return 'the published port'
+        if $output =~ /port is already allocated|address already in use/i;
+
+    my $entrypoint = $ran{entrypoint};
+    if (defined $entrypoint && length $entrypoint
+        && index($output, $entrypoint) >= 0
+        && $output =~ /no such file or directory|executable file not found/i) {
+        return "the entrypoint '$entrypoint'";
+    }
+
+    return undef;
+}
+
 # A container that was started and has stopped is reported with the status it
 # left behind and the last lines it printed.  "Did not stay running" alone
 # leaves the reader unable to tell a command that exited from an entrypoint
@@ -1887,10 +1943,19 @@ sub _start_job_container {
         command    => "-c 'while :; do sleep 3600; done'",
     );
 
-    my $rc = $self->{docker}->container_start(@args);
+    # The start is captured rather than run quietly: a daemon that refuses the
+    # container says why in the message it would otherwise have discarded.
+    my ($started, $rc) = $self->{docker}->container_start_captured(@args);
     if ($rc != 0) {
+        my $message = _start_failure_message(
+            "Job container '$container'",
+            $rc,
+            $started,
+            image      => $image,
+            entrypoint => '/bin/sh',
+        );
         $self->{docker}->container_remove($container);
-        die "Failed to start the job container '$container' (exit $rc)\n";
+        die $message;
     }
 
     if (!$self->{docker}->container_running($container)) {
@@ -3286,6 +3351,13 @@ exited with and the last lines it printed; one that its restart policy keeps
 bringing back, or that is caught between attempts, fails the run the same way,
 with the restart count, rather than being taken for a working service because
 Docker reports it as running.
+
+A container the daemon refuses to start has no output of its own to quote, so
+that report quotes the daemon and names the part of the request its message
+points at: the image it could not find or pull, the entrypoint the image does
+not have, or a published port already in use.  A message that names none of
+those is quoted without a verdict, and one that says nothing is reported as
+silent, so the report never invents a cause.
 
 Containers, networks, and any images that this run pulled are removed when the
 job or run finishes.  Use C<keep> for debugging.

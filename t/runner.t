@@ -94,6 +94,9 @@ sub run_workflow {
     local $ENV{FAKE_CONTAINER_STATUS} = $options{fake_container_status};
     local $ENV{FAKE_CONTAINER_LOGS}   = $options{fake_container_logs};
     local $ENV{FAKE_CONTAINER_ERR}    = $options{fake_container_err};
+    local $ENV{FAKE_START_FAILURE}    = $options{fake_start_failure};
+    local $ENV{FAKE_START_ERROR}      = $options{fake_start_error};
+    local $ENV{FAKE_START_EXIT}       = $options{fake_start_exit};
     local $ENV{FAKE_INSPECT_FAILURE}  = $options{fake_inspect_failure} ? 1 : 0;
 
     my $actions = App::Actions->new(
@@ -674,6 +677,133 @@ like(
     qr/Job container '\S+' did not stay running \(exit 1\); it printed nothing/m,
     'a job container that printed nothing says so',
 );
+
+# A container the daemon refuses to start has no output of its own to quote:
+# the daemon's message is the only account of the failure, and it names the
+# part of the request it could not use.  Quoting it back with that name is what
+# tells a missing image from an entrypoint the image does not have.
+my $refused_job = run_workflow(
+    <<'YAML',
+name: Refused job container
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    steps:
+      - run: echo never
+YAML
+    fake_start_failure => '-job-',
+    fake_start_error   => "Unable to find image 'alpine:3.20' locally\n"
+        . "docker: Error response from daemon: No such image: alpine:3.20\n",
+);
+
+is($refused_job->{exit}, 2,
+    'a job container the daemon will not start is an infrastructure failure');
+like(
+    $refused_job->{stderr},
+    qr/^action-run: Job container '\S+' could not be started \(exit 125\); at fault: the image 'alpine:3\.20'; the daemon said:$/m,
+    'the failure names the container, the status and the image at fault',
+);
+like($refused_job->{stderr}, qr/^ {2}Unable to find image 'alpine:3\.20' locally$/m,
+    'what the daemon said is quoted');
+like(
+    $refused_job->{stderr},
+    qr/^ {2}docker: Error response from daemon: No such image: alpine:3\.20$/m,
+    'every line the daemon said is quoted, not just the first',
+);
+unlike($refused_job->{stderr}, qr/\s+at\s+\S+ line \d+/,
+    'the failure reads as a sentence, not a source location');
+unlike($refused_job->{stdout}, qr/--- Step:/,
+    'no step runs in a container that would not start');
+like(
+    $refused_job->{log},
+    qr/^rm\t-f\taction-run-\S+-job-\S+$/m,
+    'the container the daemon would not start is removed',
+);
+
+# The same status with another message is another fault: a runtime that cannot
+# exec the entrypoint says so, and the entrypoint is what it names.
+my $no_entrypoint = run_workflow(
+    <<'YAML',
+name: Job image without a shell
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: scratch:latest
+    steps:
+      - run: echo never
+YAML
+    fake_start_failure => '-job-',
+    fake_start_exit    => 127,
+    fake_start_error   => 'docker: Error response from daemon: failed to create task for container: '
+        . 'exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown.' . "\n",
+);
+
+like(
+    $no_entrypoint->{stderr},
+    qr/could not be started \(exit 127\); at fault: the entrypoint '\/bin\/sh'; the daemon said:$/m,
+    'a missing entrypoint is named, with the status that reported it',
+);
+like(
+    $no_entrypoint->{stderr},
+    qr/^ {2}docker: Error response from daemon: .*stat \/bin\/sh: no such file or directory/m,
+    'the runtime message that named it is quoted too',
+);
+
+# A daemon that said nothing, and one whose message names nothing this run can
+# point at, are reported as they are rather than being given a verdict.
+my $silent_start = run_workflow(
+    <<'YAML',
+name: Silent start failure
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    steps:
+      - run: echo never
+YAML
+    fake_start_failure => '-job-',
+    fake_start_error   => '',
+);
+
+like(
+    $silent_start->{stderr},
+    qr/Job container '\S+' could not be started \(exit 125\); the daemon said nothing$/m,
+    'a start the daemon refused silently says so',
+);
+unlike($silent_start->{stderr}, qr/at fault:/,
+    'no fault is invented when the daemon said nothing');
+
+my $unrecognised_start = run_workflow(
+    <<'YAML',
+name: Unrecognised start failure
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    steps:
+      - run: echo never
+YAML
+    fake_start_failure => '-job-',
+    fake_start_error   => "docker: Error response from daemon: the daemon went away\n",
+);
+
+like($unrecognised_start->{stderr},
+    qr/could not be started \(exit 125\); the daemon said:$/m,
+    'a message that names nothing recognised is quoted without a verdict');
+like($unrecognised_start->{stderr},
+    qr/^ {2}docker: Error response from daemon: the daemon went away$/m,
+    'the daemon output is still quoted');
+unlike($unrecognised_start->{stderr}, qr/at fault:/,
+    'no part of the request is blamed without the daemon naming it');
 
 my $docker_action = run_workflow(<<'YAML');
 name: Docker action

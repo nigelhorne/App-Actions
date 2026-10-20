@@ -149,6 +149,21 @@ is($spaced_out, "Wrapper version 1.0\n", 'its output is captured');
             'a restart count defaults to one attempt');
     }
 
+    # A start the daemon refuses keeps what it said: the message is the only
+    # account of the failure, so it is returned with the status rather than
+    # discarded the way a quiet run discards it.
+    {
+        local $ENV{FAKE_START_FAILURE} = 'run-job-1';
+        local $ENV{FAKE_START_ERROR}   = "docker: Error response from daemon: No such image: scratch:latest\n";
+
+        my ($said, $status) = $daemon->container_start_captured(
+            '--name', 'run-job-1', 'scratch:latest',
+        );
+        is($status, 125, 'a refused start reports the daemon status');
+        is($said, "docker: Error response from daemon: No such image: scratch:latest\n",
+            'the daemon message is returned, not written to the streams');
+    }
+
     # A container that has already been removed answers nothing, and that is
     # not the same as exiting 0.
     {

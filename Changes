@@ -167,3 +167,26 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       from the timing of the pulls.  The number is the one handed to the
       puller, which is 1 on Windows whatever was configured, and the preflight
       document is version 2 as a result.
+    - Hold the examples to every enum value and null variant, not only to
+      every key.  t/schema.t now marks the value each example carries, so a
+      type that names null, or an enum that lists a value no checked-in
+      example shows, is a failure rather than an undocumented shape.  It
+      found docker.bin promising a null no document can produce - it is
+      always the resolved command - so both schemas tightened it to a string
+      and the check and preflight documents became versions 2 and 3.  Four
+      examples were added for the shapes that were missing: a report whose
+      Docker command could not be run, so its version fields and probe image
+      are null; a probe that could not count the project's entries, so both
+      counts are null; and, for the preflight, the images a not-ready
+      environment skips, one of them named by an expression it could not
+      resolve yet.
+    - Quote the daemon when a job container cannot be started, and name the
+      part of the request its message points at: the image it could not find
+      or pull, the entrypoint the image does not have, or a published port
+      already in use.  There is no container output to quote in that case, so
+      the daemon's message is the account; a message that names nothing
+      recognised is quoted without a verdict and one that says nothing is
+      reported as silent.  App::Actions::Docker gained
+      container_start_captured, which keeps the message a quiet start would
+      discard, and the fake Docker can now refuse a container the way a real
+      daemon does.

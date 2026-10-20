@@ -363,10 +363,11 @@ sub schema_gaps {
 
 # The examples that document each schema.  One example cannot carry every
 # shape a document can take, so each schema has a set: a healthy report, one
-# that found a problem, one whose daemon could not be reached - the nulls for
-# what could not be discovered - and one whose probe ran but could not count
-# the project's entries.  The last also shows the skipped images a preflight
-# reports when the environment is not ready, and the entry it could not name.
+# that found a problem, one from a host where Docker could not be reached -
+# the nulls for what could not be discovered - and one whose probe ran but
+# could not count the project's entries.  The last also shows the skipped
+# images a preflight reports when the environment is not ready, and the entry
+# it could not name.
 my %shipped_examples = (
     check     => [qw(check.json check-unready.json check-unreachable.json check-uncounted.json)],
     preflight => [qw(preflight.json preflight-unready.json preflight-unreachable.json

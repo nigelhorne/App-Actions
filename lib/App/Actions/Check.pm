@@ -656,9 +656,13 @@ C<null> for a value that could not be discovered:
 
 C<schema_version> names the shape of the document; it is the number
 L</json_schema_version> returns.  The schema is what C<action-run schema
-check> prints, and the checked-in examples are F<t/fixtures/check.json> and
-F<t/fixtures/check-unready.json>: F<t/schema.t> validates them against it and
-fails when a property or required key it names appears in neither, so a key
+check> prints, and the checked-in examples are F<t/fixtures/check.json> (a
+passing report), F<t/fixtures/check-unready.json> (a mount mismatch),
+F<t/fixtures/check-unreachable.json> (Docker could not be run, so its version
+fields and the probe image are C<null>) and F<t/fixtures/check-uncounted.json>
+(the probe ran but could not count the project's entries, so both counts are
+C<null>).  F<t/schema.t> validates them against it and fails when a property,
+an enum value or a null variant it names appears in none of them, so a shape
 left behind by the code or by the schema cannot hide there.
 
 Before the document is printed it is validated against that schema, so a key

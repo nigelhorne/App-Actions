@@ -28,7 +28,10 @@ long-lived job container.  Steps are executed in that container with
 `docker exec`, so files and installed modules persist between steps.  A
 service must stay up: one that stops, or that a restart policy keeps bringing
 back, stops the run with the state and restart count the daemon reports and
-the last lines the container printed.  When a job finishes, its containers and
+the last lines the container printed.  A container the daemon refuses to start
+is reported the same way: its message is quoted and the image, entrypoint or
+published port it names is called out, because there is nothing of the
+container's own to quote.  When a job finishes, its containers and
 network are removed; images that this run pulled are removed at the end as
 well.  The `GITHUB_ENV`, `GITHUB_PATH`,
 `GITHUB_OUTPUT`, `GITHUB_STATE`, and `GITHUB_STEP_SUMMARY` files written by
@@ -137,8 +140,10 @@ be named from the values available before the run, because a job has not
 produced it yet; it carries `expression` instead of `image`, and the job
 prepares it with its own values before it starts.  `summary` also carries
 `schema_version`, which is
-["preflight\_schema\_version" in App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner#preflight_schema_version); the schema and a checked-in
-example are validated in `t/schema.t`.  With `json => 1` nothing is
+["preflight\_schema\_version" in App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner#preflight_schema_version); the schema and the
+checked-in examples in `t/fixtures/` are validated in `t/schema.t`, which
+also fails when a key, an enum value or a null variant the schema names
+appears in none of them.  With `json => 1` nothing is
 printed, so the caller's output can be a single document; `ready` is then a
 JSON boolean and the summary is the document `action-run preflight --json`
 prints, already validated against that schema, so a mismatch dies with an
