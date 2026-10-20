@@ -3,7 +3,7 @@ use warnings;
 use Test::Most;
 use Capture::Tiny qw(capture);
 use File::Basename qw(dirname);
-use File::Path qw(make_path);
+use File::Path qw(make_path remove_tree);
 use File::Spec;
 use File::Temp qw(tempdir);
 
@@ -20,6 +20,37 @@ sub useful_text {
     return '' unless defined $text;
     $text =~ s/\r\n/\n/g;
     return $text;
+}
+
+# Read a file without any newline translation, the way a Linux container sees
+# it.
+sub slurp_bytes {
+    my ($path) = @_;
+
+    open my $handle, '<', $path or die $!;
+    binmode $handle;
+    local $/;
+    my $bytes = <$handle>;
+    close $handle;
+
+    return defined $bytes ? $bytes : '';
+}
+
+# A run with keep => 1 prints the temporary directory it retained.
+sub kept_temp_dir {
+    my ($result) = @_;
+
+    my ($dir) = $result->{stdout} =~ /^ {2}temporary directory (.+)$/m;
+    return $dir;
+}
+
+sub remove_kept_dir {
+    my ($result) = @_;
+
+    my $dir = kept_temp_dir($result);
+    remove_tree($dir) if defined $dir && -d $dir;
+
+    return;
 }
 
 sub run_workflow {
@@ -49,6 +80,9 @@ sub run_workflow {
     local $ENV{FAKE_NO_BASH}      = $options{fake_no_bash} ? 1 : 0;
     local $ENV{FAKE_NO_SUDO}      = $options{fake_no_sudo} ? 1 : 0;
     local $ENV{FAKE_NO_NODE}      = $options{fake_no_node} ? 1 : 0;
+    local $ENV{FAKE_OS_TYPE}      = $options{fake_os_type};
+    local $ENV{FAKE_ENTRY_COUNT}  = $options{fake_entry_count};
+    local $ENV{FAKE_PULL_FAILURE} = $options{fake_pull_failure};
 
     my $actions = App::Actions->new(
         workflow_file => $workflow_file,
@@ -348,6 +382,36 @@ YAML
 is($keep->{exit}, 0, 'keep workflow succeeds');
 like($keep->{stdout}, qr/Kept Docker resources/, 'keep reports the resources it retained');
 unlike($keep->{log}, qr/^rm\t-f\t/m, 'keep does not remove containers');
+remove_kept_dir($keep);
+
+# bash inside the container rejects scripts whose lines end in CR, so every
+# file the container reads must be written with LF even when the host is
+# Windows.
+my $line_endings = run_workflow(<<'YAML', keep => 1);
+name: Line endings
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Script
+        run: |
+          FAKE_ENV: FROM_STEP=one
+YAML
+
+is($line_endings->{exit}, 0, 'line ending workflow succeeds');
+
+my $temp_dir = kept_temp_dir($line_endings);
+ok(defined $temp_dir, 'the kept temporary directory is reported');
+
+if (defined $temp_dir) {
+    for my $relative (qw(scripts/step-1.sh bin/sudo aptbin/apt aptbin/apt-get event.json)) {
+        my $path = File::Spec->catfile($temp_dir, split m{/}, $relative);
+        ok(-f $path, "$relative is written");
+        unlike(slurp_bytes($path), qr/\r/, "$relative keeps LF line endings");
+    }
+    remove_kept_dir($line_endings);
+}
 
 my $keep_images = run_workflow(<<'YAML', keep_images => 1);
 name: Keep images
@@ -635,5 +699,209 @@ YAML
 is($broken_action->{exit}, 1, 'an action without runs fails');
 like($broken_action->{stderr}, qr/has no 'runs' mapping/,
     'broken action metadata is reported');
+
+# The environment is probed before any job starts, using the image the job
+# will use, and the probe is silent when it passes.
+my $simple = <<'YAML';
+name: Plain
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - run: echo hello
+YAML
+
+my $probed = run_workflow($simple);
+is($probed->{exit}, 0, 'a workflow still runs when the probe passes');
+like($probed->{log}, qr/^run\t--rm\t--network\tnone\t/m,
+    'the bind mount is probed before the workflow starts');
+like($probed->{log}, qr/\t-v\t[^\t]+:\/check-project:ro\t/,
+    'the probe mounts the project directory read-only');
+unlike($probed->{stdout}, qr/^ {2}mount\s/m, 'a passing probe says nothing');
+
+# Probe image: the job's own image, so a working setup needs no extra pull.
+unlike($probed->{log}, qr/^pull\t.*alpine:3\.20/m,
+    'the probe does not pull an image the run does not need');
+like($probed->{log}, qr/:ro\tperl:5\.38\t/,
+    'the probe uses the image the job will use');
+
+my $verbose_probe = run_workflow($simple, verbose => 1);
+is($verbose_probe->{exit}, 0, 'a verbose run passes the probe');
+like($verbose_probe->{stdout}, qr/^ {2}mount\s+\S.* -> \/check-project: OK/m,
+    'a verbose run shows the probe report');
+
+# A broken environment stops the run before a job container is started.
+my $not_ready = run_workflow($simple, fake_os_type => 'windows');
+is($not_ready->{exit}, 2, 'a broken environment stops the run');
+like($not_ready->{stderr}, qr/the environment is not ready/,
+    'the run says the environment is at fault');
+like($not_ready->{stderr}, qr/--skip-check/, 'the run points at --skip-check');
+unlike($not_ready->{stderr}, qr/ at \S+ line \d+/,
+    'the failure message is not decorated with a source location');
+unlike($not_ready->{log}, qr/^exec\t/m, 'no step runs in a broken environment');
+
+my $hidden_project = run_workflow($simple, fake_entry_count => 0);
+is($hidden_project->{exit}, 2, 'a project the container cannot see stops the run');
+like($hidden_project->{stderr}, qr/the environment is not ready/,
+    'the unshared drive is reported before the job starts');
+unlike($hidden_project->{log}, qr/^exec\t/m, 'nothing runs with an unreadable project');
+
+# --skip-check is the escape hatch.
+my $unchecked = run_workflow($simple, fake_os_type => 'windows', skip_check => 1);
+is($unchecked->{exit}, 0, 'skip_check runs the workflow anyway');
+like($unchecked->{stdout}, qr/Workflow succeeded/, 'the workflow runs with skip_check');
+unlike($unchecked->{log}, qr/--network\tnone\t/m, 'skip_check skips the probes');
+like($unchecked->{log}, qr/^info\t/m, 'skip_check still asks whether Docker is there');
+
+my $skipped_hidden = run_workflow($simple, fake_entry_count => 0, skip_check => 1);
+is($skipped_hidden->{exit}, 0, 'skip_check ignores an unreadable project');
+
+# Every image the run needs is prepared before the first job starts, so a
+# typo in a service or action image does not surface with containers up.
+my $with_images = <<'YAML';
+name: Images
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    services:
+      db:
+        image: postgres:15
+    steps:
+      - uses: docker://alpine:3.20
+        with:
+          args: echo hi
+      - run: echo hello
+YAML
+
+my $prepared = run_workflow($with_images);
+is($prepared->{exit}, 0, 'a workflow with services and an action image runs');
+like($prepared->{log}, qr/^pull\tpostgres:15$/m, 'the service image is pulled');
+like($prepared->{log}, qr/^pull\talpine:3\.20$/m, 'the action image is pulled');
+
+my $service_pull = index($prepared->{log}, "pull\tpostgres:15");
+my $action_pull  = index($prepared->{log}, "pull\talpine:3.20");
+my $job_start    = index($prepared->{log}, "run\t-d\t");
+ok($service_pull >= 0 && $job_start >= 0 && $service_pull < $job_start,
+    'the service image is pulled before the job container starts');
+ok($action_pull >= 0 && $action_pull < $job_start,
+    'the action image is pulled before the job container starts');
+
+my $service_broken = run_workflow($with_images, fake_pull_failure => 'postgres:15');
+is($service_broken->{exit}, 2, 'an unpullable service image stops the run');
+like(
+    $service_broken->{stderr},
+    qr/cannot prepare the image 'postgres:15', needed by service 'db' of job 'test'/,
+    'the failure names the image and the service that needs it',
+);
+unlike($service_broken->{log}, qr/^run\t-d\t/m, 'no job container is started');
+unlike($service_broken->{log}, qr/^exec\t/m, 'no step runs');
+
+my $action_broken = run_workflow($with_images, fake_pull_failure => 'alpine:3.20');
+is($action_broken->{exit}, 2, 'an unpullable action image stops the run');
+like(
+    $action_broken->{stderr},
+    qr/cannot prepare the image 'alpine:3\.20', needed by action 'docker:\/\/alpine:3\.20'/,
+    'the failure names the action that needs it',
+);
+unlike($action_broken->{log}, qr/^run\t-d\t/m, 'no job container is started');
+
+# An image used by two jobs is prepared once.
+my $shared = <<'YAML';
+name: Shared
+on: push
+jobs:
+  first:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - run: echo one
+  second:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - run: echo two
+YAML
+
+my $shared_run = run_workflow($shared);
+is($shared_run->{exit}, 0, 'two jobs sharing an image run');
+my $pulls = () = $shared_run->{log} =~ /^pull\tperl:5\.38$/mg;
+is($pulls, 1, 'a shared image is pulled once');
+
+# --skip-check leaves the images to be pulled when they are first used.
+my $skipped_images = run_workflow(
+    $with_images, fake_pull_failure => 'postgres:15', skip_check => 1,
+);
+is($skipped_images->{exit}, 1, 'skip_check fails later, inside the job');
+like($skipped_images->{stdout}, qr/==> Job: test/, 'the job starts with skip_check');
+like($skipped_images->{stderr}, qr/Failed to pull Docker image 'postgres:15'/,
+    'the pull failure surfaces at use time');
+
+# A dry run must not touch the registry.
+my $dry = run_workflow($with_images, dry_run => 1);
+is($dry->{exit}, 0, 'a dry run with services succeeds');
+unlike($dry->{log}, qr/^pull\t/m, 'a dry run pulls nothing');
+
+# The images are named when verbose, which is how a stuck pull is diagnosed.
+my $verbose_images = run_workflow($with_images, verbose => 1);
+is($verbose_images->{exit}, 0, 'a verbose run with services passes');
+like($verbose_images->{stdout}, qr/^ {2}image\s+postgres:15 \(service 'db' of job 'test'\)$/m,
+    'a verbose run names each image and why it is needed');
+
+# Images that only an expression can produce are left to the run itself.
+my $expression_image = run_workflow(<<'YAML');
+name: Expression image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        db: ['15', '16']
+    container:
+      image: perl:5.38
+    services:
+      database:
+        image: postgres:${{ matrix.db }}
+    steps:
+      - run: echo hello
+YAML
+
+is($expression_image->{exit}, 0, 'a matrix-driven service image runs');
+like($expression_image->{log}, qr/^pull\tpostgres:15$/m, 'the matrix value is resolved');
+like($expression_image->{log}, qr/^pull\tpostgres:16$/m, 'each matrix value is resolved');
+
+# A value that cannot be resolved yet is not guessed at.
+my $unknown_image = run_workflow(<<'YAML');
+name: Unknown image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    services:
+      database:
+        image: postgres:${{ github.ref }}
+    steps:
+      - run: echo hello
+YAML
+
+is($unknown_image->{exit}, 0, 'an unresolved expression image is left to the run');
+
+# The probe still runs first: an image problem is reported after the
+# environment report, not instead of it.
+my $broken_environment = run_workflow(
+    $with_images, fake_os_type => 'windows', fake_pull_failure => 'postgres:15',
+);
+is($broken_environment->{exit}, 2, 'a broken environment is still reported first');
+unlike($broken_environment->{log}, qr/^pull\t/m, 'nothing is pulled for a broken environment');
 
 done_testing;

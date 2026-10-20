@@ -19,9 +19,10 @@ WriteMakefile(
     ((defined($ExtUtils::MakeMaker::VERSION) && ($ExtUtils::MakeMaker::VERSION >= 6.3002))
         ? ('LICENSE' => 'GPL')
         : ()),
-    EXE_FILES      => ['bin/action-run'],
+    EXE_FILES      => [ 'bin/action-run', 'bin/action-run-smoke' ],
     PREREQ_PM      => {
         'Carp'             => 0,
+        'Config'           => 0,
         'Cwd'              => 0,
         'File::Basename'   => 0,
         'File::Path'       => 0,
@@ -43,6 +44,8 @@ WriteMakefile(
     TEST_REQUIRES  => {
         'Capture::Tiny'    => 0,
         'Exporter'         => 0,
+        'File::Copy'       => 0,
+        'File::Find'       => 0,
         'File::Temp'       => 0,
         'FindBin'          => 0,
         'JSON::PP'         => 0,

@@ -2,6 +2,8 @@ use strict;
 use warnings;
 use Test::Most;
 use Capture::Tiny qw(capture);
+use File::Copy qw(copy);
+use File::Path qw(make_path);
 use File::Spec;
 use File::Temp qw(tempdir);
 
@@ -66,10 +68,30 @@ my ($stdout, $stderr) = capture {
 is($run_rc, 0, 'run executes the wrapper');
 like(useful_text($stdout), qr/^pull\|perl:5\.38$/m, 'run streams the wrapper output');
 
+# The program is a file rather than -e code: Win32 Perl does not quote "-e"
+# arguments containing double quotes reliably.
+my $native_script = File::Spec->catfile($dir, 'native.pl');
+open my $native_handle, '>', $native_script or die $!;
+binmode $native_handle;
+print {$native_handle} "print \"native\\n\";\n";
+close $native_handle;
+
 my $native = App::Actions::Docker->new(bin => $^X, quiet => 1);
-my ($native_out, $native_rc) = $native->capture_silent('-e', 'print "native\n"');
+my ($native_out, $native_rc) = $native->capture_silent($native_script);
 is($native_rc, 0, 'a native executable is used directly');
 is($native_out, "native\n", 'a native executable still produces output');
+
+# Paths with spaces must reach the wrapper intact, which is the usual case for
+# a Windows checkout or a Docker wrapper kept under "Program Files".
+my $spaced_dir = File::Spec->catdir($dir, 'with space');
+make_path($spaced_dir);
+my $spaced_wrapper = File::Spec->catfile($spaced_dir, 'fake-docker');
+copy($wrapper, $spaced_wrapper) or die $!;
+
+my $spaced_docker = App::Actions::Docker->new(bin => $spaced_wrapper, quiet => 1);
+my ($spaced_out, $spaced_rc) = $spaced_docker->capture_silent('--version');
+is($spaced_rc, 0, 'a wrapper below a path with spaces runs');
+is($spaced_out, "Wrapper version 1.0\n", 'its output is captured');
 
 my $missing = App::Actions::Docker->new(bin => File::Spec->catfile($dir, 'absent'), quiet => 1);
 my (undef, $missing_rc) = $missing->capture_silent('--version');

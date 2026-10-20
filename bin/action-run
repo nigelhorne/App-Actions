@@ -3,6 +3,7 @@
 use strict;
 use warnings;
 use FindBin ();
+use File::Spec ();
 use Getopt::Long qw(GetOptions);
 use Pod::Usage qw(pod2usage);
 
@@ -13,6 +14,7 @@ BEGIN {
 }
 
 use App::Actions;
+use App::Actions::Check;
 
 my @job_filters;
 my @env_pairs;
@@ -30,6 +32,8 @@ my $list;
 my $keep;
 my $keep_images;
 my $strict_actions;
+my $skip_check;
+my $json;
 my $verbose;
 my $quiet;
 my $help;
@@ -53,6 +57,8 @@ GetOptions(
     'keep|k'         => \$keep,
     'keep-images'    => \$keep_images,
     'strict-actions' => \$strict_actions,
+    'skip-check'     => \$skip_check,
+    'json'           => \$json,
     'verbose|v'      => \$verbose,
     'quiet|q'        => \$quiet,
     'help|h'         => \$help,
@@ -71,6 +77,35 @@ if ($version) {
 if ($pull && $no_pull) {
     print STDERR "action-run: --pull and --no-pull cannot be used together\n";
     exit 2;
+}
+
+if (@ARGV && $ARGV[0] eq 'check') {
+    shift @ARGV;
+    if (@ARGV > 1) {
+        pod2usage(
+            -exitval => 2,
+            -verbose => 0,
+            -message => "Usage: action-run [options] check [directory]\n",
+        );
+    }
+
+    my $check = App::Actions::Check->new(
+        docker_bin => $docker_bin,
+        image      => $image,
+        platform   => $platform,
+        directory  => @ARGV ? $ARGV[0] : File::Spec->curdir,
+        json       => $json,
+    );
+
+    exit $check->run;
+}
+
+if ($json) {
+    pod2usage(
+        -exitval => 2,
+        -verbose => 0,
+        -message => "--json is only used by the check command\n",
+    );
 }
 
 my %environment = _parse_pairs(\@env_pairs, '--env');
@@ -106,6 +141,7 @@ my $actions = eval {
         pull          => $pull,
         no_pull       => $no_pull,
         strict_actions => $strict_actions,
+        skip_check    => $skip_check,
         docker_bin    => $docker_bin,
     );
 };
@@ -160,6 +196,7 @@ action-run - run a GitHub Actions workflow locally with Docker
 =head1 SYNOPSIS
 
     action-run [options] <workflow.yml> [project-directory]
+    action-run [options] check [directory]
 
 =head1 DESCRIPTION
 
@@ -171,6 +208,56 @@ run finishes.
 
 The project directory is optional when the workflow lives inside a
 C<.github/workflows> directory; the repository root is inferred in that case.
+
+Before any job starts, the same checks as C<action-run check> run: the daemon
+must be reachable and run Linux containers, and the project directory must be
+readable through a bind mount.  The result is silent when everything works and
+printed as a report with remedies when it does not, in which case no container
+is started.  Use C<--skip-check> to start the workflow anyway.
+
+=head1 COMMANDS
+
+=head2 check
+
+    action-run [options] check [directory]
+
+Reports the host platform, whether the Docker daemon is reachable and can run
+Linux containers, and whether Docker can bind-mount the host directories that
+a run needs.  The mount probe starts one short-lived container using the image
+given by C<--image> (default C<alpine:3.20>) and reads a file back from a
+temporary directory.  I<directory>, which defaults to the current directory,
+is mounted read-only as well and the entries visible inside the container are
+compared with the host; this catches a drive that Docker Desktop has not
+shared.
+
+Each problem is followed by the step that fixes it, for example:
+
+  problem   the daemon is not reachable; is Docker running and can this user access it?
+  remedy    start Docker Desktop and wait until it is running, then try again
+  remedy    if the engine will not start, run "wsl --shutdown" and start Docker Desktop again
+
+C<check> exits 0 when the environment is ready and 2 when a problem was found.
+With C<--json> it prints a single JSON object instead of the text report, for a
+CI job to assert on:
+
+    {
+      "ready": true,
+      "problems": 0,
+      "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
+      "docker": { "bin": "docker", "client": "29.9.1", "daemon": "29.9.1", "containers": "linux" },
+      "image": "alpine:3.20",
+      "mounts": [
+        { "host": "/tmp/action-run-check-XXXX", "container": "/action-run-check", "ok": true },
+        { "host": "/src/project", "container": "/check-project", "entries": 17, "expected": 17, "ok": true }
+      ],
+      "issues": [ { "problem": "...", "remedies": [ "..." ] } ]
+    }
+
+The top-level keys and the keys of C<docker> are always present; a value that
+could not be discovered is C<null>, so an unreachable daemon shows as
+C<"daemon": null> rather than a missing key.  Each entry in C<mounts> carries
+C<host>, C<container> and C<ok>, and the project entry also carries C<entries>
+and C<expected>.  The exit status is the same as for the text report.
 
 =head1 OPTIONS
 
@@ -233,6 +320,18 @@ Remove containers and networks but keep images that were pulled.
 
 Treat unsupported actions as failures instead of skipping them.
 
+=item B<--json>
+
+With C<check>, print a JSON object instead of the text report.  It is rejected
+for a workflow run.
+
+=item B<--skip-check>
+
+Skip the environment probes that otherwise run before any job starts, while
+still checking that the Docker command answers.  Use it when the probes do not
+apply, for example when the project directory lives on a network share that
+the daemon cannot mount but the workflow does not need it.
+
 =item B<--verbose>, B<-v>
 
 Print Docker commands and extra diagnostics.
@@ -262,10 +361,15 @@ Show the version.
     action-run --dry-run --verbose \
                .github/workflows/alpine.yml .
 
+    action-run check ~/src/njh/CGI-Info
+
+    action-run check --json | jq -e '.ready and .docker.containers == "linux"'
+
 =head1 EXIT STATUS
 
 0 if every runnable job succeeded, 1 if a job failed, and 2 for a usage,
-Docker, or infrastructure error.
+Docker, or infrastructure error.  C<check> exits 0 when the environment is
+ready and 2 otherwise.
 
 =head1 LIMITATIONS
 

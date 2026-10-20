@@ -8,12 +8,14 @@ use File::Basename qw(basename);
 use File::Path qw(make_path remove_tree);
 use File::Spec;
 use File::Temp ();
+use IO::Handle ();
 use JSON::PP ();
 use Scalar::Util qw(blessed);
 use Text::ParseWords qw(shellwords);
 use Time::HiRes qw(sleep);
 
 use App::Actions::Action;
+use App::Actions::Check;
 use App::Actions::Docker;
 use App::Actions::Expression;
 use App::Actions::Process;
@@ -48,6 +50,7 @@ sub new {
         pull          => $args{pull} ? 1 : 0,
         no_pull       => $args{no_pull} ? 1 : 0,
         strict_actions => $args{strict_actions} ? 1 : 0,
+        skip_check    => $args{skip_check} ? 1 : 0,
         expression    => App::Actions::Expression->new,
         run_id        => sprintf('%x%04x', time, $$ & 0xffff),
         pulled_images => {},
@@ -102,13 +105,15 @@ sub run {
     local $SIG{TERM} = sub { die "Terminated\n" };
 
     eval {
-        $self->{docker}->check unless $self->{dry_run};
+        # Selecting the jobs first means the probes can use the image the run
+        # is about to use, so a working setup needs no extra pull.
+        my $instances = $self->{workflow}->expand_jobs;
+        $self->_select_jobs($instances);
+
+        $self->_check_environment($instances) unless $self->{dry_run};
 
         $self->_prepare_temp;
         $self->_build_base_env;
-
-        my $instances = $self->{workflow}->expand_jobs;
-        $self->_select_jobs($instances);
 
         $self->_run_groups;
         $self->_print_summary;
@@ -119,6 +124,9 @@ sub run {
     if ($@) {
         my $error = $@;
         $error =~ s/\s+$//;
+        # Whatever the run printed belongs before the error, even when the two
+        # are written through different buffers.
+        STDOUT->flush;
         print STDERR "action-run: $error\n" unless $self->{quiet};
         $exit_code = 2;
     }
@@ -126,6 +134,175 @@ sub run {
     $self->_cleanup;
 
     return $exit_code;
+}
+
+# Probe the host before starting anything: the daemon, the container type,
+# and a real bind mount of the project directory.  Without this the first
+# symptom of an unshared drive or a Windows-only daemon is a job that cannot
+# see its own checkout.
+sub _check_environment {
+    my ($self, $instances) = @_;
+
+    # --skip-check skips the probes, not the question "is Docker there?",
+    # because a cryptic failure deeper in the run helps nobody.
+    if ($self->{skip_check}) {
+        $self->{docker}->check;
+        return;
+    }
+
+    my $check = App::Actions::Check->new(
+        docker_bin => $self->_docker_bin,
+        image      => $self->_probe_image($instances),
+        platform   => $self->{platform},
+        directory  => $self->{project_dir},
+        # Silent when everything works, a full report with remedies when not.
+        quiet      => $self->{verbose} ? 0 : 1,
+    );
+
+    if ($check->run != 0) {
+        # die, not croak, and with a trailing newline: the advice should read
+        # as a sentence rather than end in " at <file> line <n>".
+        die "the environment is not ready; fix what the report above asks for, or pass --skip-check to run anyway\n";
+    }
+
+    $self->_prepare_images($instances);
+}
+
+# Pull or verify every image the run will need, so that a mistyped service
+# image fails now rather than halfway through a job with its containers up.
+sub _prepare_images {
+    my ($self, $instances) = @_;
+
+    for my $entry ($self->_required_images($instances)) {
+        my ($image, $source) = @$entry;
+
+        print "  image     $image ($source)\n" if $self->{verbose} && !$self->{quiet};
+
+        eval { $self->_ensure_image($image); 1 } or do {
+            my $error = $@;
+            $error =~ s/\s+$//;
+            die "cannot prepare the image '$image', needed by $source: $error\n";
+        };
+    }
+
+    return;
+}
+
+# The images of the job containers, of their service containers and of the
+# docker:// actions, in the order the run will need them.
+sub _required_images {
+    my ($self, $instances) = @_;
+
+    my @images;
+    my %seen;
+
+    for my $instance (@$instances) {
+        my $runs_on = $self->{workflow}->runs_on_text(
+            $instance->{'runs-on'}, $instance->{matrix} || {},
+        );
+        next unless $self->{workflow}->is_linux_runner($runs_on);
+
+        my $name = defined $instance->{display_name}
+            ? $instance->{display_name}
+            : $instance->{base_id};
+        my $context = $self->_preflight_context($instance);
+
+        my $add = sub {
+            my ($image, $source) = @_;
+
+            return unless defined $image && length $image;
+            return if $seen{$image}++;
+            push @images, [ $image, $source ];
+
+            return;
+        };
+
+        my $job_image = eval {
+            $self->{workflow}->container_image(
+                $instance, $runs_on,
+                $self->{image} || 'ubuntu:latest',
+                $self->{perl_image},
+            );
+        };
+        $add->($job_image, "job '$name'");
+
+        for my $id (sort keys %{ $instance->{services} || {} }) {
+            my $service = $instance->{services}{$id};
+            $service = { image => $service } unless ref $service eq 'HASH';
+            my $image = eval {
+                $self->{expression}->interpolate($service->{image}, $context);
+            };
+            $add->($image, "service '$id' of job '$name'");
+        }
+
+        for my $step (@{ $instance->{steps} || [] }) {
+            next unless defined $step->{uses};
+            my $action = eval {
+                $self->{expression}->interpolate($step->{uses}, $context);
+            };
+            next unless defined $action && $action =~ m{^docker://(.+)$};
+            $add->($1, "action '$action' in job '$name'");
+        }
+    }
+
+    return @images;
+}
+
+# Enough of a context to resolve an image name: matrix values are the reason
+# an image is usually expression-driven.  Anything that needs the full run
+# context is left alone, and its image is pulled when it is used.
+sub _preflight_context {
+    my ($self, $instance) = @_;
+
+    return {
+        matrix  => $instance->{matrix} || {},
+        env     => { %{ $self->{env} || {} } },
+        secrets => $self->{secrets} || {},
+        vars    => {},
+        inputs  => {},
+        steps   => {},
+        needs   => {},
+        job     => {},
+        github  => {},
+        strategy => {},
+        runner  => $self->_runner_context,
+    };
+}
+
+# Probe with the image the first runnable job will use: it costs no extra pull
+# and it exercises the image the run actually needs.
+sub _probe_image {
+    my ($self, $instances) = @_;
+
+    for my $instance (@$instances) {
+        my $runs_on = $self->{workflow}->runs_on_text(
+            $instance->{'runs-on'}, $instance->{matrix} || {},
+        );
+        next unless $self->{workflow}->is_linux_runner($runs_on);
+
+        my $image = eval {
+            $self->{workflow}->container_image(
+                $instance, $runs_on,
+                $self->{image} || 'ubuntu:latest',
+                $self->{perl_image},
+            );
+        };
+        next unless defined $image && length $image;
+
+        return $image;
+    }
+
+    return $self->{image} || 'alpine:3.20';
+}
+
+# The Docker command to probe with; a caller may have supplied its own Docker
+# object, which need not expose the binary name.
+sub _docker_bin {
+    my ($self) = @_;
+
+    my $bin = eval { $self->{docker}->bin };
+
+    return defined $bin && length $bin ? $bin : undef;
 }
 
 sub _select_jobs {
@@ -168,6 +345,22 @@ sub _select_jobs {
     return \@selected;
 }
 
+# Scripts and other files that the container reads must keep LF line endings.
+# On Windows a text-mode handle would write CRLF, and bash rejects a script
+# whose lines end in "\r" ("$'\r': command not found").
+sub _write_container_file {
+    my ($self, $path, $contents, $description) = @_;
+
+    open my $handle, '>', $path
+        or croak "Unable to write $description: $!";
+    binmode $handle;
+    print {$handle} $contents;
+    close $handle
+        or croak "Unable to write $description: $!";
+
+    return;
+}
+
 sub _prepare_temp {
     my ($self) = @_;
 
@@ -188,9 +381,7 @@ sub _prepare_temp {
     }
 
     my $sudo = "$self->{temp_path}/bin/sudo";
-    open my $sudo_handle, '>', $sudo
-        or croak "Unable to create the sudo shim: $!";
-    print {$sudo_handle} <<'SH';
+    my $sudo_shim = <<'SH';
 #!/bin/sh
 # action-run sudo shim.  The job container is already running as root, so
 # privilege escalation is unnecessary.  Ignore the common sudo options.
@@ -205,7 +396,7 @@ while [ "$#" -gt 0 ]; do
 done
 exec "$@"
 SH
-    close $sudo_handle;
+    $self->_write_container_file($sudo, $sudo_shim, 'the sudo shim');
     chmod 0755, $sudo;
 
     $self->_install_apt_shims;
@@ -221,9 +412,7 @@ sub _install_apt_shims {
     # prompt, which breaks any workflow that runs "apt install" under sudo.
     for my $name (qw(apt apt-get)) {
         my $path = "$self->{temp_path}/aptbin/$name";
-        open my $handle, '>', $path
-            or croak "Unable to create the $name shim: $!";
-        print {$handle} <<"SH";
+        my $shim = <<"SH";
 #!/bin/sh
 # action-run $name shim: answer "yes" to mutating package commands so
 # unattended installs behave like the GitHub-hosted runners.
@@ -244,7 +433,7 @@ case "\$subcommand" in
 esac
 exec /usr/bin/$name "\$@"
 SH
-        close $handle;
+        $self->_write_container_file($path, $shim, "the $name shim");
         chmod 0755, $path;
     }
 
@@ -290,10 +479,7 @@ sub _build_base_env {
 
     my $json = JSON::PP->new->canonical;
     my $event_path = "$self->{temp_path}/event.json";
-    open my $event_file, '>', $event_path
-        or croak "Unable to write event.json: $!";
-    print {$event_file} $json->encode($event);
-    close $event_file;
+    $self->_write_container_file($event_path, $json->encode($event), 'event.json');
     chmod(defined $self->{user} ? 0666 : 0600, $event_path);
 
     $self->{event} = $event;
@@ -1083,10 +1269,9 @@ sub _run_script_step {
     my $host_script = "$self->{temp_path}/scripts/$script_name";
     my $container_script = "/github/actions-runner/scripts/$script_name";
 
-    open my $handle, '>', $host_script
-        or croak "Unable to write step script '$host_script': $!";
-    print {$handle} $script;
-    close $handle;
+    $self->_write_container_file(
+        $host_script, $script, "the step script '$host_script'",
+    );
     chmod(defined $self->{user} ? 0666 : 0600, $host_script);
 
     my $command = $shell->{command};

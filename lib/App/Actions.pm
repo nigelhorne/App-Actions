@@ -68,6 +68,7 @@ sub run {
         pull          => exists $overrides{pull} ? $overrides{pull} : $self->{pull},
         no_pull       => exists $overrides{no_pull} ? $overrides{no_pull} : $self->{no_pull},
         strict_actions => exists $overrides{strict_actions} ? $overrides{strict_actions} : $self->{strict_actions},
+        skip_check    => exists $overrides{skip_check} ? $overrides{skip_check} : $self->{skip_check},
         docker        => $overrides{docker} || $self->{docker},
         docker_bin    => exists $overrides{docker_bin} ? $overrides{docker_bin} : $self->{docker_bin},
     );
@@ -113,7 +114,8 @@ App::Actions - run GitHub Actions workflows locally with Docker
 =head1 DESCRIPTION
 
 App::Actions runs a GitHub Actions workflow on a local machine using Docker
-containers.  It understands the parts of a workflow that are useful for local
+containers, allowing troublesome issues to be more easily debugged.
+It understands the parts of a workflow that are useful for local
 testing: jobs, matrix expansion, container images, service containers,
 environment files, working directories, shells, and C<if> conditions.
 
@@ -130,7 +132,20 @@ C<sudo apt update> work locally.
 The host may run Unix or Windows; only the containers are Linux.  Command
 output is captured without C<fork> or a piped C<open>, and paths, volumes and
 permissions are handled in a platform-neutral way, so the same code and test
-suite run on both.
+suite run on both.  Step scripts, the C<sudo> and C<apt> shims, and
+C<event.json> are written with LF line endings, which is what the container's
+shell expects.  Arguments are quoted for the Windows command line by
+L<App::Actions::Process> itself, because Perl's own Windows quoting gives up
+on any argument containing a double quote and the C runtime then splits it at
+its spaces.
+
+Run C<action-run check> to diagnose the host before running a workflow.  It
+reports the platform, the Docker client and daemon versions, whether the
+daemon runs Linux containers, and whether Docker can bind-mount a temporary
+directory and the project directory.  Each problem it finds is followed by the
+step that fixes it, such as starting Docker Desktop, switching it to Linux
+containers, or sharing the drive that holds the project.  See L<action-run>
+for the details.
 
 =head1 METHODS
 
@@ -147,7 +162,16 @@ C<.github/workflows> directory; the repository root is then used.
 
 Options include C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>, C<env>,
 C<secrets>, C<dry_run>, C<verbose>, C<quiet>, C<keep>, C<keep_images>,
-C<pull>, C<no_pull>, C<strict_actions>, C<docker>, and C<docker_bin>.
+C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>, C<docker>, and
+C<docker_bin>.
+
+Before any job starts, the environment is probed exactly as C<action-run>
+C<check> does: the daemon must be reachable and run Linux containers, and the
+project directory must be readable through a bind mount.  The probe uses the
+image the first runnable job will use, so a working setup needs no extra pull.
+It says nothing when it passes and prints the full report, with remedies, when
+it does not, in which case no container is started.  C<skip_check> starts the
+workflow anyway, and is what C<action-run --skip-check> sets.
 
 C<docker> and C<docker_bin> name the Docker command.  It may also be a wrapper
 script; a wrapper written in Perl is run with the current Perl interpreter, so
@@ -168,6 +192,36 @@ Prints one line per expanded job and returns 0.
 =head2 workflow
 
 Returns the loaded L<App::Actions::Workflow> object.
+
+=head1 TESTING
+
+The suite runs against a fake Docker command, so it needs neither Docker nor
+a daemon:
+
+    prove -l t
+
+One of its tests copies the suite into a temporary directory whose name
+contains spaces and runs every test file there again, which is how paths with
+spaces are covered on every platform.  That doubles the running time; set
+C<SPACE_PATH=0> to skip it, or run just that check with
+C<prove -l t/space-path.t>.
+
+One small workflow can be run against a real Docker daemon instead:
+
+    REAL_DOCKER=1 prove -l t/real-docker.t
+
+C<REAL_DOCKER_IMAGE> overrides the image (the default is C<alpine:3.20>) and
+C<DOCKER> overrides the Docker command.  The daemon must run Linux containers.
+The same ground is covered by C<action-run-smoke>, which does not need C<prove>
+and reports the environment before it runs anything; use it when Docker, not
+the code, is in doubt.  On Windows it is the check to run against Docker
+Desktop, whose Linux engine C<action-run-smoke> verifies before it starts a
+container.
+
+The opt-in I<Real Docker on Windows> workflow runs the same test on a Windows
+host.  Dispatch it on a self-hosted Windows runner with Docker Desktop, or set
+the C<docker_host> input to a Linux daemon.  GitHub-hosted Windows runners
+only run Windows containers, so the job stops there with an explanation.
 
 =head1 LIMITATIONS
 

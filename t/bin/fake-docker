@@ -35,8 +35,28 @@ if ($command eq '--version') {
     exit 0;
 }
 
+if ($command eq 'version') {
+    my $format = _option_value(\@args, '--format') || '';
+    if ($format =~ /Server/) {
+        # The client version is available even when the daemon is not.
+        exit 1 if $ENV{FAKE_NO_DAEMON};
+        print "26.0.0\n";
+    } elsif ($format =~ /Client/) {
+        print "26.0.0\n";
+    }
+    exit 0;
+}
+
 if ($command eq 'info') {
-    print "26.0.0\n";
+    exit 1 if $ENV{FAKE_NO_DAEMON};
+    my $format = _option_value(\@args, '--format') || '';
+    if ($format =~ /OSType/) {
+        my $os_type = defined $ENV{FAKE_OS_TYPE} && length $ENV{FAKE_OS_TYPE}
+            ? $ENV{FAKE_OS_TYPE}
+            : 'linux';
+        print "$os_type\n";
+    }
+    print "26.0.0\n" if $format =~ /ServerVersion/;
     exit 0;
 }
 
@@ -56,6 +76,15 @@ if ($command eq 'image') {
 
 if ($command eq 'pull') {
     my $image = $args[-1];
+
+    # FAKE_PULL_FAILURE names an image, or '*' for every image, that cannot be
+    # pulled: the case where a run would otherwise fail halfway through.
+    my $broken = $ENV{FAKE_PULL_FAILURE};
+    if (defined $broken && length $broken && ($broken eq '*' || $broken eq $image)) {
+        print STDERR "Error response from daemon: pull access denied for $image\n";
+        exit 1;
+    }
+
     open my $marker, '>', _image_marker($image) or die "fake-docker: $!";
     binmode $marker;
     print {$marker} $image;
@@ -99,9 +128,37 @@ if ($command eq 'run') {
         exit 0;
     }
 
+    my $mounts = mounts(\@run_args);
+
+    # The mount probe used by "action-run check": read the marker back from
+    # the mounted temporary directory and count the project entries.
+    if (defined $mounts->{'/action-run-check'}) {
+        exit 1 if $ENV{FAKE_MOUNT_FAILURE};
+
+        my $marker = to_host('/action-run-check/marker', $mounts);
+        my $token = defined $marker && -f $marker ? _slurp($marker) : '';
+        $token = 'wrong' if $ENV{FAKE_BAD_MOUNT};
+
+        my $entries = 0;
+        if (defined $mounts->{'/check-project'}) {
+            if (opendir my $directory, $mounts->{'/check-project'}) {
+                $entries = grep { $_ ne '.' && $_ ne '..' } readdir $directory;
+                closedir $directory;
+            }
+        }
+
+        # A drive Docker Desktop has not shared shows the project as empty, or
+        # as something else entirely.
+        $entries = $ENV{FAKE_ENTRY_COUNT}
+            if defined $ENV{FAKE_ENTRY_COUNT} && length $ENV{FAKE_ENTRY_COUNT};
+
+        binmode STDOUT;
+        print $token, "\n", $entries, "\n";
+        exit 0;
+    }
+
     # A one-shot "docker run --rm" action.  If it contains a mount and an
     # action marker, emulate the files the action would write.
-    my $mounts = mounts(\@run_args);
     my $environment = _environment(\@run_args);
     _write_action_files($mounts, $environment, join(' ', @run_args));
     exit 0;
@@ -124,6 +181,7 @@ if ($command eq 'exec') {
     }
 
     # A JavaScript action step: docker exec ... <container> node <script>.
+    # Node accepts CRLF, so these are read in text mode like before.
     my ($node_script, $node_container) = _node_script(\@exec_args);
     if (defined $node_script) {
         my $mounts = _container_mounts($node_container);
@@ -141,8 +199,18 @@ if ($command eq 'exec') {
     if (defined $script) {
         my $host_script = to_host($script, $mounts);
         if (defined $host_script && -f $host_script) {
-            $contents = _slurp($host_script);
+            # Read the script exactly as the shell would: a CR used as a line
+            # ending is part of the command there, so a CRLF script fails.  In
+            # text mode the CR would be translated away and a CRLF regression
+            # in App::Actions::Runner would go unnoticed on Windows.
+            $contents = _slurp_bytes($host_script);
             print "[fake-docker] executing $script\n";
+            if ($contents =~ /\r\n|\r\z/) {
+                my $kind = $contents =~ /\r\n/ ? 'CRLF' : 'CR';
+                print STDERR "fake-docker: $script has $kind line endings; "
+                    . "a shell would report \$'\\r': command not found\n";
+                exit 127;
+            }
         }
     }
 
@@ -225,6 +293,20 @@ sub _slurp {
     my ($file) = @_;
 
     open my $handle, '<', $file or die "fake-docker: $!";
+    local $/;
+    my $contents = <$handle>;
+    close $handle;
+
+    return defined $contents ? $contents : '';
+}
+
+# Read a file without the text-mode translation, so that a CR written to disk
+# stays visible.
+sub _slurp_bytes {
+    my ($file) = @_;
+
+    open my $handle, '<', $file or die "fake-docker: $!";
+    binmode $handle;
     local $/;
     my $contents = <$handle>;
     close $handle;

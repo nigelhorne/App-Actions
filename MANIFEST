@@ -1,10 +1,13 @@
 .github/workflows/perl-ci.yml
+.github/workflows/real-docker-windows.yml
 .gitignore
 bin/action-run
+bin/action-run-smoke
 Changes
 cpanfile
 lib/App/Actions.pm
 lib/App/Actions/Action.pm
+lib/App/Actions/Check.pm
 lib/App/Actions/Docker.pm
 lib/App/Actions/Expression.pm
 lib/App/Actions/Process.pm
@@ -18,6 +21,7 @@ README.md
 t/00-load.t
 t/action.t
 t/bin/fake-docker
+t/check.t
 t/cli.t
 t/docker.t
 t/expression.t
@@ -25,5 +29,8 @@ t/fake-docker.t
 t/lib/App/Actions/FakeDocker.pm
 t/matrix.t
 t/process.t
+t/real-docker.t
 t/runner.t
+t/smoke.t
+t/space-path.t
 t/workflow.t

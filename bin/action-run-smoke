@@ -1,0 +1,326 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin ();
+use File::Path qw(make_path);
+use File::Spec ();
+use File::Temp ();
+use Getopt::Long qw(GetOptions);
+use Pod::Usage qw(pod2usage);
+
+# Run straight from a checkout as well as from an installed location.
+BEGIN {
+    my $local = "$FindBin::Bin/../lib";
+    unshift @INC, $local if -f "$local/App/Actions.pm";
+}
+
+use App::Actions;
+use App::Actions::Check;
+
+my $docker_bin;
+my $image = 'alpine:3.20';
+my $platform;
+my $directory = File::Spec->curdir;
+my $verbose;
+my $help;
+my $version;
+
+Getopt::Long::Configure('no_auto_abbrev', 'no_ignore_case');
+
+GetOptions(
+    'docker=s'    => \$docker_bin,
+    'image=s'     => \$image,
+    'platform=s'  => \$platform,
+    'directory=s' => \$directory,
+    'verbose|v'   => \$verbose,
+    'help|h'      => \$help,
+    'version|V'   => \$version,
+) or pod2usage(-exitval => 2, -verbose => 0);
+
+if ($help) {
+    pod2usage(-exitval => 0, -verbose => 1);
+}
+
+if ($version) {
+    print "action-run-smoke $App::Actions::VERSION\n";
+    exit 0;
+}
+
+if (@ARGV) {
+    pod2usage(
+        -exitval => 2,
+        -verbose => 0,
+        -message => "Usage: action-run-smoke [options]\n",
+    );
+}
+
+print "action-run-smoke\n";
+print '  directory ', File::Spec->rel2abs($directory), "\n";
+
+# The same report "action-run check" prints, but without its heading or
+# verdict: this command has one heading and one verdict of its own.
+my $check = App::Actions::Check->new(
+    docker_bin => $docker_bin,
+    image      => $image,
+    platform   => $platform,
+    directory  => $directory,
+    title      => '',
+    summary    => 0,
+);
+
+# The check prints a remedy beside each problem, so nothing is added here.
+if ($check->run != 0) {
+    _problem('the environment is not ready; apply the remedies above, then run this again');
+    print "Result: smoke test failed\n";
+    exit 2;
+}
+
+my $exit = _run_workflow($image);
+
+if ($exit != 0) {
+    print "Result: smoke test failed\n";
+    exit($exit == 2 ? 2 : 1);
+}
+
+print "Result: smoke test passed\n";
+exit 0;
+
+# Write a throwaway project and run its workflow against the real daemon.  The
+# steps check the two things the fake Docker can only pretend to do: that a
+# bind mount from the host works, and that a file written by one step is read
+# by the next.
+sub _run_workflow {
+    my ($workflow_image) = @_;
+
+    my $temp = File::Temp->newdir('action-run-smoke-XXXXXX', TMPDIR => 1, CLEANUP => 1);
+    my $project = "$temp";
+    make_path(File::Spec->catdir($project, '.github', 'workflows'));
+
+    my $workflow_file = File::Spec->catfile(
+        $project, '.github', 'workflows', 'smoke.yml',
+    );
+
+    open my $handle, '>', $workflow_file
+        or return _failed("cannot write '$workflow_file': $!");
+    binmode $handle;
+    print {$handle} _workflow_yaml($workflow_image);
+    close $handle
+        or return _failed("cannot write '$workflow_file': $!");
+
+    print "  workflow  one job, four steps, GITHUB_ENV and GITHUB_OUTPUT\n";
+
+    my $actions = eval {
+        App::Actions->new(
+            workflow_file => $workflow_file,
+            project_dir   => $project,
+            docker_bin    => $docker_bin,
+            image         => $workflow_image,
+            platform      => $platform,
+            verbose       => $verbose,
+        );
+    };
+
+    if (my $error = $@) {
+        return _failed(_trim($error));
+    }
+
+    my $exit = eval { $actions->run };
+
+    if (my $error = $@) {
+        return _failed(_trim($error));
+    }
+
+    return 0 if $exit == 0;
+
+    _problem('the smoke workflow failed; the steps above say why');
+
+    return $exit == 2 ? 2 : 1;
+}
+
+# No interpolation here: the shell metacharacters and the expression syntax
+# are easier to read when they are not backslashed.  The image is substituted
+# afterwards.
+sub _workflow_yaml {
+    my ($workflow_image) = @_;
+
+    my $yaml = <<'YAML';
+name: Smoke
+on: push
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    container:
+      image: __IMAGE__
+    steps:
+      - name: Write the environment file
+        shell: sh
+        run: |
+          echo "SMOKE_VALUE=hello" >> "$GITHUB_ENV"
+      - name: Write the output file
+        id: values
+        shell: sh
+        run: |
+          echo "answer=42" >> "$GITHUB_OUTPUT"
+      - name: Check that they arrived
+        shell: sh
+        run: |
+          test "$SMOKE_VALUE" = hello || { echo "GITHUB_ENV did not reach this step" >&2; exit 1; }
+          test "${{ steps.values.outputs.answer }}" = 42 || { echo "GITHUB_OUTPUT did not reach this step" >&2; exit 1; }
+          echo env-and-output-ok
+      - name: Check the container
+        shell: sh
+        run: |
+          test "$(uname -s)" = Linux || { echo "the job container is not Linux" >&2; exit 1; }
+          echo container-ok
+YAML
+
+    $yaml =~ s/__IMAGE__/$workflow_image/g;
+
+    return $yaml;
+}
+
+sub _failed {
+    my ($message) = @_;
+
+    _problem($message);
+    _hints();
+
+    return 2;
+}
+
+sub _problem {
+    my ($message) = @_;
+
+    print "  problem   $message\n";
+
+    return;
+}
+
+# Only Windows needs advice: on Unix a broken daemon is a daemon problem.
+sub _hints {
+    return unless $^O eq 'MSWin32';
+
+    print "  hint      Docker Desktop must run Linux containers: right-click the\n";
+    print "            tray icon and choose \"Switch to Linux containers\".\n";
+    print "  hint      The directories above must be on a drive that Docker Desktop\n";
+    print "            shares; see Settings > Resources > File sharing.\n";
+
+    return;
+}
+
+sub _trim {
+    my ($value) = @_;
+
+    return '' unless defined $value;
+    $value =~ s/^\s+//;
+    $value =~ s/\s+$//;
+
+    return $value;
+}
+
+__END__
+
+=head1 NAME
+
+action-run-smoke - check that Docker can run an App::Actions workflow
+
+=head1 SYNOPSIS
+
+    action-run-smoke [options]
+
+=head1 DESCRIPTION
+
+C<action-run-smoke> is the end-to-end check to run after installing App::Actions
+or after changing Docker, a virtual machine, or a drive's sharing settings.  It
+does what C<action-run check> does and then one more thing: it runs a small
+workflow against the real daemon.
+
+The environment part reports the host platform, the Docker client and daemon
+versions, whether the daemon runs Linux containers, and whether Docker can
+bind-mount a temporary directory and the given directory.  The workflow part
+starts one container from the image, runs four steps in it, and checks that a
+variable written to C<GITHUB_ENV> and an output written to C<GITHUB_OUTPUT> by
+one step are seen by the next, and that the container is Linux.  Those are the
+two things the fake Docker used by the test suite cannot really prove.
+
+The temporary project is removed afterwards, along with the containers,
+networks and images the run created.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--docker> I<command>
+
+The Docker command.  The default is C<$ENV{DOCKER}> or C<docker>.  A wrapper
+script is used as given; a wrapper written in Perl is run with the current
+interpreter, which is what makes it usable on Windows.
+
+=item B<--image> I<image>
+
+The Linux image used for the mount probe and the smoke workflow.  The default
+is C<alpine:3.20>.
+
+=item B<--platform> I<platform>
+
+Pass C<--platform> to Docker, for example C<linux/amd64> on an ARM host that
+emulates x86 images.
+
+=item B<--directory> I<directory>
+
+The directory mounted read-only during the mount check, and reported at the
+top of the output.  It defaults to the current directory.  Use a directory on
+the drive where workflows live, so that a drive Docker Desktop has not shared
+is caught here rather than in the middle of a run.
+
+=item B<--verbose>, B<-v>
+
+Show the Docker commands that the smoke workflow runs.
+
+=item B<--help>, B<-h>
+
+Show this help.
+
+=item B<--version>, B<-V>
+
+Show the version.
+
+=back
+
+=head1 EXIT STATUS
+
+0 when the environment is ready and the smoke workflow succeeded, 1 when the
+environment is ready but the workflow failed, and 2 when the environment itself
+needs fixing.
+
+=head1 EXAMPLES
+
+    action-run-smoke
+
+    action-run-smoke --directory C:\src\project
+
+On Windows, with Docker Desktop:
+
+    C:\> action-run-smoke
+    C:\> action-run-smoke --directory C:\src\project --verbose
+
+Both require Docker Desktop to be running with the WSL 2 Linux engine, so that
+C<docker info --format "{{.OSType}}"> reports C<linux>.  If the report says the
+daemon runs C<windows> containers, switch Docker Desktop to Linux containers
+from its tray icon.  If the mount check fails, share the drive in Settings >
+Resources > File sharing.  Point C<--docker> at another executable when Docker
+is not on C<PATH>:
+
+    C:\> action-run-smoke --docker "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+
+=head1 AUTHOR
+
+Nigel Horne, C<njh@nigelhorne.com>
+
+=head1 LICENSE
+
+This library is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=cut

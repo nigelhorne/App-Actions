@@ -180,8 +180,7 @@ sub run {
 
     print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
 
-    system($self->_command(@args));
-    return App::Actions::Process::exit_code($?);
+    return App::Actions::Process::stream([ $self->_command(@args) ]);
 }
 
 sub run_silent {

@@ -1,6 +1,7 @@
 requires 'perl', '5.010';
 
 requires 'Carp';
+requires 'Config';
 requires 'Cwd';
 requires 'File::Basename';
 requires 'File::Path';
@@ -23,6 +24,8 @@ on 'configure' => sub {
 on 'test' => sub {
     requires 'Capture::Tiny';
     requires 'Exporter';
+    requires 'File::Copy';
+    requires 'File::Find';
     requires 'File::Temp';
     requires 'FindBin';
     requires 'JSON::PP';

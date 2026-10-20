@@ -21,3 +21,30 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       does not reliably support, and use the same code for git.
     - Make the test suite Windows-safe: no POSIX-only paths, permissions or
       shell commands, and CRLF-tolerant output matching.
+    - Write step scripts, the sudo and apt shims, and event.json with LF line
+      endings even on Windows, where bash rejects CRLF scripts.  The fake
+      shell used by the tests reads step scripts byte for byte and fails on a
+      CR, so a CRLF regression is caught there rather than only on Linux.
+    - Quote command arguments for the Windows command line, because Perl
+      leaves an argument containing a double quote unquoted and the C runtime
+      then splits it at its spaces.  This is why the tests no longer pass
+      program code through "perl -e".
+    - Add an opt-in test and a workflow_dispatch CI job that run one workflow
+      against a real Linux Docker daemon, including from a Windows host.
+    - Run the environment probes automatically before a workflow, using the
+      image the first job will use.  They are silent when they pass and stop
+      the run with a report when they do not; --skip-check starts the workflow
+      anyway.
+    - Add "action-run check", which reports the host platform, Docker
+      connectivity and whether bind mounts of the temporary and project
+      directories work, and "action-run check --json", which reports the same
+      as one machine-readable object with stable keys for CI to assert on.  Each problem is followed by a remedy naming the tools
+      of the host platform, such as starting Docker Desktop, switching it to
+      Linux containers, or sharing the drive that holds the directory.
+    - Add "action-run-smoke", the documented end-to-end check: it runs the
+      check above and then one workflow against the real daemon, and it is
+      what to run on Windows against Docker Desktop.  The Windows CI job runs
+      it instead of its own preflight.
+    - Run the whole test suite a second time from a temporary directory whose
+      path contains spaces, on every platform, so that paths with spaces are
+      not left to chance.  SPACE_PATH=0 skips that run.

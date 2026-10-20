@@ -48,12 +48,77 @@ sub capture {
     return ($output, $status);
 }
 
+# Quote one argument for the Win32 command line.  Perl's own quoting cannot be
+# relied on: win32/win32.c:create_command_line() drops the quotes when an
+# argument contains a double quote, so such an argument is split apart by the
+# C runtime.  That matters here because step commands are passed to "sh -c"
+# and environment values may contain both spaces and quotes.  Arguments that
+# need no quoting are returned untouched; Windows is the only platform that
+# uses this.
+sub quote_win32 {
+    my ($argument) = @_;
+
+    $argument = '' unless defined $argument;
+    # An empty argument has to be quoted, or it disappears from the command
+    # line entirely.
+    return '""' unless length $argument;
+    return $argument unless $argument =~ /[\s"]/;
+
+    my $quoted    = '"';
+    my $backslash = 0;
+    for my $character (split //, $argument) {
+        if ($character eq '\\') {
+            $backslash++;
+            next;
+        }
+        if ($character eq '"') {
+            # A backslash before a quote is literal, so double those that
+            # precede it, then escape the quote itself.
+            $quoted .= ('\\' x ($backslash * 2 + 1)) . '"';
+            $backslash = 0;
+            next;
+        }
+        $quoted .= ('\\' x $backslash) . $character;
+        $backslash = 0;
+    }
+
+    # Backslashes before the closing quote must not escape it.
+    $quoted .= '\\' x ($backslash * 2) . '"';
+
+    return $quoted;
+}
+
+# The arguments to hand to system().  The program name is left alone: it cannot
+# contain a quote, and Perl has to find it as a file.
+sub _spawn_args {
+    my ($command) = @_;
+
+    my @args = @$command;
+    return @args unless $^O eq 'MSWin32';
+
+    return ($args[0], map { quote_win32($_) } @args[1 .. $#args]);
+}
+
 # Run $command with both streams discarded.
 sub run_quiet {
     my ($command) = @_;
 
     my $devnull = File::Spec->devnull;
     return run($command, stdout => $devnull, stderr => $devnull);
+}
+
+# Run $command with its output going straight to the caller's streams.
+sub stream {
+    my ($command) = @_;
+
+    croak 'No command given' unless ref $command eq 'ARRAY' && @$command;
+
+    STDOUT->flush;
+    STDERR->flush;
+
+    system(_spawn_args($command));
+
+    return exit_code($?);
 }
 
 # Run $command with its standard output (and optionally its standard error)
@@ -65,8 +130,7 @@ sub run {
 
     croak 'No command given' unless ref $command eq 'ARRAY' && @$command;
 
-    my @command = @$command;
-    my $stdout  = defined $options{stdout} ? $options{stdout} : File::Spec->devnull;
+    my $stdout = defined $options{stdout} ? $options{stdout} : File::Spec->devnull;
 
     # Anything already buffered belongs before the child's output.
     STDOUT->flush;
@@ -92,7 +156,7 @@ sub run {
             my $warning = shift;
             warn $warning unless $warning =~ /^Can't exec /;
         };
-        system(@command);
+        system(_spawn_args($command));
         $status = $?;
     }
 
@@ -127,7 +191,9 @@ L<App::Actions::Docker> and L<App::Actions::Runner> need to run external
 programs and inspect their exit codes.  The obvious implementations use
 C<fork> and the piped forms of C<open>, which are not reliably available on
 Windows.  This module uses C<system> with explicitly redirected standard
-output instead, so the same code works on Unix and on Windows.
+output instead, so the same code works on Unix and on Windows.  Arguments that
+need quoting are quoted here rather than left to Perl, whose Win32 quoting
+gives up on any argument containing a double quote.
 
 =head1 FUNCTIONS
 
@@ -144,6 +210,25 @@ normalised to C<"\n">.  The command is not run through a shell.
     my $status = run_quiet(\@command);
 
 Runs the command with both standard output and standard error discarded.
+
+=head2 stream
+
+    my $status = stream(\@command);
+
+Runs the command with its standard output and standard error going straight to
+the caller, and returns its exit code.
+
+=head2 quote_win32
+
+    my $argument = quote_win32('sh -c printf "$PATH"');
+
+Quotes one argument for the Win32 command line, following the rules the C
+runtime uses to split a command line back into arguments.  Perl's own quoting
+leaves an argument containing a double quote unquoted, so the C runtime splits
+it at its spaces; this is why a C<-e> program containing quotes cannot be
+passed to C<system> on Windows.  Every function in this module that starts a
+command applies this on Windows only; elsewhere the arguments are used as
+given.
 
 =head2 exit_code
 
