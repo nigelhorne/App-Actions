@@ -114,7 +114,9 @@ sub pull {
     push @args, $image;
 
     my $rc = $self->run(@args);
-    croak "Failed to pull Docker image '$image' (exit $rc)" if $rc != 0;
+    # die, not croak, and with a trailing newline: this is advice for the
+    # reader, not a place to point at source lines.
+    die "Failed to pull Docker image '$image' (exit $rc)\n" if $rc != 0;
     return 1;
 }
 

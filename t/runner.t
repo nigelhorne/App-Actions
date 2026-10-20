@@ -799,8 +799,17 @@ like(
     qr/cannot prepare the image 'postgres:15', needed by service 'db' of job 'test'/,
     'the failure names the image and the service that needs it',
 );
+unlike($service_broken->{stderr}, qr/ at \S+ line \d+/,
+    'the image failure reads as a sentence, not a source location');
 unlike($service_broken->{log}, qr/^run\t-d\t/m, 'no job container is started');
 unlike($service_broken->{log}, qr/^exec\t/m, 'no step runs');
+
+my $strict_pull = run_workflow($with_images, no_pull => 1);
+is($strict_pull->{exit}, 2, '--no-pull with a missing image stops the run');
+like($strict_pull->{stderr}, qr/is not available locally \(--no-pull\)/,
+    'the --no-pull problem is explained before any container starts');
+unlike($strict_pull->{stderr}, qr/ at \S+ line \d+/, 'that message reads as a sentence too');
+unlike($strict_pull->{log}, qr/^run\t-d\t/m, 'no job container is started by --no-pull');
 
 my $action_broken = run_workflow($with_images, fake_pull_failure => 'alpine:3.20');
 is($action_broken->{exit}, 2, 'an unpullable action image stops the run');
@@ -839,7 +848,7 @@ is($pulls, 1, 'a shared image is pulled once');
 my $skipped_images = run_workflow(
     $with_images, fake_pull_failure => 'postgres:15', skip_check => 1,
 );
-is($skipped_images->{exit}, 1, 'skip_check fails later, inside the job');
+is($skipped_images->{exit}, 2, 'skip_check fails later, inside the job');
 like($skipped_images->{stdout}, qr/==> Job: test/, 'the job starts with skip_check');
 like($skipped_images->{stderr}, qr/Failed to pull Docker image 'postgres:15'/,
     'the pull failure surfaces at use time');

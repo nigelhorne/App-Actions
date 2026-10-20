@@ -35,6 +35,10 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       image the first job will use.  They are silent when they pass and stop
       the run with a report when they do not; --skip-check starts the workflow
       anyway.
+    - Prepare every image the run needs - job images, service images and
+      docker:// action images, with matrix values resolved - before the first
+      container starts, so a mistyped image is reported instead of failing
+      halfway through a job.
     - Add "action-run check", which reports the host platform, Docker
       connectivity and whether bind mounts of the temporary and project
       directories work, and "action-run check --json", which reports the same

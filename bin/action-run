@@ -215,6 +215,11 @@ readable through a bind mount.  The result is silent when everything works and
 printed as a report with remedies when it does not, in which case no container
 is started.  Use C<--skip-check> to start the workflow anyway.
 
+The images the run needs are prepared after that and before the first
+container starts: the job images, the service images and the images of
+C<docker://> actions, with matrix values resolved.  An image that cannot be
+pulled stops the run there, naming the job, service or action that needs it.
+
 =head1 COMMANDS
 
 =head2 check
@@ -327,10 +332,11 @@ for a workflow run.
 
 =item B<--skip-check>
 
-Skip the environment probes that otherwise run before any job starts, while
-still checking that the Docker command answers.  Use it when the probes do not
-apply, for example when the project directory lives on a network share that
-the daemon cannot mount but the workflow does not need it.
+Skip the environment probes and the image preparation that otherwise run
+before any job starts, while still checking that the Docker command answers.
+Images are then pulled when they are first used.  Use it when the probes do
+not apply, for example when the project directory lives on a network share
+that the daemon cannot mount but the workflow does not need it.
 
 =item B<--verbose>, B<-v>
 

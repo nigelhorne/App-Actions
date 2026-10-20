@@ -69,6 +69,14 @@ nothing when it passes and prints the full report, with remedies, when it does
 not, in which case no container is started.  `skip_check` (or `--skip-check`
 on the command line) starts the workflow anyway.
 
+The images needed by the selected jobs are then prepared: the job container
+images, the service container images, and the images of `docker://` actions,
+resolved from the matrix where the image is expression-driven.  A missing
+image is pulled there and then, before the first container is created, so a
+mistyped service image costs a message rather than a half-finished job; an
+image whose name cannot be resolved yet is left to the step that uses it.
+With `skip_check` the images are pulled when they are first needed.
+
 `docker` and `docker_bin` name the Docker command.  It may also be a wrapper
 script; a wrapper written in Perl is run with the current Perl interpreter, so
 it works on Windows too, where the operating system cannot start a shebang

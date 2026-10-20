@@ -2061,7 +2061,7 @@ sub _ensure_image {
 
     if ($self->{pull} || !$exists) {
         if ($self->{no_pull}) {
-            croak "Docker image '$image' is not available locally (--no-pull)";
+            die "Docker image '$image' is not available locally (--no-pull)\n";
         }
         print "Pulling image $image...\n" unless $self->{quiet};
         $self->{docker}->pull($image);
