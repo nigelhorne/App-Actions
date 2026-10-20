@@ -1,159 +1,88 @@
-# App::Actions
+## Name
 
-Run a GitHub Actions workflow locally with Docker.
+App::Actions - run GitHub Actions workflows locally with Docker
 
-`action-run` reads a workflow file and the directory containing the project to
-test, then executes the workflow's Linux jobs in containers.  A typical run is:
+## Synopsis
 
-```sh
-action-run ~/src/njh/CGI-Info/.github/workflows/perl-ci.yml ~/src/njh/CGI-Info
+```perl
+use App::Actions;
+
+my $actions = App::Actions->new(
+    workflow_file => "$ENV{HOME}/src/njh/CGI-Info/.github/workflows/perl-ci.yml",
+    project_dir   => "$ENV{HOME}/src/njh/CGI-Info",
+);
+
+exit $actions->run;
 ```
 
-The project directory is optional when the workflow lives in
-`.github/workflows`, because the repository root can be inferred.
+## Description
 
-## Installation
+App::Actions runs a GitHub Actions workflow on a local machine using Docker
+containers.  It understands the parts of a workflow that are useful for local
+testing: jobs, matrix expansion, container images, service containers,
+environment files, working directories, shells, and `if` conditions.
 
-The distribution uses `ExtUtils::MakeMaker`:
+Each job gets a private Docker network, its own service containers, and a
+long-lived job container.  Steps are executed in that container with
+`docker exec`, so files and installed modules persist between steps.  When a
+job finishes, its containers and network are removed; images that this run
+pulled are removed at the end as well.  The `GITHUB_ENV`, `GITHUB_PATH`,
+`GITHUB_OUTPUT`, `GITHUB_STATE`, and `GITHUB_STEP_SUMMARY` files written by
+steps are honoured.  If an image has no `sudo` and the container is running
+as root, a small `sudo` shim is placed on `PATH` so that steps such as
+`sudo apt update` work locally.
 
-```sh
-perl Makefile.PL
-make
-make test
-make install
+## Methods
+
+### New
+
+```perl
+my $actions = App::Actions->new(
+    workflow_file => $path,
+    project_dir   => $directory,
+    %options,
+);
 ```
 
-Docker must be installed and the current user must be able to talk to the
-Docker daemon.  The code uses the `docker` command, so `DOCKER_HOST` and a
-non-default binary work as usual:
+`project_dir` may be omitted when the workflow is inside a repository's
+`.github/workflows` directory; the repository root is then used.
 
-```sh
-action-run --docker /usr/local/bin/docker ...
+Options include `jobs`, `image`, `perl_image`, `platform`, `user`, `env`,
+`secrets`, `dry_run`, `verbose`, `quiet`, `keep`, `keep_images`,
+`pull`, `no_pull`, `strict_actions`, `docker`, and `docker_bin`.
+
+### Run
+
+```perl
+my $exit_code = $actions->run;
 ```
 
-## What is supported
+Returns 0 for success, 1 when a job fails, and 2 for a usage, Docker, or other
+infrastructure error.
 
-* Jobs, `needs`, job-level `if`, `continue-on-error`, and `fail-fast`.
-  Conditions that do not call a status function get the same implicit
-  `success()` that GitHub applies, so `if: runner.os == 'Linux'` is skipped
-  after an earlier step fails.
-* `strategy.matrix`, including `include` and `exclude`.
-* Linux `runs-on` values.  `ubuntu-latest` maps to `ubuntu:latest` and
-  `ubuntu-24.04` maps to `ubuntu:24.04` when no job container is declared.
-* `jobs.<id>.container` and service containers, including their environment,
-  volumes, ports, and `options`.
-* Workflow, job, and step `env`; `defaults.run.shell` and
-  `defaults.run.working-directory`.
-* `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY`, and
-  `GITHUB_STATE` files written by steps.
-* Common expression syntax: property access, comparisons, `&&`, `||`, `!`,
-  `contains()`, `startsWith()`, `endsWith()`, `format()`, `join()`,
-  `toJSON()`, `fromJSON()`, `success()`, `failure()`, `always()`, and
-  `cancelled()`.
-* `actions/checkout` and `shogo82148/actions-setup-perl` as local no-ops.  The
-  repository is mounted at `/github/workspace`, and a `setup-perl` step chooses
-  a `perl:<version>` image by default.
-* `docker://...` actions.
-* `actions/cache`, artifact, and Codecov actions as no-ops.
-* Local actions (`uses: ./.github/actions/foo`).  Composite actions run their
-  steps in the job container, with the `inputs` context, `github.action_path`,
-  and `GITHUB_ACTION_PATH` set, and expose their declared `outputs`.  Nested
-  local composites work.  JavaScript actions run `runs.pre`, `runs.main`, and
-  `runs.post` with `node`, receive their inputs as `INPUT_*` variables, and
-  can export variables, `PATH` entries, outputs, and step summaries through the
-  usual `GITHUB_*` files.  Post steps run in reverse order when the job ends
-  and honour `post-if`.
+### List\_Jobs
 
-Each job gets its own Docker network and a long-lived job container.  Steps run
-with `docker exec`, so files, build products, and installed modules persist
-between steps.  Containers and networks are removed when the job finishes.
-Images that this run pulled are removed at the end unless you ask to keep them.
+Prints one line per expanded job and returns 0.
 
-## Options
+### Workflow
 
-```text
---job NAME          run only matching job ids or display names (repeatable)
---image IMAGE       fallback image for jobs with no container
---perl-image FORMAT image template for setup-perl (default: perl:%s)
---platform PLATFORM pass --platform to Docker
---user USER[:GROUP] run containers as this user
---env NAME=VALUE    set or override an environment variable (repeatable)
---secret NAME=VALUE make ${{ secrets.NAME }} available (repeatable)
---docker PATH       Docker executable to use (default: docker)
---pull              force an image pull
---no-pull           fail rather than pulling a missing image
---dry-run           print commands and scripts without running them
---list              list expanded jobs and exit
---keep              keep containers, networks, images, and the temp directory
---keep-images       keep pulled images
---strict-actions    fail on unsupported actions instead of skipping them
---verbose           print Docker commands and extra diagnostics
---quiet             suppress progress output
-```
-
-Examples:
-
-```sh
-# See what the workflow would do, without Docker
-action-run --dry-run --verbose .github/workflows/perl-ci.yml .
-
-# Run one matrix job with a specific fallback image
-action-run --job test --image perl:5.40 .github/workflows/test.yml .
-
-# Keep the containers around after a failure
-action-run --keep .github/workflows/alpine.yml .
-```
+Returns the loaded [App::Actions::Workflow](https://metacpan.org/pod/App%3A%3AActions%3A%3AWorkflow) object.
 
 ## Limitations
 
-* Only Linux runners are emulated.  Windows and macOS matrix entries are
-  skipped with a message.
-* Remote actions, and local actions that use `runs.using: docker`, cannot be
-  executed.  They are skipped with a warning; `--strict-actions` turns that
-  into a failure.
-* JavaScript actions need `node` in the job image; there is no download of a
-  Node runtime.  Images such as `node:20` work out of the box.
-* `hashFiles()` is not implemented, and `GITHUB_STATE` values are passed from
-  `pre` to `main` and `post` within one action only.
-* Job outputs, `needs.<job>.outputs`, and `timeout-minutes` are not
-  implemented.
-* Services are started on a private network.  A job container reaches a
-  service by its service id, as on GitHub when the job itself runs in a
-  container, rather than through `localhost`.
-* Containers run as their image's default user, usually root.  Build products
-  written into the mounted project directory may therefore be owned by root.
-  Use `--user "$(id -u):$(id -g)"` when that matters, and keep in mind that
-  steps which require root may then fail.
-* When the image has no `sudo` and the container is running as root, a small
-  `sudo` shim is put on `PATH`.  This makes steps such as `sudo apt update`
-  work locally.  The shim ignores sudo's user and option flags, because the
-  container is already root.  With `--user`, no shim is installed.
-* `apt` and `apt-get` are shadowed by tiny shims that add `--yes` to
-  installing and removing commands, and `DEBIAN_FRONTEND=noninteractive` is
-  set.  Without a terminal, apt would otherwise abort at its "Do you want to
-  continue?" prompt instead of installing like a hosted runner does.
-* Images pulled by the run are deleted by default.  Use `--keep-images` if you
-  want to keep Docker's cache warm between runs.
+Only Linux runners can be emulated.  Windows and macOS jobs are skipped.
+Local composite and JavaScript actions are run; remote actions and local
+`docker` actions cannot be run.  Checkout, setup-perl, cache, artifact, and
+Codecov actions are treated as no-ops.  Use `strict_actions` to turn unknown
+actions into failures instead of skips.  JavaScript actions need `node` in
+the job image.  Job outputs, `needs.*.outputs`, and `timeout-minutes` are
+not implemented.
 
-## Security
+## Author
 
-Only pass `--secret` values that you are comfortable exposing to the
-workflow's containers.  `action-run` redacts secret values from the Docker
-commands and dry-run scripts it prints, but it cannot redact output produced
-by a program running inside a container.
-
-## Development
-
-```sh
-perl Makefile.PL
-make
-prove -l t
-```
-
-The test suite includes a fake Docker executable, so the tests run without a
-Docker daemon.  The runner has also been exercised manually against real
-Alpine and Perl containers, service containers, cleanup, and failure paths.
+Nigel Horne, `njh@nigelhorne.com`
 
 ## License
 
-GPL.  See [LICENSE](LICENSE).
+This library is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
