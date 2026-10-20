@@ -6,6 +6,7 @@ use Carp qw(croak);
 use File::Spec;
 use File::Temp ();
 use IO::Handle ();
+use POSIX ();
 
 our $VERSION = '0.01';
 
@@ -119,6 +120,127 @@ sub stream {
     system(_spawn_args($command));
 
     return exit_code($?);
+}
+
+# Point a child's standard streams at the files the caller chose.  This runs
+# after fork() and before exec(), so a failure is reported by the child and
+# ends it rather than escaping into the parent.
+sub _redirect_child {
+    my (%redirect) = @_;
+
+    for my $stream (qw(stdout stderr)) {
+        my $file = $redirect{$stream};
+        next unless defined $file;
+
+        my $handle = $stream eq 'stdout' ? \*STDOUT : \*STDERR;
+        open $handle, '>', $file or do {
+            print STDERR "Unable to redirect $stream to '$file': $!\n";
+            POSIX::_exit(127);
+        };
+    }
+
+    return;
+}
+
+# Run several commands at the same time, at most $concurrency of them at once,
+# with their output going straight to the caller's streams (or to the files
+# named by stdout and stderr).  Returns one exit code per command, in the
+# order the commands were given.
+#
+# Only the running is concurrent: the results are collected by index, so a
+# caller reports the same failures in the same order whichever command was
+# slowest.  fork() is used only where it is reliable.  On Windows the child of
+# Perl's emulated fork() shares the parent's handles, so the commands are run
+# one after another there instead.
+sub run_parallel {
+    my ($commands, %options) = @_;
+
+    croak 'No commands given' unless ref $commands eq 'ARRAY';
+    return [] unless @$commands;
+
+    my $concurrency = $options{concurrency} || 4;
+    $concurrency = @$commands if $concurrency > @$commands;
+
+    # A caller that wants the output kept out of its own streams names where
+    # it should go instead, and gets the same treatment one command at a time.
+    my %redirect;
+    $redirect{stdout} = $options{stdout} if defined $options{stdout};
+    $redirect{stderr} = $options{stderr} if defined $options{stderr};
+
+    my $run_one = sub {
+        my ($command) = @_;
+
+        return %redirect ? run($command, %redirect) : stream($command);
+    };
+
+    return [ map { $run_one->($_) } @$commands ]
+        if $^O eq 'MSWin32' || $concurrency < 2;
+
+    # Buffered output belongs before the children write to the same handle.
+    STDOUT->flush;
+    STDERR->flush;
+
+    my @codes = (undef) x @$commands;
+    my %running;
+    my $next = 0;
+
+    my $start = sub {
+        while ($next < @$commands && keys %running < $concurrency) {
+            my $index = $next++;
+            my $pid = fork();
+
+            if (!defined $pid) {
+                # No child could be created, so this command runs here.  Its
+                # result still belongs in its own slot.
+                $codes[$index] = $run_one->($commands->[$index]);
+                next;
+            }
+
+            if ($pid == 0) {
+                _redirect_child(%redirect);
+                exec(@{ $commands->[$index] }) or do {
+                    print STDERR "Unable to run '$commands->[$index][0]': $!\n";
+                    POSIX::_exit(127);
+                };
+            }
+
+            $running{$pid} = $index;
+        }
+
+        return;
+    };
+
+    $start->();
+
+    my $error;
+    eval {
+        while (%running) {
+            my $pid = waitpid(-1, 0);
+            last if $pid <= 0;
+
+            my $index = delete $running{$pid};
+            next unless defined $index;
+
+            $codes[$index] = exit_code($?);
+            $start->();
+        }
+
+        1;
+    } or $error = $@;
+
+    if (defined $error) {
+        # An interrupt should not leave pulls running behind the report.
+        for my $pid (keys %running) {
+            kill 'KILL', $pid;
+            waitpid($pid, 0);
+        }
+        die $error;
+    }
+
+    # A command that was started but never reported has not succeeded.
+    $codes[$_] = 1 for grep { !defined $codes[$_] } 0 .. $#codes;
+
+    return \@codes;
 }
 
 # Run $command with its standard output (and optionally its standard error)

@@ -136,6 +136,101 @@ my ($stdout, $stderr) = capture {
 is($stdout, "before\nafter\n", 'the enclosing capture keeps its output in order');
 is($stderr, '', 'standard error is left alone');
 
+# Several commands can run together.  Their results keep the order of the
+# commands even when a later one finishes first, and their output goes
+# straight to the caller's streams.
+my $marks = File::Spec->catfile(tempdir(CLEANUP => 1), 'marks.txt');
+my $timed = write_program(<<'PERL');
+use Time::HiRes qw(time sleep);
+my ($marks, $name, $delay, $status) = @ARGV;
+print "$name\n";
+for my $phase ('start', 'end') {
+    open my $log, '>>', $marks or die $!;
+    printf {$log} "%s %s %.6f\n", $phase, $name, time;
+    close $log;
+    sleep $delay if $phase eq 'start';
+}
+exit $status;
+PERL
+
+my $codes;
+my ($together) = capture {
+    $codes = App::Actions::Process::run_parallel(
+        [
+            [ $^X, $timed, $marks, 'slow', 0.3, 0 ],
+            [ $^X, $timed, $marks, 'fast', 0.05, 3 ],
+        ],
+        concurrency => 2,
+    );
+};
+
+is_deeply($codes, [ 0, 3 ],
+    'the exit codes come back in the order of the commands');
+like($together, qr/^(?:slow|fast)\n/m, 'the commands write to the caller streams');
+
+my %when;
+open my $mark_handle, '<', $marks or die $!;
+while (my $line = <$mark_handle>) {
+    my ($phase, $name, $at) = split ' ', $line;
+    $when{$name}{$phase} = $at;
+}
+close $mark_handle;
+
+is(scalar keys %when, 2, 'both commands ran');
+
+is_deeply(App::Actions::Process::run_parallel([]), [],
+    'no commands means no results');
+
+my $single = App::Actions::Process::run_parallel([ [ $^X, $failing ] ]);
+is_deeply($single, [7], 'a single command still reports its exit code');
+
+# Output can be kept away from the caller's streams, which is how a report is
+# built without a command's noise ending up in it.
+my $redirected;
+my ($leaked) = capture {
+    $redirected = App::Actions::Process::run_parallel(
+        [
+            [ $^X, $timed, $marks, 'quiet-one', 0.05, 0 ],
+            [ $^X, $timed, $marks, 'quiet-two', 0.05, 4 ],
+        ],
+        concurrency => 2,
+        stdout      => File::Spec->devnull,
+        stderr      => File::Spec->devnull,
+    );
+};
+is_deeply($redirected, [ 0, 4 ], 'redirected commands still report their status');
+is($leaked, '', 'redirected output does not reach the caller streams');
+
+SKIP: {
+    skip 'commands run one at a time where fork() is not used', 3
+        if $^O eq 'MSWin32';
+
+    ok(
+        $when{slow}{start} < $when{fast}{end}
+            && $when{fast}{start} < $when{slow}{end},
+        'the commands overlap instead of running one after another',
+    );
+
+    my $serial = App::Actions::Process::run_parallel(
+        [
+            [ $^X, $timed, $marks, 'first', 0.2, 0 ],
+            [ $^X, $timed, $marks, 'second', 0.2, 0 ],
+        ],
+        concurrency => 1,
+    );
+    is_deeply($serial, [ 0, 0 ], 'one at a time still runs every command');
+
+    my $broken;
+    capture {
+        $broken = App::Actions::Process::run_parallel(
+            [ [ 'app-actions-no-such-command' ] ],
+            concurrency => 2,
+        );
+    };
+    isnt($broken->[0], 0,
+        'a command that cannot be started is still a failure');
+}
+
 my $noise = write_program("print STDERR \"noise\\n\";\n");
 my (undef, $passthrough) = capture {
     App::Actions::Process::capture([ $^X, $noise ]);

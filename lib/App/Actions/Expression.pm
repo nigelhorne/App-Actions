@@ -30,6 +30,9 @@ sub evaluate {
     $self->{status}  = $status  || {};
     $self->{tokens}  = $self->_tokenize($text);
     $self->{pos}     = 0;
+    # Whether a lookup found nothing, which strict interpolation turns into an
+    # error.  An existing value that happens to be empty is not a miss.
+    $self->{unresolved} = 0;
 
     my $value = $self->_parse_expression;
     my $token = $self->_peek;
@@ -57,6 +60,62 @@ sub interpolate {
 
         my $expression = substr($out, $open + 3, $close - $open - 3);
         my $value      = $self->evaluate($expression, $context, $status);
+
+        if ($self->{strict} && $self->{unresolved}) {
+            (my $written = $expression) =~ s/^\s+|\s+$//g;
+            croak "unable to resolve '\${{ $written }}' from the values available";
+        }
+
+        my $replacement = _stringify($value);
+
+        substr($out, $open, $close + 2 - $open, $replacement);
+        $start = $open + length($replacement);
+    }
+
+    return $out;
+}
+
+# Replace every ${{ ... }}, but treat a value that could not be found as an
+# error rather than as an empty string.  This is for callers where an empty
+# result would be a wrong value rather than a legitimate one, such as an
+# image name assembled from values that do not exist yet.
+sub interpolate_strict {
+    my ($self, $text, $context, $status) = @_;
+
+    local $self->{strict} = 1;
+
+    return $self->interpolate($text, $context, $status);
+}
+
+# Replace the ${{ ... }} this context can resolve and leave the others as they
+# were written.  A caller that knows some of the values now and the rest later
+# can resolve twice, without having to guess whether an empty string means
+# "empty" or "not known here".
+sub interpolate_known {
+    my ($self, $text, $context, $status) = @_;
+
+    return $text unless defined $text;
+    return $text if ref $text;
+
+    my $out   = "$text";
+    my $start = 0;
+
+    while (1) {
+        my $open = index($out, '${{', $start);
+        last if $open < 0;
+
+        my $close = index($out, '}}', $open + 3);
+        croak "Unclosed expression in '$text'" if $close < 0;
+
+        my $expression = substr($out, $open + 3, $close - $open - 3);
+        my $value      = $self->evaluate($expression, $context, $status);
+
+        if ($self->{unresolved}) {
+            # Step over the expression, which stays in the text.
+            $start = $close + 2;
+            next;
+        }
+
         my $replacement = _stringify($value);
 
         substr($out, $open, $close + 2 - $open, $replacement);
@@ -360,8 +419,8 @@ sub _postfix {
 sub _lookup {
     my ($self, $object, $key) = @_;
 
-    return undef unless defined $object && defined $key;
-    return undef if ref $key;
+    return $self->_missing unless defined $object && defined $key;
+    return $self->_missing if ref $key;
 
     if (ref $object eq 'HASH') {
         return $object->{$key} if exists $object->{$key};
@@ -369,13 +428,23 @@ sub _lookup {
         for my $name (keys %$object) {
             return $object->{$name} if lc $name eq $lower;
         }
-        return undef;
+        return $self->_missing;
     }
 
     if (ref $object eq 'ARRAY') {
-        return undef unless $key =~ /^-?\d+$/;
+        return $self->_missing unless $key =~ /^-?\d+$/;
         return $object->[$key];
     }
+
+    return $self->_missing;
+}
+
+# A lookup found nothing.  The value is still undef, as before; strict
+# interpolation is the only caller that cares.
+sub _missing {
+    my ($self) = @_;
+
+    $self->{unresolved} = 1;
 
     return undef;
 }

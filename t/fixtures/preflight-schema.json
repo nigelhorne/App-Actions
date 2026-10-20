@@ -1,0 +1,134 @@
+{
+  "title": "action-run preflight --json",
+  "description": "The document action-run preflight --json prints: the check document with an images array and the pull concurrency added.  Objects reject keys this file does not name, so a new key is a schema change.",
+  "version": 2,
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "The version of this shape; App::Actions::Runner->preflight_schema_version returns it.",
+      "type": "integer",
+      "const": 2
+    },
+    "ready": {
+      "description": "True only when the checks passed and every image was prepared; a deferred image does not make the run unready.",
+      "type": "boolean"
+    },
+    "problems": {
+      "description": "How many problems were found, counting the failed images.",
+      "type": "integer"
+    },
+    "pull_concurrency": {
+      "description": "How many pulls the preflight allowed at once: the configured setting, but 1 on Windows, where images are pulled one at a time.  It is the number the puller was given, not how many pulls happened to overlap.",
+      "type": "integer"
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "os": { "type": "string" },
+        "name": { "type": "string" },
+        "perl": { "type": "string" },
+        "archname": { "type": "string" }
+      },
+      "required": [ "os", "name", "perl", "archname" ]
+    },
+    "docker": {
+      "type": "object",
+      "properties": {
+        "bin": { "type": [ "string", "null" ] },
+        "client": { "type": [ "string", "null" ] },
+        "daemon": { "type": [ "string", "null" ] },
+        "containers": { "type": [ "string", "null" ] }
+      },
+      "required": [ "bin", "client", "daemon", "containers" ]
+    },
+    "image": {
+      "description": "The probe image, or null when no container was run.",
+      "type": [ "string", "null" ]
+    },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "description": "The temporary directory the probe reads back from.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "ok" ]
+          },
+          {
+            "description": "The project directory, whose entry count is compared with the host's.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "entries": { "type": [ "integer", "null" ] },
+              "expected": { "type": [ "integer", "null" ] },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "entries", "expected", "ok" ]
+          }
+        ]
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "problem": { "type": "string" },
+          "remedies": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": [ "problem", "remedies" ]
+      }
+    },
+    "images": {
+      "description": "Every image the selected jobs need, in the order the run would need it.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "description": "The image name, or null when it could not be resolved yet.",
+            "type": [ "string", "null" ]
+          },
+          "source": {
+            "description": "The job, service or action that needs it.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [ "pulled", "present", "failed", "skipped", "deferred" ]
+          },
+          "expression": {
+            "description": "Only on a deferred entry: the image name as it was written.",
+            "type": "string"
+          },
+          "error": {
+            "description": "Only on a failed or deferred entry: why it was not prepared or named.",
+            "type": "string"
+          }
+        },
+        "required": [ "image", "source", "status" ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "ready",
+    "problems",
+    "pull_concurrency",
+    "host",
+    "docker",
+    "image",
+    "mounts",
+    "issues",
+    "images"
+  ]
+}

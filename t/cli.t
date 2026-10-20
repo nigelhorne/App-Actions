@@ -7,6 +7,8 @@ use File::Path qw(make_path);
 use File::Spec;
 use File::Temp qw(tempdir);
 
+use JSON::PP ();
+
 my $root = File::Spec->rel2abs(File::Spec->catdir(dirname(__FILE__), '..'));
 my $lib = File::Spec->catdir($root, 'lib');
 my $script = File::Spec->catfile($root, 'bin', 'action-run');
@@ -43,6 +45,14 @@ sub run_cli {
 
     # $? carries the POSIX-compatible status on Windows too.
     return (useful_text($stdout), useful_text($stderr), $status >> 8);
+}
+
+# Windows pulls one image at a time whatever is asked for, and the preflight
+# reports the number the puller was given rather than the number requested.
+sub effective_concurrency {
+    my ($asked) = @_;
+
+    return $^O eq 'MSWin32' ? 1 : $asked;
 }
 
 my ($version_out, $version_err, $version_exit) = run_cli('--version');
@@ -134,11 +144,246 @@ my ($json_first_out, undef, $json_first_exit) = run_cli(
 is($json_first_exit, 0, '--json before the command works too');
 like($json_first_out, qr/^\{"docker":/, 'the option order does not matter');
 
+# preflight --json reports what the run would prepare, so that CI can assert
+# on the images rather than on the pull output.
+my $preflight_yaml = <<'YAML';
+name: Preflight
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    services:
+      db:
+        image: postgres:15
+    steps:
+      - uses: docker://alpine:3.20
+      - run: echo hello
+YAML
+
+my ($preflight_project, $preflight_workflow) = make_project($preflight_yaml);
+
+my ($preflight_out, $preflight_err, $preflight_exit) = run_cli(
+    '--docker', $fake_docker, 'preflight', '--json',
+    $preflight_workflow, $preflight_project,
+);
+is($preflight_exit, 0, 'preflight --json exits 0 when every image is ready');
+like($preflight_out, qr/^\{"docker":/, 'preflight --json prints one JSON object');
+unlike($preflight_out, qr/^Pulling image/m, 'preflight --json prints no pull progress');
+is($preflight_err, '', 'preflight --json writes nothing to standard error');
+
+my $preflight_data = eval { JSON::PP->new->decode($preflight_out) };
+ok($preflight_data, 'the preflight JSON decodes') or diag "$@";
+ok($preflight_data->{ready}, 'the preflight is ready');
+is($preflight_data->{problems}, 0, 'no problems are counted');
+is($preflight_data->{image}, 'perl:5.38',
+    'the probe image is reported alongside the check report');
+is($preflight_data->{pull_concurrency}, effective_concurrency(4),
+    'the pull concurrency in force is reported, four by default');
+is(scalar @{ $preflight_data->{images} }, 3, 'every needed image is listed');
+is($preflight_data->{images}[0]{image}, 'perl:5.38', 'the job image is listed first');
+is($preflight_data->{images}[0]{source}, "job 'test'",
+    'the job image names the job that needs it');
+is($preflight_data->{images}[1]{source}, "service 'db' of job 'test'",
+    'the service image names the service and the job');
+is($preflight_data->{images}[2]{source},
+    "action 'docker://alpine:3.20' in job 'test'",
+    'the action image names the action and the job');
+ok($preflight_data->{images}[0]{status} eq 'pulled'
+    || $preflight_data->{images}[0]{status} eq 'present',
+    'an image is reported as pulled or present, never both');
+
+my ($preflight_first_out, undef, $preflight_first_exit) = run_cli(
+    '--json', '--docker', $fake_docker, 'preflight',
+    $preflight_workflow, $preflight_project,
+);
+is($preflight_first_exit, 0, '--json before the preflight command works too');
+like($preflight_first_out, qr/^\{"docker":/, 'the option order does not matter');
+
+# An image a step decides cannot be named before the run, so the preflight
+# says so rather than guessing; CI can assert on the deferral as easily as on
+# a pull.
+my $deferred_yaml = <<'YAML';
+name: Deferred image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - id: pick
+        run: |
+          FAKE_OUTPUT: image=alpine:3.20
+      - uses: docker://${{ steps.pick.outputs.image }}
+YAML
+
+my ($deferred_project, $deferred_workflow) = make_project($deferred_yaml);
+
+my ($deferred_out, $deferred_err, $deferred_exit) = run_cli(
+    '--docker', $fake_docker, 'preflight', '--json',
+    $deferred_workflow, $deferred_project,
+);
+is($deferred_exit, 0, 'a deferred image leaves the preflight ready');
+is($deferred_err, '', 'a deferral writes nothing to standard error');
+
+my $deferred = eval { JSON::PP->new->decode($deferred_out) };
+ok($deferred, 'the deferred preflight JSON decodes') or diag "$@";
+is($deferred->{images}[1]{status}, 'deferred',
+    'the image a step decides is reported as deferred');
+is($deferred->{images}[1]{image}, undef, 'no name is guessed for it');
+is($deferred->{images}[1]{expression}, '${{ steps.pick.outputs.image }}',
+    'the expression is reported as it was written');
+like($deferred->{images}[1]{error}, qr/unable to resolve/,
+    'the reason it cannot be named is reported with it');
+ok($deferred->{ready}, 'everything the preflight could check is ready');
+is($deferred->{problems}, 0, 'a deferral is not counted as a problem');
+
+# The pull concurrency is a first-class setting: lower it for a slow
+# registry from the command line or the environment, and refuse a value that
+# is not a positive integer rather than quietly pulling four at a time.
+like($help_out, qr/--pull-concurrency/, '--help lists the pull concurrency option');
+
+my ($concurrent_out, undef, $concurrent_exit) = run_cli(
+    '--docker', $fake_docker, '--pull-concurrency', '1', 'preflight', '--json',
+    $preflight_workflow, $preflight_project,
+);
+is($concurrent_exit, 0, '--pull-concurrency 1 is accepted');
+
+my $concurrent = eval { JSON::PP->new->decode($concurrent_out) } || {};
+ok($concurrent->{ready}, 'the preflight is still ready with one pull at a time');
+is($concurrent->{pull_concurrency}, 1,
+    'the option reaches the puller, and the document says so');
+
+{
+    local $ENV{ACTION_RUN_PULL_CONCURRENCY} = 2;
+
+    my ($env_out, undef, $env_exit) = run_cli(
+        '--docker', $fake_docker, '--json', 'preflight',
+        $preflight_workflow, $preflight_project,
+    );
+    is($env_exit, 0, 'ACTION_RUN_PULL_CONCURRENCY is accepted');
+    is((eval { JSON::PP->new->decode($env_out) } || {})->{pull_concurrency},
+        effective_concurrency(2),
+        'the environment value reaches the puller, and the document says so');
+}
+
+for my $bad ('0', '-1', 'lots') {
+    my (undef, $bad_err, $bad_exit) = run_cli(
+        '--docker', $fake_docker, '--pull-concurrency', $bad, 'preflight',
+        $preflight_workflow, $preflight_project,
+    );
+    is($bad_exit, 2, "--pull-concurrency $bad is a usage error");
+    like($bad_err, qr/pull concurrency must be a positive integer, not '\Q$bad\E'/,
+        "the value $bad is named in the error");
+    unlike($bad_err, qr/ at \S+ line \d+/, 'the error reads as a sentence');
+}
+
+{
+    local $ENV{ACTION_RUN_PULL_CONCURRENCY} = 'zero';
+
+    my (undef, $env_err, $env_exit) = run_cli(
+        '--docker', $fake_docker, 'preflight',
+        $preflight_workflow, $preflight_project,
+    );
+    is($env_exit, 2, 'a bad value in the environment is a usage error');
+    like($env_err, qr/pull concurrency must be a positive integer, not 'zero'/,
+        'the environment value is named');
+}
+
+{
+    local $ENV{ACTION_RUN_PULL_CONCURRENCY} = 'zero';
+
+    my ($override_out, undef, $override_exit) = run_cli(
+        '--docker', $fake_docker, '--pull-concurrency', '2', 'preflight',
+        $preflight_workflow, $preflight_project,
+    );
+    is($override_exit, 0, 'the option wins over a bad value in the environment');
+    is((eval { JSON::PP->new->decode($override_out) } || {})->{pull_concurrency},
+        effective_concurrency(2),
+        'the option is what the document reports when both are set');
+}
+
+{
+    local $ENV{FAKE_PULL_FAILURE} = 'postgres:15';
+
+    # --pull makes the cached image fail as well, so the test does not depend
+    # on which run happened to leave it behind.
+    my ($failed_out, $failed_err, $failed_exit) = run_cli(
+        '--pull', '--docker', $fake_docker, '--json', 'preflight',
+        $preflight_workflow, $preflight_project,
+    );
+    is($failed_exit, 2, 'preflight --json exits 2 when an image cannot be pulled');
+    is($failed_err, '', 'a JSON failure still writes nothing to standard error');
+
+    my $failed = eval { JSON::PP->new->decode($failed_out) };
+    ok($failed, 'the failing preflight JSON decodes') or diag "$@";
+    ok(!$failed->{ready}, 'the failing preflight is not ready');
+    is($failed->{problems}, 1, 'the failed image is counted as a problem');
+    is($failed->{images}[1]{status}, 'failed', 'the image that failed is marked');
+    like($failed->{images}[1]{error},
+        qr/Failed to pull Docker image 'postgres:15'/,
+        'the image carries the reason it failed');
+    like($failed->{issues}[0]{problem},
+        qr/cannot prepare the image 'postgres:15', needed by service 'db' of job 'test'/,
+        'the issue names the image, the service and the job');
+    ok(scalar @{ $failed->{issues}[0]{remedies} },
+        'the issue carries a remedy');
+
+    my ($text_out, $text_err, $text_exit) = run_cli(
+        '--pull', '--docker', $fake_docker, 'preflight',
+        $preflight_workflow, $preflight_project,
+    );
+    is($text_exit, 2, 'preflight reports the same failure as text');
+    like($text_out, qr/^Pulling image/m, 'text mode still shows the pulls');
+    unlike($text_out, qr/^\{"docker":/, 'text mode prints no JSON');
+    like($text_err, qr/cannot prepare the image 'postgres:15'/,
+        'text mode explains the failure on standard error');
+}
+
+{
+    local $ENV{FAKE_OS_TYPE} = 'windows';
+
+    my ($blocked_out, undef, $blocked_exit) = run_cli(
+        '--docker', $fake_docker, 'preflight', '--json',
+        $preflight_workflow, $preflight_project,
+    );
+    is($blocked_exit, 2, 'preflight --json exits 2 when the environment is not ready');
+
+    my $blocked = eval { JSON::PP->new->decode($blocked_out) };
+    ok($blocked, 'the blocked preflight JSON decodes') or diag "$@";
+    ok(!$blocked->{ready}, 'a broken environment is not ready');
+    like($blocked->{issues}[0]{problem}, qr/'windows' containers/,
+        'the check issue is reported');
+    is(scalar @{ $blocked->{images} }, 3, 'the needed images are still listed');
+    is($blocked->{images}[0]{status}, 'skipped',
+        'nothing is claimed to be prepared for a broken environment');
+
+    my ($skipped_out, undef, $skipped_exit) = run_cli(
+        '--skip-check', '--docker', $fake_docker, 'preflight', '--json',
+        $preflight_workflow, $preflight_project,
+    );
+    is($skipped_exit, 0, '--skip-check prepares the images without probing');
+
+    my $skipped = eval { JSON::PP->new->decode($skipped_out) };
+    ok($skipped, 'the skipped-probe JSON decodes') or diag "$@";
+    ok($skipped->{ready}, 'the images alone are enough to be ready');
+    is($skipped->{docker}{daemon}, undef, 'no probe result is claimed');
+}
+
+my ($preflight_usage_out, $preflight_usage_err, $preflight_usage_exit) = run_cli('preflight');
+is($preflight_usage_exit, 2, 'preflight needs a workflow');
+like($preflight_usage_err,
+    qr/Usage: action-run \[options\] preflight <workflow\.yml> \[project-directory\]/,
+    'the preflight usage is shown');
+
 my ($json_usage_out, $json_usage_err, $json_usage_exit) = run_cli(
     '--json', 'workflow.yml', 'project',
 );
-is($json_usage_exit, 2, '--json without check is a usage error');
-like($json_usage_err, qr/only used by the check command/, 'the misuse is explained');
+is($json_usage_exit, 2, '--json without a command that uses it is a usage error');
+like($json_usage_err, qr/only used by the check and preflight commands/,
+    'the misuse is explained');
 
 my ($check_usage_out, $check_usage_err, $check_usage_exit) = run_cli('check', 'a', 'b');
 is($check_usage_exit, 2, 'check rejects more than one directory');

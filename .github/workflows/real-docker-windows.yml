@@ -1,4 +1,5 @@
-# Opt-in: run one workflow against a real Docker daemon from a Windows host.
+# Opt-in: run the preflight and one workflow against a real Docker daemon
+# from a Windows host.
 #
 # GitHub-hosted Windows runners ship a Windows-only Docker daemon, so they
 # cannot start Linux containers.  Dispatch this workflow either on a
@@ -74,6 +75,21 @@ jobs:
           $env:PATH = "$env:USERPROFILE\perl5\bin;$env:PATH"
           $env:PERL5LIB = "$env:USERPROFILE\perl5\lib\perl5"
           perl -Ilib bin/action-run-smoke --directory .
+          exit $LASTEXITCODE
+
+      # The preflight on a real daemon: a probe that cannot run its container,
+      # images prepared before the first container, and an unpullable image
+      # reported before anything starts.
+      - name: Run the preflight against real Docker
+        shell: pwsh
+        run: |
+          if ($env:REAL_DOCKER -ne '1') {
+            throw 'REAL_DOCKER is not set to 1; refusing to report a skipped test as success.'
+          }
+
+          $env:PATH = "$env:USERPROFILE\perl5\bin;$env:PATH"
+          $env:PERL5LIB = "$env:USERPROFILE\perl5\lib\perl5"
+          perl -Ilib t/real-docker-preflight.t
           exit $LASTEXITCODE
 
       - name: Run one workflow against real Docker

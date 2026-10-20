@@ -22,6 +22,12 @@ use App::Actions::Process;
 
 our $VERSION = '0.01';
 
+# The shape of the preflight JSON document, which is the check document with
+# an images array and the pull concurrency added.  It is versioned separately
+# from the check document because the two can gain keys independently, but a
+# change to the shared part bumps both.  Keep t/fixtures/ in step.
+our $PREFLIGHT_SCHEMA_VERSION = 2;
+
 sub new {
     my ($class, %args) = @_;
 
@@ -51,9 +57,14 @@ sub new {
         no_pull       => $args{no_pull} ? 1 : 0,
         strict_actions => $args{strict_actions} ? 1 : 0,
         skip_check    => $args{skip_check} ? 1 : 0,
+        pull_concurrency => _pull_concurrency($args{pull_concurrency}),
         expression    => App::Actions::Expression->new,
         run_id        => sprintf('%x%04x', time, $$ & 0xffff),
         pulled_images => {},
+        # Every image this run has pulled, including one that was already
+        # present and was refreshed by --pull.  --pull downloads each image
+        # once per run, so a later check of the same image costs nothing.
+        pulled_once   => {},
         containers    => [],
         networks      => [],
         summary       => [],
@@ -79,6 +90,23 @@ sub new {
         if $self->{pull} && $self->{no_pull};
 
     return $self;
+}
+
+# How many images may be pulled at the same time.  The option wins over the
+# environment, which wins over four: four downloads saturate most connections
+# without burying the pull output or the daemon.
+sub _pull_concurrency {
+    my ($value) = @_;
+
+    if (!defined $value || !length $value) {
+        $value = $ENV{ACTION_RUN_PULL_CONCURRENCY};
+        return 4 if !defined $value || !length $value;
+    }
+
+    croak "pull concurrency must be a positive integer, not '$value'"
+        unless !ref $value && $value =~ /^[1-9][0-9]*$/;
+
+    return $value + 0;
 }
 
 sub workflow { return $_[0]->{workflow} }
@@ -136,6 +164,8 @@ sub run {
     return $exit_code;
 }
 
+sub preflight_schema_version { return $PREFLIGHT_SCHEMA_VERSION }
+
 # Probe the host before starting anything: the daemon, the container type,
 # and a real bind mount of the project directory.  Without this the first
 # symptom of an unshared drive or a Windows-only daemon is a job that cannot
@@ -165,35 +195,389 @@ sub _check_environment {
         die "the environment is not ready; fix what the report above asks for, or pass --skip-check to run anyway\n";
     }
 
-    $self->_prepare_images($instances);
+    my ($records, $failures) = $self->_prepare_images($instances);
+
+    if (@$failures) {
+        die _image_failure_message($failures->[0]) . "\n";
+    }
+}
+
+# Probe the environment and prepare the images without starting a job, so
+# that a caller can report the outcome as data rather than as prose.  Returns
+# the exit code, the check's summary with one record per image added, and the
+# message a run would have stopped with.
+#
+# With json => 1 nothing is printed: the checks write into a buffer that is
+# thrown away and docker's pull output is discarded, so the caller's standard
+# output is free for a single document.
+sub preflight {
+    my ($self, %options) = @_;
+
+    my $json = $options{json} ? 1 : 0;
+
+    # The number of pulls this preflight was allowed to make at once.  It is
+    # reported even when nothing was pulled, so that a caller can assert that
+    # a setting reached the puller rather than inferring it from the run.
+    my $concurrency = $self->_effective_pull_concurrency;
+
+    my $instances = $self->{workflow}->expand_jobs;
+    $self->_select_jobs($instances);
+
+    my $check;
+    my $check_exit = 0;
+    my $summary;
+
+    if ($self->{skip_check}) {
+        # The same meaning as during a run: no probes, but Docker still has
+        # to answer before anything is pulled.
+        my $reachable = eval { $self->{docker}->check; 1 };
+        my $error = $reachable ? undef : _trim_error($@);
+
+        $summary = {
+            schema_version => $PREFLIGHT_SCHEMA_VERSION,
+            ready    => $reachable ? 1 : 0,
+            problems => $reachable ? 0 : 1,
+            pull_concurrency => $concurrency,
+            host     => {},
+            docker   => {
+                bin        => $self->_docker_bin,
+                client     => undef,
+                daemon     => undef,
+                containers => undef,
+            },
+            image    => undef,
+            mounts   => [],
+            issues   => $reachable
+                ? []
+                : [ { problem => $error, remedies => [] } ],
+        };
+
+        return {
+            exit    => $reachable ? 0 : 2,
+            summary => { %$summary, images => [] },
+            error   => $error,
+        } unless $reachable;
+
+        $check_exit = 0;
+    }
+    else {
+        my $report = '';
+        my %check_args = (
+            docker_bin => $self->_docker_bin,
+            image      => $self->_probe_image($instances),
+            platform   => $self->{platform},
+            directory  => $self->{project_dir},
+            # Silent when everything works, a full report with remedies when
+            # not.  A JSON caller keeps even that out of its streams.
+            quiet      => $json ? 1 : ($self->{verbose} ? 0 : 1),
+        );
+
+        if ($json) {
+            open my $sink, '>', \$report
+                or die "Unable to buffer the preflight report: $!\n";
+            $check_args{output} = $sink;
+        }
+
+        $check = App::Actions::Check->new(%check_args);
+        $check_exit = $check->run;
+        $summary = $check->summary($check_exit);
+    }
+
+    my (@records, @failures);
+
+    if ($check_exit != 0) {
+        # Nothing is pulled when the environment is not ready, but what the
+        # run would have needed is still worth reporting.
+        for my $entry ($self->_required_images($instances)) {
+            my %record = (
+                source => $entry->{source},
+                status => 'skipped',
+            );
+
+            if (defined $entry->{image}) {
+                $record{image} = $entry->{image};
+            }
+            else {
+                $record{image}      = undef;
+                $record{expression} = $entry->{expression};
+                $record{error}      = $entry->{error};
+            }
+
+            push @records, \%record;
+        }
+    }
+    else {
+        my ($prepared, $failed) = $self->_prepare_images($instances, quiet => $json);
+        @records  = @$prepared;
+        @failures = @$failed;
+    }
+
+    my @issues = @{ $summary->{issues} || [] };
+    for my $failure (@failures) {
+        push @issues, {
+            problem  => _image_failure_message($failure),
+            remedies => [
+                'check the image name, and that the registry is reachable and the Docker login is valid',
+            ],
+        };
+    }
+
+    my $ready = $summary->{ready} && !@failures;
+
+    return {
+        exit    => $ready ? 0 : 2,
+        summary => {
+            %$summary,
+            schema_version => $PREFLIGHT_SCHEMA_VERSION,
+            ready    => $ready ? 1 : 0,
+            problems => scalar @issues,
+            pull_concurrency => $concurrency,
+            issues   => \@issues,
+            images   => \@records,
+        },
+        error => @failures
+            ? _image_failure_message($failures[0])
+            : ($ready ? undef
+                : 'the environment is not ready; fix what the report above asks for, or pass --skip-check to run anyway'),
+    };
 }
 
 # Pull or verify every image the run will need, so that a mistyped service
 # image fails now rather than halfway through a job with its containers up.
+#
+# The presence checks are cheap and run in turn, because an image that is
+# already there needs no pull and one that is not available locally should
+# stop the run before anything is downloaded.  The pulls themselves run
+# together, so a hundred-image matrix does not wait for them one at a time.
+#
+# Returns one record per image, in the order the run will need them, and the
+# records that failed.  A record is { image, source, status, error }, where
+# status is "present", "pulled", "failed" or "deferred"; the caller decides
+# whether a failure stops the run or is only reported.  A deferred record is
+# one the values available before the run cannot name; it carries the
+# expression and the reason, and the job prepares it once it knows more.
 sub _prepare_images {
-    my ($self, $instances) = @_;
+    my ($self, $instances, %options) = @_;
+
+    my $quiet = $options{quiet} ? 1 : 0;
+    my @records;
+    my @pending;
 
     for my $entry ($self->_required_images($instances)) {
-        my ($image, $source) = @$entry;
+        my $image  = $entry->{image};
+        my $source = $entry->{source};
 
-        print "  image     $image ($source)\n" if $self->{verbose} && !$self->{quiet};
+        if (!defined $image) {
+            # No job has run yet, so a value that comes from a step or from
+            # another job's output is not known here.  Rather than guess at an
+            # image name, the record says what could not be resolved; the job
+            # checks it again before it starts, when the value exists.
+            push @records, {
+                image      => undef,
+                expression => $entry->{expression},
+                source     => $source,
+                status     => 'deferred',
+                error      => $entry->{error},
+            };
+            next;
+        }
 
-        eval { $self->_ensure_image($image); 1 } or do {
-            my $error = $@;
-            $error =~ s/\s+$//;
-            die "cannot prepare the image '$image', needed by $source: $error\n";
+        print "  image     $image ($source)\n"
+            if $self->{verbose} && !$self->{quiet} && !$quiet;
+
+        my $present = $self->{dry_run} ? 1 : $self->{docker}->image_exists($image);
+
+        if ($present && !$self->{pull}) {
+            push @records, { image => $image, source => $source, status => 'present' };
+            next;
+        }
+
+        # --no-pull is advice, so it is given as a sentence rather than as a
+        # source location, and before any image is downloaded.
+        if ($self->{no_pull}) {
+            push @records, {
+                image  => $image,
+                source => $source,
+                status => 'failed',
+                error  => "Docker image '$image' is not available locally (--no-pull)",
+            };
+            next;
+        }
+
+        push @records, {
+            image   => $image,
+            source  => $source,
+            status  => 'pending',
+            present => $present,
         };
+        push @pending, $records[-1];
     }
 
-    return;
+    my @failed = grep { $_->{status} eq 'failed' } @records;
+    return (\@records, \@failed) if @failed;
+
+    return (\@records, []) unless @pending;
+
+    unless ($self->{quiet} || $quiet) {
+        print "Pulling image $_->{image}...\n" for @pending;
+    }
+
+    my $results = {};
+
+    if (!$self->{docker}->can('pull_many')) {
+        # A caller-supplied Docker object need only offer the single-image
+        # calls.
+        for my $record (@pending) {
+            my $image = $record->{image};
+            my $pulled = eval { $self->{docker}->pull($image); 1 };
+            if ($pulled) {
+                $results->{$image} = 0;
+                next;
+            }
+
+            my $error = _trim_error($@);
+            $results->{$image} = 1;
+            $record->{error} = $error if defined $error && length $error;
+        }
+    }
+    else {
+        my @images = map { $_->{image} } @pending;
+        $results = $self->{docker}->pull_many(
+            \@images,
+            concurrency => $self->_effective_pull_concurrency,
+            ($quiet ? (quiet => 1) : ()),
+        );
+    }
+
+    # Every image that did arrive is recorded before the failure is reported,
+    # so the cleanup at the end of the run removes it.  The first failure in
+    # the order the run needs the images is the one worth naming.
+    for my $record (@pending) {
+        my $image = $record->{image};
+        my $rc = $results->{$image};
+
+        if ($rc != 0) {
+            $record->{status} = 'failed';
+            $record->{error} = "Failed to pull Docker image '$image' (exit $rc)"
+                unless defined $record->{error} && length $record->{error};
+            next;
+        }
+
+        $self->{pulled_images}{$image} = 1 unless $record->{present};
+        $self->{pulled_once}{$image} = 1;
+        $record->{status} = 'pulled';
+    }
+
+    for my $record (@records) {
+        delete $record->{present};
+    }
+
+    my @still_failed = grep { $_->{status} eq 'failed' } @records;
+
+    return (\@records, \@still_failed);
 }
 
-# The images of the job containers, of their service containers and of the
-# docker:// actions, in the order the run will need them.
+# The final check of one job's images, made with the values the job itself
+# has.  The preflight runs before any job has, so an image built from another
+# job's outputs is deferred there; this is where it is resolved and prepared,
+# while the job still has no network and no containers.  A failure therefore
+# ends the run before the job starts rather than halfway through it.
+#
+# The one kind of image that cannot be known yet is the one a step decides,
+# because an output does not exist until its step has run.  Those are returned
+# so the caller can report them; the step that needs one prepares it before
+# starting its container.
+#
+# Returns the image the job container uses and the deferred expressions.
+sub _prepare_job_images {
+    my ($self, $job, $context) = @_;
+
+    my $runs_on = $self->{workflow}->runs_on_text(
+        $job->{'runs-on'}, $job->{matrix} || {},
+    );
+
+    my $job_image;
+    my @deferred;
+    my %seen;
+
+    for my $entry ($self->_job_image_expressions($job, $runs_on, $context)) {
+        my $expression = $entry->{expression};
+        my $source     = $entry->{source};
+        my $kind       = $entry->{kind};
+
+        my $image = eval {
+            $self->{expression}->interpolate_strict($expression, $context);
+        };
+        my $error = _trim_error($@);
+
+        if (!defined $image || !length $image) {
+            $error = 'the image name is empty'
+                unless defined $error && length $error;
+
+            # A job or a service container is started by the run itself, so a
+            # name that cannot be resolved now is a workflow error the run can
+            # report before it does anything.
+            if ((defined $kind && $kind eq 'job')
+                || (defined $kind && $kind =~ /^service:/)) {
+                die "cannot resolve the image '$expression', needed by $source: $error\n";
+            }
+
+            push @deferred, {
+                expression => $expression,
+                source     => $source,
+                error      => $error,
+            };
+            next;
+        }
+
+        $job_image = $image if defined $kind && $kind eq 'job';
+
+        # Two steps may name the same image; it is prepared once.
+        next if $seen{$image}++;
+
+        my $prepared = eval { $self->_ensure_image($image); 1 };
+        next if $prepared;
+
+        my $failure = _trim_error($@);
+        die "cannot prepare the image '$image', needed by $source: $failure\n";
+    }
+
+    return ($job_image, \@deferred);
+}
+
+# A croak() carries the source location, which is useful in a stack trace
+# and noise in a report someone reads.  Everything that ends up in a summary
+# or an error message goes through here first.
+sub _trim_error {
+    my ($error) = @_;
+
+    return undef unless defined $error && length $error;
+
+    $error =~ s/\s+$//;
+    $error =~ s/\s+at\s+.+? line \d+\.?\z//;
+    $error =~ s/\s+$//;
+
+    return $error;
+}
+
+# The message a failed image preparation ends a run with: the image, what
+# needed it, and what went wrong.
+sub _image_failure_message {
+    my ($failure) = @_;
+
+    return "cannot prepare the image '$failure->{image}', needed by "
+        . "$failure->{source}: $failure->{error}";
+}
+
+# Every image the run will use, in the order it needs them, as the expression
+# that names it.  An expression the values available before the run cannot
+# resolve is returned unresolved rather than as an empty name: the job checks
+# its own images again once needs outputs are known, and reports anything it
+# still cannot resolve before it starts.
 sub _required_images {
     my ($self, $instances) = @_;
 
-    my @images;
+    my @entries;
     my %seen;
 
     for my $instance (@$instances) {
@@ -202,71 +586,149 @@ sub _required_images {
         );
         next unless $self->{workflow}->is_linux_runner($runs_on);
 
-        my $name = defined $instance->{display_name}
-            ? $instance->{display_name}
-            : $instance->{base_id};
         my $context = $self->_preflight_context($instance);
 
-        my $add = sub {
-            my ($image, $source) = @_;
+        for my $entry ($self->_job_image_expressions($instance, $runs_on, $context)) {
+            my $expression = $entry->{expression};
+            next unless defined $expression && length $expression;
 
-            return unless defined $image && length $image;
-            return if $seen{$image}++;
-            push @images, [ $image, $source ];
-
-            return;
-        };
-
-        my $job_image = eval {
-            $self->{workflow}->container_image(
-                $instance, $runs_on,
-                $self->{image} || 'ubuntu:latest',
-                $self->{perl_image},
-            );
-        };
-        $add->($job_image, "job '$name'");
-
-        for my $id (sort keys %{ $instance->{services} || {} }) {
-            my $service = $instance->{services}{$id};
-            $service = { image => $service } unless ref $service eq 'HASH';
             my $image = eval {
-                $self->{expression}->interpolate($service->{image}, $context);
+                $self->{expression}->interpolate_strict($expression, $context);
             };
-            $add->($image, "service '$id' of job '$name'");
-        }
+            my $error = _trim_error($@);
 
-        for my $step (@{ $instance->{steps} || [] }) {
-            $self->_collect_step_images(
-                $step, $name, $context, $add, {}, 0, undef,
-            );
+            if (defined $image && length $image) {
+                next if $seen{"image\0$image"}++;
+                push @entries, {
+                    image  => $image,
+                    source => $entry->{source},
+                    kind   => $entry->{kind},
+                };
+                next;
+            }
+
+            next if $seen{"expression\0$expression\0$entry->{source}"}++;
+            push @entries, {
+                image      => undef,
+                expression => $expression,
+                source     => $entry->{source},
+                error      => defined $error && length $error
+                    ? $error
+                    : 'the image name is empty',
+            };
         }
     }
 
-    return @images;
+    return @entries;
 }
 
-# Walk one step's `uses`.  A docker:// image is added, and a local composite
-# action is read here rather than when the step runs, so that the images in
-# its steps are known before the first container exists.
+# What one job needs, as expressions rather than resolved names, so that each
+# caller can resolve them with the values it has: the preflight with what is
+# known before the run, and the job itself with its full context.
+sub _job_image_expressions {
+    my ($self, $job, $runs_on, $context) = @_;
+
+    my $name = defined $job->{display_name}
+        ? $job->{display_name}
+        : $job->{base_id};
+
+    my @entries;
+
+    my $job_image = eval {
+        $self->{workflow}->container_image(
+            $job, $runs_on,
+            $self->{image} || 'ubuntu:latest',
+            $self->{perl_image},
+        );
+    };
+    push @entries, {
+        expression => $job_image,
+        source     => "job '$name'",
+        kind       => 'job',
+    } if defined $job_image && length $job_image;
+
+    for my $id (sort keys %{ $job->{services} || {} }) {
+        my $service = $job->{services}{$id};
+        $service = { image => $service } unless ref $service eq 'HASH';
+        next unless defined $service->{image} && length $service->{image};
+        push @entries, {
+            expression => $service->{image},
+            source     => "service '$id' of job '$name'",
+            kind       => "service:$id",
+        };
+    }
+
+    my $add = sub {
+        my ($expression, $source) = @_;
+        push @entries, { expression => $expression, source => $source };
+    };
+
+    for my $step (@{ $job->{steps} || [] }) {
+        $self->_collect_step_images($step, $name, $context, $add, {}, 0, undef);
+    }
+
+    return @entries;
+}
+
+# Walk one step's `uses`, handing the image expression to $add unresolved, so
+# that the caller can decide when to resolve it.  Local composite actions are
+# read here rather than when the step runs, so the images in their steps are
+# known before the first container exists.
 sub _collect_step_images {
     my ($self, $step, $job_name, $context, $add, $ancestors, $depth, $via) = @_;
 
     return unless defined $step->{uses};
 
-    my $action = eval {
-        $self->{expression}->interpolate($step->{uses}, $context);
-    };
-    return unless defined $action && length $action;
+    my $uses = $step->{uses};
+    my $image;
 
-    if ($action =~ m{^docker://(.+)$}) {
-        my $source = defined $via
-            ? "action '$action' in local action '$via' of job '$job_name'"
-            : "action '$action' in job '$job_name'";
-        $add->($1, $source);
-        return;
+    # What this context can resolve is resolved now: a composite action's
+    # inputs, which are what usually decide the image.  An expression that
+    # still needs a value only the job will have ("${{ steps.x.outputs.image }}")
+    # is kept as written, so that the caller can recognise it as deferred
+    # rather than mistake an empty string for an image name.
+    my $resolve = sub {
+        my ($text) = @_;
+
+        my $value = eval { $self->{expression}->interpolate($text, $context) };
+        return $text unless defined $value && length $value;
+        return $value =~ /\{\{/ ? $text : $value;
+    };
+
+    if ($uses =~ m{^docker://(.*)$}s) {
+        $image = $resolve->($1);
+    }
+    else {
+        my $action = eval { $self->{expression}->interpolate($uses, $context) };
+        return unless defined $action && length $action;
+
+        if ($action =~ m{^docker://(.*)$}s) {
+            $image = $resolve->($1);
+        }
+        elsif ($action =~ m{^\.\.?/}) {
+            $self->_collect_action_images(
+                $action, $step, $job_name, $context, $add, $ancestors, $depth,
+            );
+            return;
+        }
+        else {
+            return;
+        }
     }
 
-    return unless $action =~ m{^\.\.?/};
+    my $source = defined $via
+        ? "action '$uses' in local action '$via' of job '$job_name'"
+        : "action '$uses' in job '$job_name'";
+
+    $add->($image, $source);
+
+    return;
+}
+
+# Descend into a local composite action, with its inputs resolved as far as
+# the caller's context allows.
+sub _collect_action_images {
+    my ($self, $action, $step, $job_name, $context, $add, $ancestors, $depth) = @_;
 
     # The run refuses to nest composite actions more than ten deep, so the
     # walk stops at the same point instead of descending forever.
@@ -286,7 +748,7 @@ sub _collect_step_images {
 
     # Inputs usually decide the image ("uses: docker://${{ inputs.image }}").
     # A missing required input is the run's error to report, not the
-    # preflight's, so it only leaves the image to be discovered at use time.
+    # preflight's, so it only leaves the image unresolved.
     my $inputs = eval { $self->_action_inputs($loaded, $step, $action, $context, undef) };
     $inputs = {} unless ref $inputs eq 'HASH';
 
@@ -309,9 +771,9 @@ sub _collect_step_images {
     return;
 }
 
-# Enough of a context to resolve an image name: matrix values are the reason
-# an image is usually expression-driven.  Anything that needs the full run
-# context is left alone, and its image is pulled when it is used.
+# The values known before the run.  github.* is resolved as the run will
+# resolve it; needs.* is not, because those outputs belong to jobs that have
+# not run yet, so the job checks its images again when they do.
 sub _preflight_context {
     my ($self, $instance) = @_;
 
@@ -323,9 +785,12 @@ sub _preflight_context {
         inputs  => {},
         steps   => {},
         needs   => {},
-        job     => {},
-        github  => {},
-        strategy => {},
+        job     => { status => 'success' },
+        github  => $self->_github_context($instance),
+        strategy => {
+            'job-index' => $instance->{matrix_index},
+            'job-total' => $instance->{matrix_total},
+        },
         runner  => $self->_runner_context,
     };
 }
@@ -349,6 +814,16 @@ sub _probe_image {
             );
         };
         next unless defined $image && length $image;
+
+        # github.* and env.* are not resolved by container_image; the probe
+        # needs a real image name, and the preflight context has those values.
+        my $resolved = eval {
+            $self->{expression}->interpolate_known(
+                $image, $self->_preflight_context($instance),
+            );
+        };
+        $image = $resolved if defined $resolved && length $resolved;
+        next if $image =~ /\{\{/;
 
         return $image;
     }
@@ -501,8 +976,14 @@ SH
     return;
 }
 
-sub _build_base_env {
+# The GitHub values a run derives from the checkout: branch, commit,
+# repository and the run identifiers.  They are needed before any temporary
+# directory exists, so that the preflight resolves github.* in an image name
+# exactly the way the run will.
+sub _repository_env {
     my ($self) = @_;
+
+    return $self->{repository_env} if $self->{repository_env};
 
     my $project = $self->{project_dir};
     my $remote = _trim($self->_git('config', '--get', 'remote.origin.url'));
@@ -511,7 +992,8 @@ sub _build_base_env {
     if ($remote =~ m{github\.com[:/]([^/]+)/(.+?)(?:\.git)?/?$}) {
         $repository = "$1/$2";
         $repository =~ s/\.git$//;
-    } else {
+    }
+    else {
         $repository = basename($project);
     }
 
@@ -522,20 +1004,42 @@ sub _build_base_env {
     $sha = '0' x 40 unless length $sha;
 
     my $actor = $ENV{GITHUB_ACTOR} || $ENV{USER} || 'local';
-    my $run_id = sprintf('%d%05d', time, $$ % 100000);
     my ($owner) = split m{/}, $repository, 2;
     $owner = $actor unless defined $owner && length $owner;
 
+    return $self->{repository_env} = {
+        GITHUB_ACTOR            => $actor,
+        GITHUB_API_URL          => 'https://api.github.com',
+        GITHUB_EVENT_NAME       => 'push',
+        GITHUB_GRAPHQL_URL      => 'https://api.github.com/graphql',
+        GITHUB_REF              => "refs/heads/$branch",
+        GITHUB_REF_NAME         => $branch,
+        GITHUB_REF_TYPE         => 'branch',
+        GITHUB_REPOSITORY       => $repository,
+        GITHUB_REPOSITORY_OWNER => $owner,
+        GITHUB_RUN_ATTEMPT      => '1',
+        GITHUB_RUN_ID           => sprintf('%d%05d', time, $$ % 100000),
+        GITHUB_RUN_NUMBER       => '1',
+        GITHUB_SERVER_URL       => 'https://github.com',
+        GITHUB_SHA              => $sha,
+    };
+}
+
+sub _build_base_env {
+    my ($self) = @_;
+
+    my $github = $self->_repository_env;
+
     my $event = {
         repository => {
-            full_name => $repository,
-            name      => (split m{/}, $repository)[-1],
-            owner     => { login => $owner },
+            full_name => $github->{GITHUB_REPOSITORY},
+            name      => (split m{/}, $github->{GITHUB_REPOSITORY})[-1],
+            owner     => { login => $github->{GITHUB_REPOSITORY_OWNER} },
         },
-        ref        => "refs/heads/$branch",
-        after      => $sha,
+        ref        => $github->{GITHUB_REF},
+        after      => $github->{GITHUB_SHA},
         before     => '0' x 40,
-        pusher     => { name => $actor },
+        pusher     => { name => $github->{GITHUB_ACTOR} },
     };
 
     my $json = JSON::PP->new->canonical;
@@ -545,31 +1049,18 @@ sub _build_base_env {
 
     $self->{event} = $event;
     $self->{base_env} = {
+        %$github,
         CI                    => 'true',
         DEBIAN_FRONTEND       => 'noninteractive',
         GITHUB_ACTIONS        => 'true',
         GITHUB_ACTION         => '',
-        GITHUB_ACTOR          => $actor,
-        GITHUB_API_URL        => 'https://api.github.com',
         GITHUB_BASE_REF       => '',
         GITHUB_ENV            => '',
-        GITHUB_EVENT_NAME     => 'push',
         GITHUB_EVENT_PATH     => '/github/actions-runner/event.json',
-        GITHUB_GRAPHQL_URL    => 'https://api.github.com/graphql',
         GITHUB_HEAD_REF       => '',
         GITHUB_JOB            => '',
         GITHUB_OUTPUT         => '',
         GITHUB_PATH           => '',
-        GITHUB_REF            => "refs/heads/$branch",
-        GITHUB_REF_NAME       => $branch,
-        GITHUB_REF_TYPE       => 'branch',
-        GITHUB_REPOSITORY     => $repository,
-        GITHUB_REPOSITORY_OWNER => $owner,
-        GITHUB_RUN_ATTEMPT    => '1',
-        GITHUB_RUN_ID         => $run_id,
-        GITHUB_RUN_NUMBER     => '1',
-        GITHUB_SERVER_URL     => 'https://github.com',
-        GITHUB_SHA            => $sha,
         GITHUB_STATE          => '',
         GITHUB_STEP_SUMMARY   => '',
         GITHUB_TOKEN          => '',
@@ -800,21 +1291,27 @@ sub _run_instance {
         return { result => 'skipped', reason => "unsupported runner: $runs_on" };
     }
 
-    my $image = $self->{workflow}->container_image(
-        $job,
-        $runs_on,
-        $self->{image} || 'ubuntu:latest',
-        $self->{perl_image},
-    );
+    print "\n==> Job: $display_name\n" unless $self->{quiet};
+
+    # The preflight could not name an image that comes from another job's
+    # output; now that the job's values exist, the images are resolved and
+    # prepared before its network or containers are, so a bad image stops the
+    # run before the job starts rather than halfway through it.
+    my ($image, $deferred) = $self->_prepare_job_images($job, $context);
 
     if (!defined $image || $image =~ /^\s*$/) {
         croak "Unable to determine a container image for job '$display_name'";
     }
 
-    print "\n==> Job: $display_name\n" unless $self->{quiet};
     print "    image: $image\n" unless $self->{quiet};
 
-    $self->_ensure_image($image);
+    # A step output does not exist until the step has run, so the images built
+    # from one are the only ones left; their step prepares them before it
+    # starts its own container.
+    for my $entry (@$deferred) {
+        print "  deferred  $entry->{expression} ($entry->{source})\n"
+            unless $self->{quiet};
+    }
 
     my $network = $self->_resource_name('net', $job);
     my @containers;
@@ -845,7 +1342,7 @@ sub _run_instance {
         $job_env->{GITHUB_JOB} = $job->{base_id};
         $job_env->{GITHUB_WORKSPACE} = '/github/workspace';
 
-        my $container = $self->_start_job_container($job, $network, $job_env, $context);
+        my $container = $self->_start_job_container($job, $network, $job_env, $context, $image);
         push @containers, $container;
         push @{ $self->{containers} }, $container;
 
@@ -877,9 +1374,9 @@ sub _start_services {
 
         my $image = $service->{image};
         croak "Service '$id' has no image" unless defined $image && length $image;
+        # Resolved and prepared by the job's own image check, before its
+        # network existed.
         $image = $self->{expression}->interpolate($image, $context);
-
-        $self->_ensure_image($image);
 
         my $name = $self->_resource_name('svc', $job, $id);
         my $service_env = $self->_resolve_env([$service->{env}], $context);
@@ -938,15 +1435,9 @@ sub _start_services {
 }
 
 sub _start_job_container {
-    my ($self, $job, $network, $job_env, $context) = @_;
+    my ($self, $job, $network, $job_env, $context, $image) = @_;
 
     my $container = $self->_resource_name('job', $job);
-    my $image = $self->{workflow}->container_image(
-        $job,
-        $self->{workflow}->runs_on_text($job->{'runs-on'}, $job->{matrix} || {}),
-        $self->{image} || 'ubuntu:latest',
-        $self->{perl_image},
-    );
 
     my @args = ($self->_platform_args);
 
@@ -1434,7 +1925,17 @@ sub _run_docker_action {
     my $path_additions = $state->{path_additions};
 
     $image = $self->{expression}->interpolate($image, $context, $status);
-    croak "Docker action '$step->{uses}' has no image name" unless length $image;
+
+    # The job resolved this image before it started unless a step output
+    # decides it, in which case this is the first moment it is known.  Either
+    # way it must be a real name before the container is started.
+    if (!length $image || $image =~ /\{\{/) {
+        my $why = length $image
+            ? "resolved to '$image', which is not an image name"
+            : 'has no image name';
+        croak "Docker action '$step->{uses}' in job '$job->{base_id}' $why; "
+            . 'check the expression it uses\n';
+    }
 
     $self->_ensure_image($image);
 
@@ -2082,7 +2583,9 @@ sub _boolean_value {
 sub _github_context {
     my ($self, $job) = @_;
 
-    my $env = $self->{base_env} || {};
+    # Before the run has built its base environment, the values derived from
+    # the checkout are still enough to resolve github.ref and friends.
+    my $env = $self->{base_env} || $self->_repository_env;
     my $job_id = ref $job eq 'HASH' ? $job->{base_id} : $job;
 
     return {
@@ -2124,10 +2627,30 @@ sub _runner_context {
     };
 }
 
+# The number of pulls the run allows at once: --pull-concurrency, then
+# ACTION_RUN_PULL_CONCURRENCY, then four, but never more than one on Windows,
+# where the pulls run one after another.  This is the number handed to the
+# puller, and so the number the preflight reports, rather than what was asked
+# for.
+sub _effective_pull_concurrency {
+    my ($self) = @_;
+
+    return 1 if $^O eq 'MSWin32';
+
+    return $self->{pull_concurrency};
+}
+
 sub _ensure_image {
     my ($self, $image) = @_;
 
     return 1 if $self->{dry_run};
+
+    # --pull refreshes an image once per run.  The preflight prepares every
+    # image the run will need before the first job starts, so a job that
+    # checks its own image again, a second matrix job using the same image, or
+    # a step that names an image another step already used would otherwise
+    # download it again for no gain.
+    return 1 if $self->{pulled_once}{$image};
 
     my $exists = $self->{docker}->image_exists($image);
 
@@ -2138,6 +2661,7 @@ sub _ensure_image {
         print "Pulling image $image...\n" unless $self->{quiet};
         $self->{docker}->pull($image);
         $self->{pulled_images}{$image} = 1 unless $exists;
+        $self->{pulled_once}{$image} = 1;
     }
 
     return 1;
@@ -2341,6 +2865,26 @@ job or run finishes.  Use C<keep> for debugging.
 
 Runs every selected job and returns an exit status: 0 for success, 1 for a
 workflow failure, 2 for a usage or Docker error.
+
+=head2 preflight
+
+    my $result = $runner->preflight(json => 1);
+
+Makes the same checks and image preparations as a run, without starting a
+container.  Returns a hash of C<exit>, C<summary> and C<error>.  The summary is
+the L<App::Actions::Check> report with C<images> added and
+C<pull_concurrency> reporting the number of pulls the preflight was allowed at
+once, which is 1 on Windows whatever was configured.  Its C<schema_version> is
+L</preflight_schema_version> rather than the check's, because the document is
+its own shape.
+
+=head2 preflight_schema_version
+
+    my $version = App::Actions::Runner->preflight_schema_version;
+
+Returns the version of the preflight JSON document, which is also its
+C<schema_version> key.  The checked-in schema and example are validated in
+F<t/schema.t>.
 
 =head2 list_jobs
 

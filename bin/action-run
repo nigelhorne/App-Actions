@@ -5,6 +5,7 @@ use warnings;
 use FindBin ();
 use File::Spec ();
 use Getopt::Long qw(GetOptions);
+use JSON::PP ();
 use Pod::Usage qw(pod2usage);
 
 # Run straight from a checkout as well as from an installed location.
@@ -33,6 +34,7 @@ my $keep;
 my $keep_images;
 my $strict_actions;
 my $skip_check;
+my $pull_concurrency;
 my $json;
 my $verbose;
 my $quiet;
@@ -58,6 +60,7 @@ GetOptions(
     'keep-images'    => \$keep_images,
     'strict-actions' => \$strict_actions,
     'skip-check'     => \$skip_check,
+    'pull-concurrency=s' => \$pull_concurrency,
     'json'           => \$json,
     'verbose|v'      => \$verbose,
     'quiet|q'        => \$quiet,
@@ -79,8 +82,12 @@ if ($pull && $no_pull) {
     exit 2;
 }
 
-if (@ARGV && $ARGV[0] eq 'check') {
-    shift @ARGV;
+my $command = 'run';
+if (@ARGV && ($ARGV[0] eq 'check' || $ARGV[0] eq 'preflight')) {
+    $command = shift @ARGV;
+}
+
+if ($command eq 'check') {
     if (@ARGV > 1) {
         pod2usage(
             -exitval => 2,
@@ -100,11 +107,11 @@ if (@ARGV && $ARGV[0] eq 'check') {
     exit $check->run;
 }
 
-if ($json) {
+if ($json && $command ne 'preflight') {
     pod2usage(
         -exitval => 2,
         -verbose => 0,
-        -message => "--json is only used by the check command\n",
+        -message => "--json is only used by the check and preflight commands\n",
     );
 }
 
@@ -118,7 +125,9 @@ if (!defined $workflow_file || @ARGV) {
     pod2usage(
         -exitval => 2,
         -verbose => 0,
-        -message => "Usage: action-run [options] <workflow.yml> [project-directory]\n",
+        -message => $command eq 'preflight'
+            ? "Usage: action-run [options] preflight <workflow.yml> [project-directory]\n"
+            : "Usage: action-run [options] <workflow.yml> [project-directory]\n",
     );
 }
 
@@ -142,13 +151,13 @@ my $actions = eval {
         no_pull       => $no_pull,
         strict_actions => $strict_actions,
         skip_check    => $skip_check,
+        pull_concurrency => $pull_concurrency,
         docker_bin    => $docker_bin,
     );
 };
 
 if (my $error = $@) {
-    $error =~ s/\s+$//;
-    print STDERR "action-run: $error\n";
+    print STDERR 'action-run: ', _error_text($error), "\n";
     exit 2;
 }
 
@@ -162,14 +171,46 @@ if ($list) {
     exit $exit;
 }
 
+if ($command eq 'preflight') {
+    my $result = eval { $actions->preflight(json => $json) };
+    if (my $error = $@) {
+        print STDERR 'action-run: ', _error_text($error), "\n";
+        exit 2;
+    }
+
+    if ($json) {
+        my $document = $result->{summary};
+        $document->{ready} = $result->{exit} == 0
+            ? JSON::PP::true()
+            : JSON::PP::false();
+        print JSON::PP->new->canonical->encode($document), "\n";
+    }
+    elsif (defined $result->{error} && length $result->{error}) {
+        print STDERR "action-run: $result->{error}\n" unless $quiet;
+    }
+
+    exit $result->{exit};
+}
+
 my $exit = eval { $actions->run };
 if (my $error = $@) {
-    $error =~ s/\s+$//;
-    print STDERR "action-run: $error\n";
+    print STDERR 'action-run: ', _error_text($error), "\n";
     exit 2;
 }
 
 exit $exit;
+
+# A croak() carries the source location, which is useful in a stack trace and
+# noise in a message someone reads.
+sub _error_text {
+    my ($error) = @_;
+
+    $error =~ s/\s+$//;
+    $error =~ s/\s+at\s+.+? line \d+\.?\z//;
+    $error =~ s/\s+$//;
+
+    return $error;
+}
 
 sub _parse_pairs {
     my ($pairs, $option) = @_;
@@ -197,6 +238,7 @@ action-run - run a GitHub Actions workflow locally with Docker
 
     action-run [options] <workflow.yml> [project-directory]
     action-run [options] check [directory]
+    action-run [options] preflight <workflow.yml> [project-directory]
 
 =head1 DESCRIPTION
 
@@ -222,6 +264,24 @@ pulled stops the run there, naming the job, service or action that needs it.
 Local composite actions are read at that point as well, including actions
 used inside other actions, so the images their steps name are prepared before
 the action is first reached.
+
+A value that only exists once the workflow is running, such as a preceding
+job's result, cannot be resolved there, so each job makes the same check
+again, with its own values, before its first container: its job image, its
+service images and the images of the actions it uses.  An image that is
+unusable is therefore reported before the job starts rather than halfway
+through it.  The one image that cannot be known even then is the one a step
+decides, because a step output does not exist until its step has run; the job
+names it as deferred and the step that needs it prepares it before starting
+its container.
+
+The presence of each image is checked in turn, then the missing ones are
+pulled at once, four at a time by default, so a wide matrix does not wait for
+one image after another.  C<--pull-concurrency> or
+C<ACTION_RUN_PULL_CONCURRENCY> sets how many are pulled together; setting it
+to 1 makes the pulls sequential, which is easier to read when one of them is
+slow.  On Windows they are pulled one at a time whatever is asked for,
+because Perl's emulation of C<fork()> cannot give a child its own handles.
 
 =head1 COMMANDS
 
@@ -249,6 +309,7 @@ With C<--json> it prints a single JSON object instead of the text report, for a
 CI job to assert on:
 
     {
+      "schema_version": 1,
       "ready": true,
       "problems": 0,
       "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
@@ -266,6 +327,78 @@ could not be discovered is C<null>, so an unreachable daemon shows as
 C<"daemon": null> rather than a missing key.  Each entry in C<mounts> carries
 C<host>, C<container> and C<ok>, and the project entry also carries C<entries>
 and C<expected>.  The exit status is the same as for the text report.
+
+C<schema_version> names the shape of the document, so an assertion can say
+which shape it was written for instead of failing on a key that moved.  The
+schema, a checked-in example and the test that validates both are
+F<t/fixtures/check-schema.json>, F<t/fixtures/check.json> and F<t/schema.t>.
+
+=head2 preflight
+
+    action-run [options] preflight <workflow.yml> [project-directory]
+
+Runs the checks a normal run makes before its first job and stops there: the
+environment probes, then the preparation of every image the selected jobs
+need.  Nothing is started, so this is the cheap way to ask whether a workflow
+could start on this host.
+
+The text output is what a run would print at that point, and the exit status
+is 0 when the images are ready and 2 when they are not.  With C<--json> the
+document is the one C<check --json> prints, with C<images> listing every image
+in the order the run would need it and C<pull_concurrency> reporting the
+number of pulls it was allowed at once:
+
+    {
+      "schema_version": 2,
+      "ready": true,
+      "problems": 0,
+      "pull_concurrency": 4,
+      "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
+      "docker": { "bin": "docker", "client": "29.9.1", "daemon": "29.9.1", "containers": "linux" },
+      "image": "perl:5.38",
+      "mounts": [ ... ],
+      "issues": [],
+      "images": [
+        { "image": "perl:5.38", "source": "job 'test'", "status": "pulled" },
+        { "image": "postgres:15", "source": "service 'db' of job 'test'", "status": "present" }
+      ]
+    }
+
+C<source> says what needs the image: a job, a service container, or a
+C<docker://> action, naming the job as well.  C<status> is C<pulled> when the
+run fetched the image, C<present> when it was already there, C<failed> when it
+could not be prepared, and C<skipped> when the environment was not ready so
+nothing was attempted.  A failed entry also carries C<error>, and the same
+failure appears in C<issues> with a remedy.  C<ready> is true only when the
+checks passed and every image is C<present> or C<pulled>; C<problems> counts
+the check problems and the failed images together.
+
+C<pull_concurrency> is the number of pulls the preflight was allowed to run at
+once, which is C<--pull-concurrency>, then C<ACTION_RUN_PULL_CONCURRENCY>, then
+four, except that it is 1 on Windows, where images are pulled one at a time.
+It is the number the puller was given rather than how many pulls happened to
+overlap, so a CI job can assert that the setting reached the puller even when
+there was only one image to fetch.
+
+An image built from a value no job has produced yet - another job's result,
+for instance - is C<deferred>: C<image> is null, C<status> is C<deferred>, and
+C<expression> and C<error> say what could not be resolved and why.  A
+deferral is not a problem, so it leaves C<ready> and C<problems> alone: the
+job resolves and prepares that image itself, with its own values, before it
+starts.  An image that only a step decides is deferred too, and its step
+prepares it before starting its container.  This is what lets CI distinguish
+an image that was verified from one that could not be named yet.
+
+The preflight document is versioned separately, because C<images> can change
+without the check document changing.  Its C<schema_version> is
+C<App::Actions::Runner-E<gt>preflight_schema_version>, and the check
+document's is C<App::Actions::Check-E<gt>json_schema_version>.
+F<t/fixtures/preflight-schema.json> and F<t/fixtures/preflight.json> are
+validated in F<t/schema.t>.
+
+Unlike a run, C<preflight> keeps the images it pulled, so a run that follows
+starts warm.  C<--pull> and C<--no-pull> apply as they do to a run, and
+C<--skip-check> drops the probes while still preparing the images.
 
 =head1 OPTIONS
 
@@ -306,7 +439,10 @@ the Docker commands that C<action-run> prints.  Repeatable.
 
 =item B<--pull>, B<--no-pull>
 
-Force an image pull, or fail instead of pulling a missing image.
+Force an image pull, or fail instead of pulling a missing image.  With
+C<--pull> each image is pulled once per run, even when several jobs, services
+or steps use it, so a matrix does not download the same base image again for
+every job.
 
 =item B<--dry-run>, B<-n>
 
@@ -330,16 +466,28 @@ Treat unsupported actions as failures instead of skipping them.
 
 =item B<--json>
 
-With C<check>, print a JSON object instead of the text report.  It is rejected
-for a workflow run.
+With C<check>, print a JSON object instead of the text report; with
+C<preflight>, print the check report with the images it prepared added.  It is
+rejected for a workflow run.
 
 =item B<--skip-check>
 
 Skip the environment probes and the image preparation that otherwise run
 before any job starts, while still checking that the Docker command answers.
-Images are then pulled when they are first used.  Use it when the probes do
-not apply, for example when the project directory lives on a network share
-that the daemon cannot mount but the workflow does not need it.
+For a run, images are then pulled when they are first used; C<preflight>
+still prepares them, so it can be used to warm the images without probing.
+Use it when the probes do not apply, for example when the project directory
+lives on a network share that the daemon cannot mount but the workflow does
+not need it.
+
+=item B<--pull-concurrency> I<number>
+
+How many images may be pulled at the same time, when an image has to be
+fetched.  The default is four, or the value of C<ACTION_RUN_PULL_CONCURRENCY>
+if it is set; this option wins over both.  C<1> pulls them one after another.
+The value must be a positive integer.  Windows always pulls one at a time, and
+C<preflight --json> reports the number actually used in its
+C<pull_concurrency> key.
 
 =item B<--verbose>, B<-v>
 
@@ -356,6 +504,17 @@ Show this help.
 =item B<--version>, B<-V>
 
 Show the version.
+
+=back
+
+=head1 ENVIRONMENT
+
+=over 4
+
+=item C<ACTION_RUN_PULL_CONCURRENCY>
+
+The default for C<--pull-concurrency>: how many images are pulled at the same
+time.  The option wins over it, and it wins over the built-in four.
 
 =back
 

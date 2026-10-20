@@ -4,6 +4,8 @@ use strict;
 use warnings;
 use Carp qw(croak);
 
+use File::Spec;
+
 use App::Actions::Process;
 
 our $VERSION = '0.01';
@@ -118,6 +120,61 @@ sub pull {
     # reader, not a place to point at source lines.
     die "Failed to pull Docker image '$image' (exit $rc)\n" if $rc != 0;
     return 1;
+}
+
+# Pull several images at once and report the exit status of each.  Docker's
+# own output goes straight to the terminal, so a slow image is still visible
+# while the others finish.  The result is keyed by image name, which lets the
+# caller say which images failed and what needed them.
+sub pull_many {
+    my ($self, $images, %options) = @_;
+
+    croak 'No images given' unless ref $images eq 'ARRAY' && @$images;
+
+    # A caller that is building a machine-readable report asks for silence:
+    # docker's own progress lines would not be part of any document.
+    my $quiet = $options{quiet} ? 1 : 0;
+
+    if ($self->{dry_run}) {
+        for my $image (@$images) {
+            print "[dry-run] $self->{bin} ",
+                $self->_display('pull', $self->platform_args, $image), "\n"
+                unless $self->{quiet} || $quiet;
+        }
+        return { map { $_ => 0 } @$images };
+    }
+
+    # The command lines are printed before anything starts, because the
+    # children then write to the same terminal in no particular order.
+    if ($self->{verbose} && !$self->{quiet} && !$quiet) {
+        for my $image (@$images) {
+            print "+ $self->{bin} ",
+                $self->_display('pull', $self->platform_args, $image), "\n";
+        }
+    }
+
+    my @commands = map {
+        [ $self->_command('pull', $self->platform_args, $_) ]
+    } @$images;
+
+    my %redirect;
+    if ($quiet) {
+        my $devnull = File::Spec->devnull;
+        %redirect = (stdout => $devnull, stderr => $devnull);
+    }
+
+    my $codes = App::Actions::Process::run_parallel(
+        \@commands,
+        concurrency => $options{concurrency} || 4,
+        %redirect,
+    );
+
+    my %results;
+    for my $index (0 .. $#$images) {
+        $results{ $images->[$index] } = $codes->[$index];
+    }
+
+    return \%results;
 }
 
 sub image_remove {

@@ -74,6 +74,18 @@ is($expression->interpolate(
 ), 'Perl 5.38 on Linux', 'interpolate multiple expressions');
 is($expression->interpolate('No expressions', $context), 'No expressions',
     'interpolate leaves plain text alone');
+is($expression->interpolate_known(
+    'Perl ${{ matrix.perl }} on ${{ github.ref_name }}', $context,
+), 'Perl 5.38 on ${{ github.ref_name }}',
+    'interpolate_known resolves what it can and leaves the rest as written');
+is($expression->interpolate_known('${{ steps.perl-version.outputs.version }}', $context),
+    '5.38.0', 'interpolate_known resolves a known step output');
+is($expression->interpolate_known(
+    '${{ steps.missing.outputs.version }}-${{ matrix.perl }}', $context,
+), '${{ steps.missing.outputs.version }}-5.38',
+    'interpolate_known leaves an unknown value in place of an empty string');
+is($expression->interpolate('Perl ${{ matrix.perl }} on ${{ github.ref_name }}', $context),
+    'Perl 5.38 on ', 'interpolate still turns an unknown value into an empty string');
 is($expression->condition(q{${{ matrix.perl == '5.38' }}}, $context, $success), 1,
     'condition strips expression braces');
 is($expression->condition(q{runner.os != 'Windows'}, $context, $success), 1,

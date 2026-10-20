@@ -254,6 +254,8 @@ is($json_ready->{exit}, 0, 'a JSON report keeps the exit status');
 unlike($json_ready->{stdout}, qr/^action-run check$/m,
     'the JSON report replaces the text one');
 
+like($json_ready->{stdout}, qr/"ready":true/, 'ready is the JSON boolean true');
+
 my $ready_data = eval { JSON::PP->new->decode($json_ready->{stdout}) };
 ok($ready_data, 'the JSON report decodes') or diag "$@";
 ok($ready_data->{ready}, 'ready is true');
@@ -317,5 +319,29 @@ open my $output, '>', \$buffer or die $!;
 }
 close $output;
 like($buffer, qr/^Result: ready$/m, 'the chosen filehandle receives the report');
+
+# The same report is available as data, which the preflight adds its images
+# to.  "ready" is a plain 0 or 1 here; JSON encodes it as true or false.
+my $summary_check;
+{
+    local $ENV{FAKE_DOCKER_STATE} = tempdir(CLEANUP => 1);
+    $summary_check = App::Actions::Check->new(
+        docker_bin => $fake_docker,
+        directory  => $project,
+        quiet      => 1,
+    );
+    is($summary_check->run, 0, 'a check that is asked for its summary still passes');
+}
+
+my $summary = $summary_check->summary(0);
+is($summary->{ready}, 1, 'a ready summary is a plain 1');
+is($summary->{problems}, 0, 'no problems are counted');
+is($summary->{docker}{containers}, 'linux', 'the container type is in the summary');
+is($summary->{image}, 'alpine:3.20', 'the probe image is in the summary');
+is(scalar @{ $summary->{mounts} }, 2, 'both mounts are in the summary');
+is_deeply($summary->{issues}, [], 'a ready summary lists no issues');
+
+my $failed_summary = $summary_check->summary(2);
+is($failed_summary->{ready}, 0, 'a failing summary is a plain 0');
 
 done_testing;

@@ -11,6 +11,12 @@ use App::Actions::Docker;
 
 our $VERSION = '0.01';
 
+# The shape of the JSON document this module prints.  Bump it whenever a key,
+# a value type or an enum changes, and update the example and schema in
+# t/fixtures/ with it; a CI job asserts the number rather than discovering a
+# changed shape at the point where its assertion fails for another reason.
+our $JSON_SCHEMA_VERSION = 1;
+
 my %PLATFORM_NAME = (
     linux   => 'Linux',
     darwin  => 'macOS',
@@ -50,6 +56,8 @@ sub new {
 }
 
 sub image { return $_[0]->{image} }
+
+sub json_schema_version { return $JSON_SCHEMA_VERSION }
 
 # Report the host, the Docker daemon and a real bind mount.  Returns 0 when
 # every check passed and 2 when something needs fixing, matching the exit
@@ -325,16 +333,19 @@ sub _problem {
     return 0;
 }
 
-# The machine-readable form of the report, for CI.  The keys are stable and
-# values that could not be discovered are null rather than absent.
-sub _json_report {
+# The report as data, so that a caller can add to it (the preflight adds the
+# images it prepared) or assert on it without parsing text.  The keys are
+# stable and values that could not be discovered are null rather than absent.
+# "ready" is a plain 0 or 1 here; the JSON encoder turns it into true or false.
+sub summary {
     my ($self, $exit) = @_;
 
     my $data = $self->{data} || {};
     my $docker = $data->{docker} || {};
 
-    return JSON::PP->new->canonical->encode({
-        ready    => $exit == 0 ? JSON::PP::true() : JSON::PP::false(),
+    return {
+        schema_version => $JSON_SCHEMA_VERSION,
+        ready    => $exit == 0 ? 1 : 0,
         problems => $self->{problems} + 0,
         host     => $data->{host} || {},
         docker   => {
@@ -346,7 +357,17 @@ sub _json_report {
         image    => $data->{image},
         mounts   => $data->{mounts} || [],
         issues   => $data->{issues} || [],
-    });
+    };
+}
+
+# The machine-readable form of the report, for CI.
+sub _json_report {
+    my ($self, $exit) = @_;
+
+    my $summary = $self->summary($exit);
+    $summary->{ready} = $exit == 0 ? JSON::PP::true() : JSON::PP::false();
+
+    return JSON::PP->new->canonical->encode($summary);
 }
 
 sub _is_windows {
@@ -428,12 +449,30 @@ was found.
 
 Returns the image used for the mount probe.
 
+=head2 summary
+
+    my $report = $check->summary($exit);
+
+Returns the report as a hash reference instead of printing it, with the keys
+described under L</JSON OUTPUT>.  C<ready> is a plain 0 or 1 here, so a caller
+that encodes it as JSON should convert it to a JSON boolean.  The preflight
+uses this to add the images it prepared.
+
+=head2 json_schema_version
+
+    my $version = App::Actions::Check->json_schema_version;
+
+Returns the version of the JSON document, which is also its C<schema_version>
+key.  It is bumped when the shape changes, so an assertion can name the shape
+it was written for.
+
 =head1 JSON OUTPUT
 
 With C<json> the report is a single object, with every key always present and
 C<null> for a value that could not be discovered:
 
     {
+      "schema_version": 1,
       "ready": true,
       "problems": 0,
       "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
@@ -445,6 +484,10 @@ C<null> for a value that could not be discovered:
       ],
       "issues": [ { "problem": "...", "remedies": [ "..." ] } ]
     }
+
+C<schema_version> names the shape of the document; it is the number
+L</json_schema_version> returns.  The checked-in schema, example and the test
+that validates them live in F<t/fixtures/> and F<t/schema.t>.
 
 The exit status is unchanged, so a caller may use either.
 

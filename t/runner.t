@@ -83,6 +83,9 @@ sub run_workflow {
     local $ENV{FAKE_OS_TYPE}      = $options{fake_os_type};
     local $ENV{FAKE_ENTRY_COUNT}  = $options{fake_entry_count};
     local $ENV{FAKE_PULL_FAILURE} = $options{fake_pull_failure};
+    local $ENV{FAKE_PULL_SLEEP}   = $options{fake_pull_sleep};
+    local $ENV{FAKE_PULL_TIMING}  = $options{fake_pull_timing} ? 1 : 0;
+    local $ENV{FAKE_RUN_NEEDS_IMAGE} = $options{fake_run_needs_image} ? 1 : 0;
 
     my $actions = App::Actions->new(
         workflow_file => $workflow_file,
@@ -112,6 +115,58 @@ sub run_workflow {
         log      => $log_text,
         project  => $project,
         state    => $state,
+    };
+}
+
+# A preflight run returns its outcome as data rather than reporting it, so a
+# CI job can assert on the images instead of reading the pulls.
+sub preflight_workflow {
+    my ($yaml, %options) = @_;
+
+    my $project = tempdir(CLEANUP => 1);
+    make_path(File::Spec->catdir($project, '.github', 'workflows'));
+    my $workflow_file = File::Spec->catfile($project, '.github', 'workflows', 'test.yml');
+
+    open my $handle, '>', $workflow_file or die $!;
+    print {$handle} $yaml;
+    close $handle;
+
+    my $state = tempdir(CLEANUP => 1);
+    my $log   = File::Spec->catfile($state, 'docker.log');
+
+    local $ENV{FAKE_DOCKER_STATE} = $state;
+    local $ENV{FAKE_DOCKER_LOG}   = $log;
+    local $ENV{FAKE_OS_TYPE}      = $options{fake_os_type};
+    local $ENV{FAKE_PULL_FAILURE} = $options{fake_pull_failure};
+
+    my $actions = App::Actions->new(
+        workflow_file => $workflow_file,
+        project_dir   => $project,
+        docker_bin    => $fake_docker,
+        image         => 'ubuntu:latest',
+        %options,
+    );
+
+    my $result;
+    my ($stdout, $stderr) = capture {
+        $result = $actions->preflight(json => $options{json});
+    };
+
+    my $log_text = '';
+    if (-f $log) {
+        open my $log_handle, '<', $log or die $!;
+        local $/;
+        $log_text = <$log_handle>;
+        close $log_handle;
+        $log_text = '' unless defined $log_text;
+    }
+
+    return {
+        result  => $result,
+        stdout  => useful_text($stdout),
+        stderr  => useful_text($stderr),
+        log     => $log_text,
+        project => $project,
     };
 }
 
@@ -724,6 +779,22 @@ like($probed->{log}, qr/\t-v\t[^\t]+:\/check-project:ro\t/,
     'the probe mounts the project directory read-only');
 unlike($probed->{stdout}, qr/^ {2}mount\s/m, 'a passing probe says nothing');
 
+# A probe container can fail because the daemon cannot pull its image, which
+# is the same branch a real daemon takes when the probe image is unavailable.
+my $probe_image_missing = run_workflow(
+    $simple,
+    fake_run_needs_image => 1,
+    fake_pull_failure    => 'perl:5.38',
+);
+is($probe_image_missing->{exit}, 2, 'a probe whose image cannot be pulled stops the run');
+like($probe_image_missing->{stdout}, qr/probe container failed \(exit 125\)/,
+    'the report names the probe container and its exit status');
+like($probe_image_missing->{stdout}, qr/^ {2}remedy\s+\S/m,
+    'the failed probe comes with a remedy');
+like($probe_image_missing->{stderr}, qr/the environment is not ready/,
+    'the run stops for the environment, not for the job');
+unlike($probe_image_missing->{log}, qr/^run\t-d\t/m, 'no job container is started');
+
 # Probe image: the job's own image, so a working setup needs no extra pull.
 unlike($probed->{log}, qr/^pull\t.*alpine:3\.20/m,
     'the probe does not pull an image the run does not need');
@@ -793,6 +864,49 @@ ok($service_pull >= 0 && $job_start >= 0 && $service_pull < $job_start,
     'the service image is pulled before the job container starts');
 ok($action_pull >= 0 && $action_pull < $job_start,
     'the action image is pulled before the job container starts');
+
+# --pull refreshes the images even when they are present, but only once each:
+# the preflight prepares everything the run needs, so the check each job makes
+# of its own image must not download it a second time.
+my $pulled_once = run_workflow($with_images, pull => 1);
+is($pulled_once->{exit}, 0, '--pull still runs the workflow');
+for my $image (qw(perl:5.38 postgres:15 alpine:3.20)) {
+    is(scalar(() = $pulled_once->{log} =~ /^pull\t\Q$image\E$/mg), 1,
+        "--pull pulls $image once");
+}
+is(scalar(() = $pulled_once->{stdout} =~ /^Pulling image \S+\.\.\.$/mg), 3,
+    '--pull announces each pull once');
+like($pulled_once->{log}, qr/^image\trm\t-f\tpostgres:15$/m,
+    'an image pulled by the run is still removed afterwards');
+
+# The same image in two matrix jobs is one download, not two.
+my $shared_image_yaml = <<'YAML';
+name: Shared image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        flavour: ['one', 'two']
+    container:
+      image: perl:5.38
+    steps:
+      - run: echo ${{ matrix.flavour }}
+YAML
+
+my $shared_image = run_workflow($shared_image_yaml, pull => 1);
+is($shared_image->{exit}, 0, 'two jobs can share one image');
+like($shared_image->{stdout}, qr/one/, 'both matrix jobs ran');
+is(scalar(() = $shared_image->{log} =~ /^pull\tperl:5\.38$/mg), 1,
+    '--pull pulls a shared matrix image once for the whole run');
+
+# --skip-check skips the preflight, so each job prepares its own image; the
+# image is still fetched once, by the job that reaches it first.
+my $skip_pull = run_workflow($shared_image_yaml, pull => 1, skip_check => 1);
+is($skip_pull->{exit}, 0, '--pull runs with --skip-check');
+is(scalar(() = $skip_pull->{log} =~ /^pull\tperl:5\.38$/mg), 1,
+    '--pull pulls a shared image once even without the preflight');
 
 my $service_broken = run_workflow($with_images, fake_pull_failure => 'postgres:15');
 is($service_broken->{exit}, 2, 'an unpullable service image stops the run');
@@ -965,7 +1079,7 @@ YAML
 my $loop_pulls = () = $loop->{log} =~ /^pull\tbusybox:1\.38$/mg;
 is($loop_pulls, 1, 'a self-referencing action is walked once, not forever');
 
-# A dry run reads no action metadata and pulls nothing for it either.
+# A dry run pulls nothing for a local action's image either.
 my $local_dry = run_workflow(
     <<'YAML',
 name: Local action image
@@ -1008,6 +1122,162 @@ like(
     qr/^ {2}image\s+busybox:1\.36 \(action 'docker:\/\/busybox:1\.36' in local action '\.\/\.github\/actions\/run-image' of job 'test'\)$/m,
     'a verbose run names the composite action an image came from',
 );
+
+# The images are pulled at the same time, so a wide matrix does not spend the
+# start of the run waiting for one image after another.
+my $many_images = <<'YAML';
+name: Many images
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    services:
+      first:
+        image: first:1
+      second:
+        image: second:1
+      third:
+        image: third:1
+    steps:
+      - run: echo hello
+YAML
+
+# The timing log of a run, as the times each pull started and finished.
+sub pull_times {
+    my ($log) = @_;
+
+    my (%start, %finished);
+    for my $line (split /\n/, $log) {
+        my ($event, $image, $at) = split /\t/, $line;
+        next unless defined $at;
+        $start{$image}    = $at if $event eq 'pull-start';
+        $finished{$image} = $at if $event eq 'pull-end';
+    }
+
+    return (\%start, \%finished);
+}
+
+# The most pulls that were under way at the same time.
+sub max_overlap {
+    my ($start, $finished) = @_;
+
+    my @events;
+    for my $image (keys %$start) {
+        next unless exists $finished->{$image};
+        push @events, [ $start->{$image}, 1 ], [ $finished->{$image}, -1 ];
+    }
+
+    my ($running, $most) = (0, 0);
+    for my $event (sort { $a->[0] <=> $b->[0] || $a->[1] <=> $b->[1] } @events) {
+        $running += $event->[1];
+        $most = $running if $running > $most;
+    }
+
+    return $most;
+}
+
+SKIP: {
+    skip 'pulls run one at a time where fork() is not used', 10 if $^O eq 'MSWin32';
+
+    my $together = run_workflow(
+        $many_images,
+        fake_pull_sleep  => 0.4,
+        fake_pull_timing => 1,
+    );
+
+    is($together->{exit}, 0, 'a workflow with several images runs');
+
+    my ($start, $finished) = pull_times($together->{log});
+    my @pulled = sort grep { exists $finished->{$_} } keys %$start;
+    is_deeply(
+        \@pulled,
+        [ 'first:1', 'perl:5.38', 'second:1', 'third:1' ],
+        'every image is still pulled, once each',
+    );
+
+    ok(max_overlap($start, $finished) > 1,
+        'the pulls overlap instead of running one after another');
+
+    # The concurrency can be lowered, which is how a slow registry is read
+    # without one download hiding the others.
+    my $serial = run_workflow(
+        $many_images,
+        fake_pull_sleep   => 0.4,
+        fake_pull_timing  => 1,
+        pull_concurrency  => 1,
+    );
+
+    is($serial->{exit}, 0, 'a workflow runs with the pulls made one at a time');
+    my ($serial_start, $serial_finished) = pull_times($serial->{log});
+    is(max_overlap($serial_start, $serial_finished), 1,
+        'pull_concurrency 1 pulls the images one after another');
+
+    my $pair = run_workflow(
+        $many_images,
+        fake_pull_sleep   => 0.4,
+        fake_pull_timing  => 1,
+        pull_concurrency  => 2,
+    );
+
+    is($pair->{exit}, 0, 'a workflow runs with two pulls at a time');
+    my ($pair_start, $pair_finished) = pull_times($pair->{log});
+    is(max_overlap($pair_start, $pair_finished), 2,
+        'pull_concurrency 2 keeps two pulls in flight, no more');
+
+    # The same knob from the environment, which is what a CI job sets once.
+    {
+        local $ENV{ACTION_RUN_PULL_CONCURRENCY} = 1;
+
+        my $from_env = run_workflow(
+            $many_images,
+            fake_pull_sleep  => 0.4,
+            fake_pull_timing => 1,
+        );
+
+        is($from_env->{exit}, 0, 'a workflow runs with the concurrency from the environment');
+        my ($env_start, $env_finished) = pull_times($from_env->{log});
+        is(max_overlap($env_start, $env_finished), 1,
+            'ACTION_RUN_PULL_CONCURRENCY is honoured');
+    }
+
+    # A one-off command line beats a value left in the environment.
+    {
+        local $ENV{ACTION_RUN_PULL_CONCURRENCY} = 1;
+
+        my $wins = run_workflow(
+            $many_images,
+            fake_pull_sleep  => 0.4,
+            fake_pull_timing => 1,
+            pull_concurrency => 3,
+        );
+
+        is($wins->{exit}, 0, 'a workflow runs with the option and the environment set');
+        my ($win_start, $win_finished) = pull_times($wins->{log});
+        ok(max_overlap($win_start, $win_finished) > 1,
+            'the option wins over the environment');
+    }
+}
+
+# A pull that fails is still reported in the order the run needs the images,
+# even though the pulls themselves finish in any order.
+my $failing_pair = run_workflow($many_images, fake_pull_failure => 'second:1');
+is($failing_pair->{exit}, 2, 'one unpullable image among several stops the run');
+like(
+    $failing_pair->{stderr},
+    qr/cannot prepare the image 'second:1', needed by service 'second' of job 'test'/,
+    'the failing image is named, not whichever pull happened to finish first',
+);
+unlike($failing_pair->{log}, qr/^run\t-d\t/m, 'no job container is started');
+
+# Images that did arrive are removed again, even though the run stopped.
+like($failing_pair->{log}, qr/^image\trm\t-f\tperl:5\.38$/m,
+    'the job image is removed after a failed preflight');
+like($failing_pair->{log}, qr/^image\trm\t-f\tthird:1$/m,
+    'an image that was pulled is removed too');
+unlike($failing_pair->{log}, qr/^image\trm\t-f\tsecond:1$/m,
+    'the image that was never pulled is not claimed as pulled');
 
 # An image used by two jobs is prepared once.
 my $shared = <<'YAML';
@@ -1094,6 +1364,157 @@ YAML
 
 is($unknown_image->{exit}, 0, 'an unresolved expression image is left to the run');
 
+# A job image that uses a value the run resolves for each job is prepared
+# under the name the job will use, not as the expression it was written as.
+my $use_time_job_image = run_workflow(<<'YAML');
+name: Use-time job image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: busybox:${{ github.ref_name }}
+    steps:
+      - run: echo hello
+YAML
+
+is($use_time_job_image->{exit}, 0, 'a job image built from github.* runs');
+like($use_time_job_image->{log}, qr/^pull\tbusybox:main$/m,
+    'the job image is prepared under the name the job will use');
+unlike($use_time_job_image->{log}, qr/\$\{\{/,
+    'no unresolved expression reaches Docker');
+
+# An image only a step can name is reported by the job before it starts and
+# prepared by that step, before the step's own container.
+my $step_decided = <<'YAML';
+name: Step-decided image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - id: pick
+        run: |
+          FAKE_OUTPUT: image=busybox:1.37
+      - uses: docker://${{ steps.pick.outputs.image }}
+        with:
+          args: echo hi
+YAML
+
+my $step_decided_run = run_workflow($step_decided);
+is($step_decided_run->{exit}, 0, 'an image a step decides still runs');
+like(
+    $step_decided_run->{stdout},
+    qr/^ {2}deferred {2}\$\{\{ steps\.pick\.outputs\.image \}\} \(action 'docker:\/\/\$\{\{ steps\.pick\.outputs\.image \}\}' in job 'test'\)$/m,
+    'the job says which image only the step can name',
+);
+like($step_decided_run->{log}, qr/^pull\tbusybox:1\.37$/m,
+    'the step resolves the image and pulls it');
+
+# The preflight says an image is deferred rather than pretending it is ready,
+# and a deferral is not a problem with the environment.
+# A job container starts before any step has run, so a name only a step
+# could give is a workflow error reported before the job starts.
+my $step_job_image = run_workflow(<<'YAML');
+name: Step job image
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: busybox:${{ steps.pick.outputs.image }}
+    steps:
+      - id: pick
+        run: |
+          FAKE_OUTPUT: image=1.37
+      - run: echo hello
+YAML
+
+is($step_job_image->{exit}, 2, 'a job image a step would decide stops the run');
+like(
+    $step_job_image->{stderr},
+    qr/cannot resolve the image 'busybox:\$\{\{ steps\.pick\.outputs\.image \}\}', needed by job 'test'/,
+    'the failure names the expression and the job',
+);
+unlike($step_job_image->{log}, qr/^run\t-d\t/m, 'nothing is started for it');
+
+my $deferred_preflight = preflight_workflow($step_decided, json => 1);
+is($deferred_preflight->{result}{exit}, 0, 'a deferred image does not fail the preflight');
+my $deferred_summary = $deferred_preflight->{result}{summary};
+is($deferred_summary->{images}[1]{status}, 'deferred',
+    'the image the preflight cannot name is deferred');
+is($deferred_summary->{images}[1]{image}, undef, 'no image name is guessed');
+is($deferred_summary->{images}[1]{expression}, '${{ steps.pick.outputs.image }}',
+    'the expression is reported as it was written');
+like($deferred_summary->{images}[1]{error}, qr/unable to resolve/,
+    'the record says why it could not be named');
+is($deferred_summary->{problems}, 0, 'a deferral is not counted as a problem');
+ok($deferred_summary->{ready}, 'everything the preflight could check is ready');
+
+# A value from another job does not exist until that job has run, so the
+# preflight defers it; the job's own check resolves it before its first
+# container, and a bad image therefore stops the run before the job starts.
+my $needs_image = <<'YAML';
+name: Needs image
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - run: echo built
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    container:
+      image: perl:5.38
+    services:
+      helper:
+        image: busybox:${{ needs.build.result }}
+    steps:
+      - run: echo hello
+YAML
+
+my $needs_preflight = preflight_workflow($needs_image, json => 1);
+is($needs_preflight->{result}{summary}{images}[1]{status}, 'deferred',
+    'an image built from another job is deferred by the preflight');
+
+my $needs_run = run_workflow($needs_image);
+is($needs_run->{exit}, 0, 'a workflow whose image comes from another job runs');
+
+my @needs_log = split /\n/, $needs_run->{log};
+my ($needs_pull, @needs_starts);
+for my $index (0 .. $#needs_log) {
+    $needs_pull = $index
+        if !defined $needs_pull && $needs_log[$index] eq "pull\tbusybox:success";
+    # The job containers are the ones named for the job; a service is named
+    # for its own kind.
+    push @needs_starts, $index
+        if $needs_log[$index] =~ /^run\t-d\t.*-job-test-/;
+}
+
+is(scalar @needs_starts, 1, 'the job that needed the deferred image started');
+ok(
+    defined $needs_pull && @needs_starts == 1 && $needs_pull < $needs_starts[0],
+    'the deferred image is prepared before the job that needs it starts',
+);
+
+my $needs_failure = run_workflow(
+    $needs_image, fake_pull_failure => 'busybox:success',
+);
+is($needs_failure->{exit}, 2,
+    'an unusable image named by another job stops the run before the job starts');
+like(
+    $needs_failure->{stderr},
+    qr/cannot prepare the image 'busybox:success', needed by service 'helper' of job 'test'/,
+    'the failure names the image, the service and the job',
+);
+my $needs_started = () = $needs_failure->{log} =~ /^run\t-d\t/mg;
+is($needs_started, 1, 'only the job that had already run started a container');
+
 # The probe still runs first: an image problem is reported after the
 # environment report, not instead of it.
 my $broken_environment = run_workflow(
@@ -1101,5 +1522,102 @@ my $broken_environment = run_workflow(
 );
 is($broken_environment->{exit}, 2, 'a broken environment is still reported first');
 unlike($broken_environment->{log}, qr/^pull\t/m, 'nothing is pulled for a broken environment');
+
+# The preflight can be asked for its outcome as data: the check's report plus
+# one record per image, saying what needs it and whether it was prepared.
+my $preflight = preflight_workflow($with_images, json => 1);
+
+is($preflight->{result}{exit}, 0, 'a ready preflight exits 0');
+my $summary = $preflight->{result}{summary};
+ok($summary->{ready}, 'the summary says the run can start');
+is($summary->{problems}, 0, 'no problems are counted');
+is($summary->{image}, 'perl:5.38', 'the probe image is part of the summary');
+is(scalar @{ $summary->{images} }, 3, 'every needed image is listed');
+is_deeply(
+    [ map { $_->{status} } @{ $summary->{images} } ],
+    [ 'pulled', 'pulled', 'pulled' ],
+    'each image is reported as pulled',
+);
+is($summary->{images}[0]{source}, "job 'test'", 'the job image names the job');
+is($summary->{images}[1]{source}, "service 'db' of job 'test'",
+    'the service image names the service');
+is($summary->{images}[2]{source}, "action 'docker://alpine:3.20' in job 'test'",
+    'the action image names the action');
+is($preflight->{stdout}, '', 'a JSON preflight prints nothing itself');
+is($preflight->{stderr}, '', 'a JSON preflight writes no errors');
+unlike($preflight->{log}, qr/^run\t-d\t/m, 'the preflight starts no job container');
+
+my $preflight_failure = preflight_workflow(
+    $with_images, json => 1, fake_pull_failure => 'postgres:15',
+);
+
+is($preflight_failure->{result}{exit}, 2, 'an unpullable image fails the preflight');
+my $failed_summary = $preflight_failure->{result}{summary};
+ok(!$failed_summary->{ready}, 'the summary says the run cannot start');
+is($failed_summary->{problems}, 1, 'the failed image is counted');
+is($failed_summary->{images}[1]{status}, 'failed', 'the image that failed is marked');
+like($failed_summary->{images}[1]{error},
+    qr/Failed to pull Docker image 'postgres:15'/,
+    'the image carries the reason it failed');
+like($failed_summary->{issues}[0]{problem},
+    qr/cannot prepare the image 'postgres:15', needed by service 'db' of job 'test'/,
+    'the issue names the image, the service and the job');
+ok(scalar @{ $failed_summary->{issues}[0]{remedies} }, 'the issue carries a remedy');
+like($preflight_failure->{result}{error},
+    qr/cannot prepare the image 'postgres:15'/,
+    'the message a run would have stopped with is returned');
+unlike($preflight_failure->{log}, qr/^run\t-d\t/m, 'no job container is started');
+
+# A broken environment is reported, and the images it would have needed are
+# listed as skipped rather than guessed at.
+my $preflight_blocked = preflight_workflow(
+    $with_images, json => 1, fake_os_type => 'windows',
+);
+my $blocked_summary = $preflight_blocked->{result}{summary};
+is($preflight_blocked->{result}{exit}, 2, 'a broken environment fails the preflight');
+ok(!$blocked_summary->{ready}, 'a broken environment is not ready');
+like($blocked_summary->{issues}[0]{problem}, qr/'windows' containers/,
+    'the check issue is reported');
+is_deeply(
+    [ map { $_->{status} } @{ $blocked_summary->{images} } ],
+    [ 'skipped', 'skipped', 'skipped' ],
+    'nothing is claimed to be prepared',
+);
+unlike($preflight_blocked->{log}, qr/^pull\t/m, 'nothing is pulled for a broken environment');
+
+# --skip-check prepares the images without claiming a probe result.
+my $preflight_skipped = preflight_workflow(
+    $with_images, json => 1, fake_os_type => 'windows', skip_check => 1,
+);
+is($preflight_skipped->{result}{exit}, 0, 'skip_check prepares the images without probing');
+ok($preflight_skipped->{result}{summary}{ready}, 'the images alone are enough to be ready');
+is($preflight_skipped->{result}{summary}{docker}{daemon}, undef,
+    'no probe result is claimed');
+
+# --no-pull is reported per image, before anything is downloaded.
+my $preflight_no_pull = preflight_workflow($with_images, json => 1, no_pull => 1);
+is($preflight_no_pull->{result}{exit}, 2, '--no-pull fails the preflight');
+like(
+    $preflight_no_pull->{result}{summary}{images}[0]{error},
+    qr/is not available locally \(--no-pull\)/,
+    'the record explains why the image is unusable',
+);
+unlike($preflight_no_pull->{log}, qr/^pull\t/m, 'nothing is pulled with --no-pull');
+
+# Without json the same run reports in the usual way, so the command works
+# like a run that stops after preparing its images.
+my $preflight_text = preflight_workflow($with_images);
+is($preflight_text->{result}{exit}, 0, 'a text preflight exits 0');
+like($preflight_text->{stdout}, qr/^Pulling image/m, 'a text preflight shows the pulls');
+
+my $preflight_text_failure = preflight_workflow(
+    $with_images, fake_pull_failure => 'postgres:15',
+);
+is($preflight_text_failure->{result}{exit}, 2, 'a text preflight reports a failure');
+like($preflight_text_failure->{result}{error},
+    qr/cannot prepare the image 'postgres:15', needed by service 'db' of job 'test'/,
+    'the failure names the image and the service');
+
+unlike($preflight_text->{log}, qr/^run\t-d\t/m, 'a text preflight starts no job container');
 
 done_testing;

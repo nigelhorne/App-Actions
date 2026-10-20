@@ -1,0 +1,98 @@
+{
+  "title": "action-run check --json",
+  "description": "The document action-run check --json prints.  Objects reject keys this file does not name, so a new key is a schema change.",
+  "version": 1,
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "The version of this shape; App::Actions::Check->json_schema_version returns it.",
+      "type": "integer",
+      "const": 1
+    },
+    "ready": {
+      "description": "True only when every check passed.",
+      "type": "boolean"
+    },
+    "problems": {
+      "description": "How many problems were found.",
+      "type": "integer"
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "os": { "type": "string" },
+        "name": { "type": "string" },
+        "perl": { "type": "string" },
+        "archname": { "type": "string" }
+      },
+      "required": [ "os", "name", "perl", "archname" ]
+    },
+    "docker": {
+      "type": "object",
+      "properties": {
+        "bin": { "type": [ "string", "null" ] },
+        "client": { "type": [ "string", "null" ] },
+        "daemon": { "type": [ "string", "null" ] },
+        "containers": { "type": [ "string", "null" ] }
+      },
+      "required": [ "bin", "client", "daemon", "containers" ]
+    },
+    "image": {
+      "description": "The probe image, or null when no container was run.",
+      "type": [ "string", "null" ]
+    },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "description": "The temporary directory the probe reads back from.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "ok" ]
+          },
+          {
+            "description": "The project directory, whose entry count is compared with the host's.",
+            "type": "object",
+            "properties": {
+              "host": { "type": "string" },
+              "container": { "type": "string" },
+              "entries": { "type": [ "integer", "null" ] },
+              "expected": { "type": [ "integer", "null" ] },
+              "ok": { "type": "boolean" }
+            },
+            "required": [ "host", "container", "entries", "expected", "ok" ]
+          }
+        ]
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "problem": { "type": "string" },
+          "remedies": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": [ "problem", "remedies" ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "ready",
+    "problems",
+    "host",
+    "docker",
+    "image",
+    "mounts",
+    "issues"
+  ]
+}

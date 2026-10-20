@@ -50,6 +50,23 @@ sub project_dir  { return $_[0]->{project_dir} }
 sub run {
     my ($self, %overrides) = @_;
 
+    return $self->_runner(%overrides)->run;
+}
+
+# Probe the environment and prepare the images without starting a job.  The
+# result is a hash of exit, summary (the check's report with one record per
+# image added) and error, so a caller can print it as text or as JSON.
+sub preflight {
+    my ($self, %overrides) = @_;
+
+    my $json = delete $overrides{json};
+
+    return $self->_runner(%overrides)->preflight(json => $json);
+}
+
+sub _runner {
+    my ($self, %overrides) = @_;
+
     my $runner = App::Actions::Runner->new(
         workflow      => $self->{workflow},
         project_dir   => $self->{project_dir},
@@ -69,11 +86,14 @@ sub run {
         no_pull       => exists $overrides{no_pull} ? $overrides{no_pull} : $self->{no_pull},
         strict_actions => exists $overrides{strict_actions} ? $overrides{strict_actions} : $self->{strict_actions},
         skip_check    => exists $overrides{skip_check} ? $overrides{skip_check} : $self->{skip_check},
+        pull_concurrency => exists $overrides{pull_concurrency}
+            ? $overrides{pull_concurrency}
+            : $self->{pull_concurrency},
         docker        => $overrides{docker} || $self->{docker},
         docker_bin    => exists $overrides{docker_bin} ? $overrides{docker_bin} : $self->{docker_bin},
     );
 
-    return $runner->run;
+    return $runner;
 }
 
 sub list_jobs {
@@ -162,8 +182,11 @@ C<.github/workflows> directory; the repository root is then used.
 
 Options include C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>, C<env>,
 C<secrets>, C<dry_run>, C<verbose>, C<quiet>, C<keep>, C<keep_images>,
-C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>, C<docker>, and
-C<docker_bin>.
+C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>, C<pull_concurrency>,
+C<docker>, and C<docker_bin>.  C<pull_concurrency> says how many images may
+be pulled at the same time; it defaults to C<ACTION_RUN_PULL_CONCURRENCY> from
+the environment, and to four when that is not set or empty.  It must be a
+positive integer.
 
 Before any job starts, the environment is probed exactly as C<action-run>
 C<check> does: the daemon must be reachable and run Linux containers, and the
@@ -180,7 +203,15 @@ reported before any job has started rather than halfway through one.  Local
 composite actions are read up front for the same reason, including actions
 used inside other actions, so an image named within one is known before its
 first step; only an image whose name the run alone can resolve is left until
-it is used.
+it is used.  Presence is checked first, then the missing images are pulled
+C<pull_concurrency> at a time (four by default), so a wide matrix does not sit
+through one download after another; a failure is still reported against the
+image and the job, service or action that needed it, whichever pull finished
+first.
+
+C<pull> refreshes the images even when they are present locally, and each
+image is pulled once per run, however many jobs, services or steps use it: the
+check a job makes of its own image reuses what the run has already fetched.
 
 C<docker> and C<docker_bin> name the Docker command.  It may also be a wrapper
 script; a wrapper written in Perl is run with the current Perl interpreter, so
@@ -193,6 +224,24 @@ script directly.
 
 Returns 0 for success, 1 when a job fails, and 2 for a usage, Docker, or other
 infrastructure error.
+
+=head2 preflight
+
+    my $result = $actions->preflight(%options);
+
+Makes the same checks as a run before its first job, then prepares the images
+the selected jobs need, without starting anything.  Returns a hash of C<exit>
+(0 or 2), C<summary> and C<error>.  C<summary> is the report
+L<App::Actions::Check> produces as data, with an C<images> array added; each
+entry is C<< { image, source, status, error } >>, and C<status> is C<pulled>,
+C<present>, C<failed>, C<skipped> or C<deferred>.  A deferred entry could not
+be named from the values available before the run, because a job has not
+produced it yet; it carries C<expression> instead of C<image>, and the job
+prepares it with its own values before it starts.  C<summary> also carries
+C<schema_version>, which is
+L<App::Actions::Runner/preflight_schema_version>; the schema and a checked-in
+example are validated in F<t/schema.t>.  With C<json =E<gt> 1> nothing is
+printed, so the caller's output can be a single document.
 
 =head2 list_jobs
 
@@ -241,6 +290,10 @@ Codecov actions are treated as no-ops.  Use C<strict_actions> to turn unknown
 actions into failures instead of skips.  JavaScript actions need C<node> in
 the job image.  Job outputs, C<needs.*.outputs>, and C<timeout-minutes> are
 not implemented.
+
+Images are pulled concurrently only where C<fork()> is reliable; on Windows
+they are pulled one at a time, because Perl's emulation of C<fork()> shares the
+parent's handles with the child.
 
 =head1 AUTHOR
 

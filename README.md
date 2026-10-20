@@ -68,8 +68,11 @@ my $actions = App::Actions->new(
 
 Options include `jobs`, `image`, `perl_image`, `platform`, `user`, `env`,
 `secrets`, `dry_run`, `verbose`, `quiet`, `keep`, `keep_images`,
-`pull`, `no_pull`, `strict_actions`, `skip_check`, `docker`, and
-`docker_bin`.
+`pull`, `no_pull`, `strict_actions`, `skip_check`, `pull_concurrency`,
+`docker`, and `docker_bin`.  `pull_concurrency` says how many images may
+be pulled at the same time; it defaults to `ACTION_RUN_PULL_CONCURRENCY` from
+the environment, and to four when that is not set or empty.  It must be a
+positive integer.
 
 Before any job starts, the environment is probed exactly as `action-run`
 `check` does: the daemon must be reachable and run Linux containers, and the
@@ -86,7 +89,15 @@ reported before any job has started rather than halfway through one.  Local
 composite actions are read up front for the same reason, including actions
 used inside other actions, so an image named within one is known before its
 first step; only an image whose name the run alone can resolve is left until
-it is used.
+it is used.  Presence is checked first, then the missing images are pulled
+`pull_concurrency` at a time (four by default), so a wide matrix does not sit
+through one download after another; a failure is still reported against the
+image and the job, service or action that needed it, whichever pull finished
+first.
+
+`pull` refreshes the images even when they are present locally, and each
+image is pulled once per run, however many jobs, services or steps use it: the
+check a job makes of its own image reuses what the run has already fetched.
 
 `docker` and `docker_bin` name the Docker command.  It may also be a wrapper
 script; a wrapper written in Perl is run with the current Perl interpreter, so
@@ -101,6 +112,26 @@ my $exit_code = $actions->run;
 
 Returns 0 for success, 1 when a job fails, and 2 for a usage, Docker, or other
 infrastructure error.
+
+### Preflight
+
+```perl
+my $result = $actions->preflight(%options);
+```
+
+Makes the same checks as a run before its first job, then prepares the images
+the selected jobs need, without starting anything.  Returns a hash of `exit`
+(0 or 2), `summary` and `error`.  `summary` is the report
+[App::Actions::Check](https://metacpan.org/pod/App%3A%3AActions%3A%3ACheck) produces as data, with an `images` array added; each
+entry is `{ image, source, status, error }`, and `status` is `pulled`,
+`present`, `failed`, `skipped` or `deferred`.  A deferred entry could not
+be named from the values available before the run, because a job has not
+produced it yet; it carries `expression` instead of `image`, and the job
+prepares it with its own values before it starts.  `summary` also carries
+`schema_version`, which is
+["preflight\_schema\_version" in App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner#preflight_schema_version); the schema and a checked-in
+example are validated in `t/schema.t`.  With `json => 1` nothing is
+printed, so the caller's output can be a single document.
 
 ### List\_Jobs
 
@@ -153,6 +184,10 @@ Codecov actions are treated as no-ops.  Use `strict_actions` to turn unknown
 actions into failures instead of skips.  JavaScript actions need `node` in
 the job image.  Job outputs, `needs.*.outputs`, and `timeout-minutes` are
 not implemented.
+
+Images are pulled concurrently only where `fork()` is reliable; on Windows
+they are pulled one at a time, because Perl's emulation of `fork()` shares the
+parent's handles with the child.
 
 ## Author
 

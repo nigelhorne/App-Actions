@@ -5,6 +5,7 @@ use warnings;
 use FindBin;
 use File::Basename qw(basename dirname);
 use File::Path qw(make_path);
+use Time::HiRes ();
 
 # The path helpers live in t/lib so that they can be unit tested on any
 # platform, including for Windows-style volume specifications.
@@ -77,11 +78,22 @@ if ($command eq 'image') {
 if ($command eq 'pull') {
     my $image = $args[-1];
 
+    # FAKE_PULL_TIMING records when each pull starts and finishes, which is
+    # how a test can tell concurrent pulls from consecutive ones.
+    _timed_log('pull-start', $image) if _timing();
+
+    # FAKE_PULL_SLEEP makes a pull take long enough to be seen, so that
+    # overlapping pulls are not a race between two instant commands.
+    my $sleep = $ENV{FAKE_PULL_SLEEP};
+    Time::HiRes::sleep($sleep)
+        if defined $sleep && length $sleep && $sleep > 0;
+
     # FAKE_PULL_FAILURE names an image, or '*' for every image, that cannot be
     # pulled: the case where a run would otherwise fail halfway through.
     my $broken = $ENV{FAKE_PULL_FAILURE};
     if (defined $broken && length $broken && ($broken eq '*' || $broken eq $image)) {
         print STDERR "Error response from daemon: pull access denied for $image\n";
+        _timed_log('pull-end', $image) if _timing();
         exit 1;
     }
 
@@ -90,6 +102,7 @@ if ($command eq 'pull') {
     print {$marker} $image;
     close $marker;
     print "Pulled $image\n";
+    _timed_log('pull-end', $image) if _timing();
     exit 0;
 }
 
@@ -118,6 +131,29 @@ if ($command eq 'logs') {
 
 if ($command eq 'run') {
     my @run_args = @args;
+
+    # A real daemon cannot start a container from an image it does not have:
+    # it pulls the image first and gives up with 125 when that fails.
+    # FAKE_RUN_NEEDS_IMAGE turns that on, which is how a probe whose image
+    # cannot be pulled fails here the way it does on a real daemon.
+    if ($ENV{FAKE_RUN_NEEDS_IMAGE}) {
+        my $image = _run_image(\@run_args);
+        if (defined $image && !-e _image_marker($image)) {
+            my $broken = $ENV{FAKE_PULL_FAILURE};
+            if (defined $broken && length $broken
+                && ($broken eq '*' || $broken eq $image)) {
+                print STDERR "Unable to find image '$image' locally\n";
+                exit 125;
+            }
+
+            open my $marker, '>', _image_marker($image)
+                or die "fake-docker: $!";
+            binmode $marker;
+            print {$marker} $image;
+            close $marker;
+        }
+    }
+
     my $name = _option_value(\@run_args, '--name');
     if (defined $name) {
         open my $state, '>', _container_file($name) or die "fake-docker: $!";
@@ -233,6 +269,34 @@ sub _container_file {
     return "$state_dir/container-$name";
 }
 
+# The image a "docker run" argument list names: the first token that is
+# neither an option nor the value of one.
+sub _run_image {
+    my ($args) = @_;
+
+    my %takes_value = map { $_ => 1 } qw(
+        --name --network --hostname --platform --entrypoint --user --workdir
+        --volume --mount --env --label --publish --memory --cpus
+        -v -w -e -u -p -m
+    );
+
+    for (my $index = 0; $index < @$args; $index++) {
+        my $argument = $args->[$index];
+
+        if (defined $argument && $takes_value{$argument}) {
+            # Its value is not the image.
+            $index++;
+            next;
+        }
+
+        next if defined $argument && $argument =~ /^-/;
+
+        return $argument;
+    }
+
+    return undef;
+}
+
 sub _option_value {
     my ($args, $option) = @_;
     for my $index (0 .. $#$args - 1) {
@@ -287,6 +351,28 @@ sub _container_mounts {
     my $line = <$state>;
     close $state;
     return mounts([ split /\t/, defined $line ? $line : '' ]);
+}
+
+# Whether pulls should record when they started and finished.
+sub _timing {
+    my $timing = $ENV{FAKE_PULL_TIMING};
+    return defined $timing && length $timing && $timing ne '0';
+}
+
+# Add an event and its time to the log, for tests that need to know when a
+# command ran rather than only that it did.
+sub _timed_log {
+    my ($event, $image) = @_;
+
+    my $file = $ENV{FAKE_DOCKER_LOG};
+    return unless defined $file && length $file;
+
+    open my $log, '>>', $file or die "fake-docker: cannot open log: $!";
+    binmode $log;
+    printf {$log} "%s\t%s\t%.6f\n", $event, $image, Time::HiRes::time();
+    close $log;
+
+    return;
 }
 
 sub _slurp {

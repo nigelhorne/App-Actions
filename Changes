@@ -40,7 +40,45 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       container starts, so a mistyped image is reported instead of failing
       halfway through a job.  Local composite actions, including nested ones,
       are read during the same step, so images named inside them are prepared
-      too rather than discovered when the action first runs.
+      too rather than discovered when the action first runs.  The missing
+      images are pulled a few at a time rather than one after another, so a
+      wide matrix does not serialise its downloads; a failure is still
+      reported against the image that needs it.
+    - Add "action-run preflight <workflow.yml>", which makes the pre-run
+      checks and prepares the images without starting a job, and its
+      "--json" form: the same document as "check --json" with an "images"
+      array naming each image, the job, service or action that needs it, and
+      whether it was pulled, already present, failed or skipped.  Also add
+      App::Actions->preflight, App::Actions::Check->summary, and
+      App::Actions::Process::run_parallel output redirection so that a report
+      can be built without a pull's progress mixed into it.
+    - Add t/real-docker-preflight.t, an opt-in test that runs the preflight
+      against a real daemon, written for a Windows host with Docker Desktop:
+      a probe that cannot run its container, the job, service and docker://
+      action images being pulled before the first container, and an
+      unpullable image reported against the service that needs it.  The
+      Windows real-docker workflow runs it before the workflow test.
+    - Version the "check --json" and "preflight --json" documents: each
+      carries schema_version, from App::Actions::Check->json_schema_version
+      and App::Actions::Runner->preflight_schema_version, so an assertion can
+      name the shape it was written for.  Check in a schema and an example
+      for each in t/fixtures/, and add t/schema.t, which validates the
+      examples and the documents the commands print against them and shows
+      that an extra key, a missing key, a wrong type, an unknown enum value
+      or another version is rejected.
+    - Make the image pull concurrency configurable with --pull-concurrency,
+      ACTION_RUN_PULL_CONCURRENCY, or App::Actions->new's pull_concurrency
+      option, four by default.  The option wins over the environment; a value
+      that is not a positive integer is an error rather than a silent fall
+      back to four.  Windows still pulls one image at a time.
+    - Check each job's images again with the job's own values, before its
+      network or containers exist, so an image that comes from another job's
+      result is reported before the job starts rather than halfway through
+      it.  The preflight reports such an image as deferred instead of
+      guessing at a name, and one that only a step can decide is prepared by
+      that step before its container.  A job image built from github.* or
+      env.* now resolves to the name the job uses, rather than being passed
+      to Docker as an expression with the value torn out.
     - Add "action-run check", which reports the host platform, Docker
       connectivity and whether bind mounts of the temporary and project
       directories work, and "action-run check --json", which reports the same
@@ -54,3 +92,13 @@ Revision history for App-Actions - run GitHub Actions workflows locally
     - Run the whole test suite a second time from a temporary directory whose
       path contains spaces, on every platform, so that paths with spaces are
       not left to chance.  SPACE_PATH=0 skips that run.
+    - Pull each image once per run with --pull: the images prepared before the
+      first job are remembered, so the check a job makes of its own image, a
+      second matrix job using the same image, and a step naming an image
+      another step already used do not download it again.
+    - Report the pull concurrency the preflight used in its JSON document, so
+      a CI job can assert that --pull-concurrency or
+      ACTION_RUN_PULL_CONCURRENCY reached the puller rather than inferring it
+      from the timing of the pulls.  The number is the one handed to the
+      puller, which is 1 on Windows whatever was configured, and the preflight
+      document is version 2 as a result.

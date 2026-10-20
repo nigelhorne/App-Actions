@@ -174,7 +174,10 @@ sub container_image {
 
     if (ref $job->{container} eq 'HASH' && defined $job->{container}{image}) {
         my $expression = App::Actions::Expression->new;
-        return $expression->interpolate(
+        # Only the matrix is known here.  A github.* or env.* reference is
+        # left as written, so the caller that has those values can resolve it
+        # rather than receiving an image name with the value torn out.
+        return $expression->interpolate_known(
             $job->{container}{image},
             { matrix => $job->{matrix} || {} },
         );

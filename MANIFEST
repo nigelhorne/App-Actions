@@ -26,11 +26,17 @@ t/cli.t
 t/docker.t
 t/expression.t
 t/fake-docker.t
+t/fixtures/check-schema.json
+t/fixtures/check.json
+t/fixtures/preflight-schema.json
+t/fixtures/preflight.json
 t/lib/App/Actions/FakeDocker.pm
 t/matrix.t
 t/process.t
+t/real-docker-preflight.t
 t/real-docker.t
 t/runner.t
+t/schema.t
 t/smoke.t
 t/space-path.t
 t/workflow.t
