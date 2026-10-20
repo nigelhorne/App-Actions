@@ -15,3 +15,5 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       outputs, github.action_path, and GITHUB_ACTION_PATH.
     - Run local JavaScript actions with node, INPUT_* variables, and pre and
       post steps.
+    - Run a Docker wrapper script written in Perl with the current Perl
+      interpreter, so the test suite works on Windows.

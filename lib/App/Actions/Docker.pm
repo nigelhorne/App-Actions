@@ -21,8 +21,11 @@ sub new {
         }
     }
 
+    my $bin = $args{bin} || $ENV{DOCKER} || 'docker';
+
     return bless {
-        bin           => $args{bin} || $ENV{DOCKER} || 'docker',
+        bin           => $bin,
+        interpreter   => [ _interpreter_prefix($bin) ],
         dry_run       => $args{dry_run} ? 1 : 0,
         verbose       => $args{verbose} ? 1 : 0,
         quiet         => $args{quiet} ? 1 : 0,
@@ -30,6 +33,35 @@ sub new {
         secret_names  => \%secret_names,
         secret_values => \%secret_values,
     }, $class;
+}
+
+# The Docker command may be a wrapper script instead of a native executable.
+# Windows cannot start a shebang script directly, and a script without the
+# executable bit cannot be started on Unix either, so a Perl wrapper is run
+# with the current interpreter.  Anything else is used as given.
+sub _interpreter_prefix {
+    my ($bin) = @_;
+
+    return () unless defined $bin && length $bin && !ref $bin;
+    return () unless -f $bin;
+    return () if $bin =~ /\.(?:exe|com|bat|cmd)\z/i;
+    return ($^X) if $bin =~ /\.pl\z/i;
+
+    # Only the first line matters, and the command may be a large binary, so
+    # read a bounded amount rather than a whole line.
+    open my $handle, '<', $bin or return ();
+    my $header = '';
+    read($handle, $header, 256);
+    close $handle;
+
+    return () unless defined $header && $header =~ /^#!.*\bperl/;
+
+    return ($^X);
+}
+
+sub _command {
+    my ($self, @args) = @_;
+    return (@{ $self->{interpreter} }, $self->{bin}, @args);
 }
 
 sub bin     { return $_[0]->{bin} }
@@ -147,7 +179,7 @@ sub run {
 
     print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
 
-    system($self->{bin}, @args);
+    system($self->_command(@args));
     return _exit_code($?);
 }
 
@@ -169,7 +201,8 @@ sub run_silent {
     if ($pid == 0) {
         open STDOUT, '>', File::Spec->devnull;
         open STDERR, '>', File::Spec->devnull;
-        exec $self->{bin}, @args;
+        my @command = $self->_command(@args);
+        exec { $command[0] } @command;
         exit 127;
     }
 
@@ -204,7 +237,8 @@ sub _capture {
 
     if ($pid == 0) {
         open STDERR, '>', File::Spec->devnull if $quiet_stderr;
-        exec $self->{bin}, @args;
+        my @command = $self->_command(@args);
+        exec { $command[0] } @command;
         exit 127;
     }
 
@@ -282,6 +316,11 @@ App::Actions::Docker - a thin wrapper around the Docker command line
 This module centralises the Docker command line calls used by
 L<App::Actions::Runner>.  It also provides a dry-run mode and redacts known
 secret values from the commands it prints.
+
+The Docker command may be a wrapper script rather than the C<docker> binary.
+If the wrapper is a Perl script (it starts with a C<perl> shebang), it is run
+with the current Perl interpreter.  That also makes such wrappers usable on
+Windows, where the operating system cannot start a shebang script directly.
 
 =head1 METHODS
 

@@ -144,6 +144,11 @@ Options include C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>, C<env>,
 C<secrets>, C<dry_run>, C<verbose>, C<quiet>, C<keep>, C<keep_images>,
 C<pull>, C<no_pull>, C<strict_actions>, C<docker>, and C<docker_bin>.
 
+C<docker> and C<docker_bin> name the Docker command.  It may also be a wrapper
+script; a wrapper written in Perl is run with the current Perl interpreter, so
+it works on Windows too, where the operating system cannot start a shebang
+script directly.
+
 =head2 run
 
     my $exit_code = $actions->run;

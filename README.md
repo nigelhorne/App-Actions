@@ -51,6 +51,11 @@ Options include `jobs`, `image`, `perl_image`, `platform`, `user`, `env`,
 `secrets`, `dry_run`, `verbose`, `quiet`, `keep`, `keep_images`,
 `pull`, `no_pull`, `strict_actions`, `docker`, and `docker_bin`.
 
+`docker` and `docker_bin` name the Docker command.  It may also be a wrapper
+script; a wrapper written in Perl is run with the current Perl interpreter, so
+it works on Windows too, where the operating system cannot start a shebang
+script directly.
+
 ### Run
 
 ```perl
