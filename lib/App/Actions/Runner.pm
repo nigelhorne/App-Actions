@@ -236,16 +236,77 @@ sub _required_images {
         }
 
         for my $step (@{ $instance->{steps} || [] }) {
-            next unless defined $step->{uses};
-            my $action = eval {
-                $self->{expression}->interpolate($step->{uses}, $context);
-            };
-            next unless defined $action && $action =~ m{^docker://(.+)$};
-            $add->($1, "action '$action' in job '$name'");
+            $self->_collect_step_images(
+                $step, $name, $context, $add, {}, 0, undef,
+            );
         }
     }
 
     return @images;
+}
+
+# Walk one step's `uses`.  A docker:// image is added, and a local composite
+# action is read here rather than when the step runs, so that the images in
+# its steps are known before the first container exists.
+sub _collect_step_images {
+    my ($self, $step, $job_name, $context, $add, $ancestors, $depth, $via) = @_;
+
+    return unless defined $step->{uses};
+
+    my $action = eval {
+        $self->{expression}->interpolate($step->{uses}, $context);
+    };
+    return unless defined $action && length $action;
+
+    if ($action =~ m{^docker://(.+)$}) {
+        my $source = defined $via
+            ? "action '$action' in local action '$via' of job '$job_name'"
+            : "action '$action' in job '$job_name'";
+        $add->($1, $source);
+        return;
+    }
+
+    return unless $action =~ m{^\.\.?/};
+
+    # The run refuses to nest composite actions more than ten deep, so the
+    # walk stops at the same point instead of descending forever.
+    return if $depth >= 10;
+
+    my $relative = eval { $self->_local_action_path($action) };
+    return unless defined $relative;
+
+    # An action may use itself, directly or through another one.
+    return if $ancestors->{$relative};
+
+    my $host_dir = File::Spec->catdir($self->{project_dir}, split m{/}, $relative);
+    return unless -d $host_dir;
+
+    my $loaded = eval { App::Actions::Action->load_from_dir($host_dir) };
+    return unless $loaded && $loaded->is_composite;
+
+    # Inputs usually decide the image ("uses: docker://${{ inputs.image }}").
+    # A missing required input is the run's error to report, not the
+    # preflight's, so it only leaves the image to be discovered at use time.
+    my $inputs = eval { $self->_action_inputs($loaded, $step, $action, $context, undef) };
+    $inputs = {} unless ref $inputs eq 'HASH';
+
+    my %nested = %$context;
+    $nested{inputs} = $inputs;
+    $nested{steps}  = {};
+    $nested{github} = {
+        %{ $context->{github} || {} },
+        action_path => "/github/workspace/$relative",
+        action      => $action,
+    };
+
+    my %deeper = (%$ancestors, $relative => 1);
+    for my $nested_step (@{ $loaded->steps || [] }) {
+        $self->_collect_step_images(
+            $nested_step, $job_name, \%nested, $add, \%deeper, $depth + 1, $action,
+        );
+    }
+
+    return;
 }
 
 # Enough of a context to resolve an image name: matrix values are the reason
@@ -1438,15 +1499,7 @@ sub _run_docker_action {
 sub _run_local_action {
     my ($self, $state, $step, $step_number, $uses, $env, $context, $status) = @_;
 
-    my $relative = $uses;
-    $relative =~ s{^\./}{};
-    $relative =~ s{^/+}{};
-    $relative =~ s{/+$}{};
-
-    croak "Local action '$uses' does not name a directory inside the project"
-        unless length $relative;
-    croak "Local action '$uses' must not escape the project directory"
-        if $relative =~ m{(?:^|/)\.\.(?:/|$)};
+    my $relative = $self->_local_action_path($uses);
 
     my $host_dir = File::Spec->catdir($self->{project_dir}, split m{/}, $relative);
     croak "Local action '$uses' does not exist (looked in $host_dir)"
@@ -1480,6 +1533,25 @@ sub _run_local_action {
         $uses,
         "local actions that use '$action->{using}' are not supported",
     );
+}
+
+# Resolve "./path/to/action" to a path relative to the project, or explain why
+# it cannot be used.  Both the run and the preflight resolve references the
+# same way, so an action is read from one place whichever finds it first.
+sub _local_action_path {
+    my ($self, $uses) = @_;
+
+    my $relative = $uses;
+    $relative =~ s{^\./}{};
+    $relative =~ s{^/+}{};
+    $relative =~ s{/+$}{};
+
+    croak "Local action '$uses' does not name a directory inside the project"
+        unless length $relative;
+    croak "Local action '$uses' must not escape the project directory"
+        if $relative =~ m{(?:^|/)\.\.(?:/|$)};
+
+    return $relative;
 }
 
 # Resolve the action's inputs from defaults and the calling step's `with`.
