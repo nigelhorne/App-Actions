@@ -10,23 +10,28 @@ use File::Temp qw(tempdir);
 use App::Actions::Docker;
 use App::Actions::Process;
 
-# The tool run on a workflow the distribution ships, through the command a
-# user runs rather than the library: bin/action-run t/lib/self_test.yml .  The
-# fake Docker executes step scripts, so this covers starting a container,
-# mounting the project into it, handing a step its environment, seeing what
-# the step printed and cleaning up without a daemon.  With LIVE_TESTING=1 the
-# same workflow runs in a real container, which is the part a fake cannot
-# claim.
+# The tool run on the workflows the distribution ships, through the command a
+# user runs rather than the library: bin/action-run <workflow> <project>.  The
+# first proves the command surface - a container started, the project mounted
+# into it, a step given its environment, what the step printed, everything
+# removed - and the second runs the tool's own command in a Perl image, so
+# action-run is exercised where it is being tested rather than only from the
+# checkout that started it.  The fake Docker executes step scripts, so both
+# are covered without a daemon; with LIVE_TESTING=1 the same workflows run in
+# real containers, which is the part a fake cannot claim.
 my $root = File::Spec->rel2abs(File::Spec->catdir(dirname(__FILE__), '..'));
 my $workflow = File::Spec->catfile($root, 't', 'lib', 'self_test.yml');
+my $cli_workflow = File::Spec->catfile($root, 't', 'lib', 'self_test_cli.yml');
 my $script   = File::Spec->catfile($root, 'bin', 'action-run');
 
-# The workflow and the command are part of the distribution, so one missing is
+# The workflows and the command are part of the distribution, so one missing is
 # a packaging fault rather than an environment without Docker: it is worth
 # failing for even when the run would be skipped, because the suite would
 # otherwise pass without the file the self test is about.
 BAIL_OUT("cannot find '$workflow'; the self test would have nothing to run")
     unless -f $workflow;
+BAIL_OUT("cannot find '$cli_workflow'; the self test would have nothing to run")
+    unless -f $cli_workflow;
 BAIL_OUT("cannot find '$script'; the self test would have nothing to run it with")
     unless -f $script;
 
@@ -49,6 +54,22 @@ sub useful_text {
     return '' unless defined $text;
     $text =~ s/\r\n/\n/g;
     return $text;
+}
+
+# The command is the one in the documentation - the workflow, then the project
+# directory - so the test covers the argument handling and the exit status as
+# well as the run.
+sub run_workflow_file {
+    my ($docker, $file) = @_;
+
+    my ($out, $err, $status) = capture {
+        App::Actions::Process::stream([
+            $^X, '-I' . File::Spec->catdir($root, 'lib'), $script,
+            '--docker', $docker, $file, $root,
+        ]);
+    };
+
+    return (useful_text($out), useful_text($err), $status);
 }
 
 # The containers a run starts are named action-run-*, so they can be listed
@@ -112,17 +133,7 @@ if ($live) {
         if %already;
 }
 
-# The command is the one in the documentation - the workflow, then the project
-# directory - so the test covers the argument handling and the exit status as
-# well as the run.
-my ($stdout, $stderr, $exit) = capture {
-    App::Actions::Process::stream([
-        $^X, '-I' . File::Spec->catdir($root, 'lib'), $script,
-        '--docker', $docker, $workflow, $root,
-    ]);
-};
-$stdout = useful_text($stdout);
-$stderr = useful_text($stderr);
+my ($stdout, $stderr, $exit) = run_workflow_file($docker, $workflow);
 
 diag "stdout:\n$stdout" if $exit != 0;
 diag "stderr:\n$stderr" if length $stderr;
@@ -145,6 +156,34 @@ SKIP: {
         'the project is mounted where the step can read it');
     like($stdout, qr/the environment reached the step/,
         'a step environment variable reached the container');
+}
+
+# The second shipped workflow runs the tool itself inside a Perl image:
+# "action-run schema check" and "action-run validate" are exercised from
+# inside the container, through the command a user runs.
+my ($cli_stdout, $cli_stderr, $cli_exit) = run_workflow_file($docker, $cli_workflow);
+
+diag "stdout:\n$cli_stdout" if $cli_exit != 0;
+diag "stderr:\n$cli_stderr" if length $cli_stderr;
+
+is($cli_exit, 0, 'action-run runs the second workflow it ships');
+like($cli_stdout, qr/^==> Job: self-test-cli$/m,
+    'the Perl-image job runs');
+like($cli_stdout, qr/^ {2}self-test-cli\s+success$/m,
+    'the Perl-image job summary reports success');
+like($cli_stdout, qr/^Workflow succeeded$/m,
+    'the second workflow reports success');
+
+SKIP: {
+    skip 'the fake daemon cannot execute step scripts on this host', 3
+        unless $live || $^O ne 'MSWin32';
+
+    like($cli_stdout, qr/^the dependencies the tool needs are available$/m,
+        'the image was ready for the tool to run');
+    like($cli_stdout, qr/^the CLI printed its check schema inside the container$/m,
+        "the tool's own command printed a schema from inside the container");
+    like($cli_stdout, qr/^the CLI validated a document inside the container$/m,
+        "the tool's own command validated a document from inside the container");
 }
 
 my @leftovers;

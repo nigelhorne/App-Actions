@@ -183,8 +183,10 @@ prove -l t
 
 One of its tests copies the suite into a temporary directory whose name
 contains spaces and runs every test file there again, which is how paths with
-spaces are covered on every platform.  That doubles the running time; set
-`SPACE_PATH=0` to skip it, or run just that check with
+spaces are covered on every platform.  The copy is made from `MANIFEST`, so it
+holds exactly what the distribution ships and a test that reads a new file
+finds it there as soon as that file is listed.  That doubles the running time;
+set `SPACE_PATH=0` to skip it, or run just that check with
 `prove -l t/space-path.t`.
 
 The repository ships a pre-commit hook in `.githooks/` that runs the schema
@@ -220,6 +222,16 @@ The fake Docker executes step scripts with the host's shell, mapping the paths
 writes to `GITHUB_ENV` and `GITHUB_OUTPUT` are exercised without a daemon.
 It runs the command of a `docker://` action the same way, so what a one-shot
 container prints, and the status it exits with, are what the run sees.
+
+The self test runs two workflows the distribution ships: the one above, which
+proves the command surface, and `t/lib/self_test_cli.yml`, which runs
+`action-run schema` and `action-run validate` inside a Perl image, so the
+tool is exercised where it is being tested rather than only from the checkout
+that started it.  That image gets the tool's dependencies only when it does
+not have them, so the fake run stays off the network.  The
+test says which half it ran: with `LIVE_TESTING=1` it reports that the
+workflow is in a real container, and without it that the steps ran against the
+fake and the container path was not exercised.
 
 The live tests read two variables and both carry the `LIVE_TESTING`
 prefix, so there is one name to remember: `LIVE_TESTING` turns them on and

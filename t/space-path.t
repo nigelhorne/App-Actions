@@ -4,7 +4,6 @@ use Test::Most;
 use Capture::Tiny qw(capture);
 use File::Basename qw(dirname);
 use File::Copy qw(copy);
-use File::Find qw(find);
 use File::Path qw(make_path);
 use File::Spec;
 use File::Temp qw(tempdir);
@@ -23,60 +22,43 @@ plan skip_all => 'the suite is already running from a path with spaces'
     if $root =~ / /;
 
 # The copy is made here, not in the distribution, so the tests below exercise
-# the code under test and not a stale duplicate.
-sub copy_tree {
-    my ($from, $to, $directory) = @_;
+# the code under test and not a stale duplicate.  What goes into it is what
+# MANIFEST says the distribution ships, which is the list of files the suite
+# may read: a test that starts reading a new file is covered here as soon as
+# that file is in the distribution, rather than failing - or, worse, skipping -
+# in this copy alone.  Modes are kept, because the hook is run rather than read.
+my $manifest = File::Spec->catfile($root, 'MANIFEST');
+open my $listing, '<', $manifest or die "cannot read '$manifest': $!\n";
 
-    my $source = File::Spec->catdir($from, $directory);
-    my $target = File::Spec->catdir($to, $directory);
-    make_path($target);
+my @shipped;
+while (my $line = <$listing>) {
+    next if $line =~ /\A#/;
 
-    find(
-        {
-            no_chdir => 1,
-            wanted   => sub {
-                my $path = $File::Find::name;
-                my $relative = File::Spec->abs2rel($path, $source);
-                my $destination = File::Spec->catfile($target, $relative);
-                if (-d $path) {
-                    make_path($destination);
-                    return;
-                }
-                copy($path, $destination)
-                    or die "cannot copy '$path' to '$destination': $!\n";
+    # make distdir rewrites MANIFEST with a description after each name, so
+    # only the first field is the file.  A name cannot contain whitespace, so
+    # this is the same list whichever form the file is in.
+    my ($file) = split /\s+/, $line;
+    next unless defined $file && length $file;
 
-                # A copy is only a copy if it keeps the mode: the hook is run
-                # rather than read, so an executable bit lost on the way would
-                # fail a test that has nothing to do with paths.
-                chmod((stat $path)[2] & 07777, $destination)
-                    or die "cannot set the mode of '$destination': $!\n";
-            },
-        },
-        $source,
-    );
-
-    return;
+    push @shipped, $file;
 }
+close $listing;
 
 my $temp = tempdir('app-actions space XXXX', TMPDIR => 1, CLEANUP => 1);
 my $copy = File::Spec->catdir($temp, 'suite with spaces');
 make_path($copy);
 
-# The documentation, the workflows and the hooks are copied too, not just the
-# code: a test that reads them then runs in the copy rather than failing - or,
-# worse, skipping - because the copy never had the file.  t/live-knobs.t reads
-# the documentation and the workflow, and t/hooks.t runs the hook itself.
-for my $directory (qw(lib bin t .github .githooks)) {
-    copy_tree($root, $copy, $directory)
-        if -d File::Spec->catdir($root, $directory);
-}
+for my $file (@shipped) {
+    my $from = File::Spec->catfile($root, split m{/}, $file);
+    my $to   = File::Spec->catfile($copy, split m{/}, $file);
 
-for my $file (qw(README.md)) {
-    my $from = File::Spec->catfile($root, $file);
+    die "MANIFEST lists '$file', which is not in the tree\n" unless -e $from;
 
-    copy($from, File::Spec->catfile($copy, $file))
-        or die "cannot copy '$from': $!\n"
-        if -e $from;
+    make_path(dirname($to));
+    copy($from, $to) or die "cannot copy '$from' to '$to': $!\n";
+
+    chmod((stat $from)[2] & 07777, $to)
+        or die "cannot set the mode of '$to': $!\n";
 }
 
 like($copy, qr/ /, 'the copy lives under a path with spaces');

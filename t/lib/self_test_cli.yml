@@ -1,0 +1,38 @@
+# The second workflow action-run runs against itself.  Where the first proves
+# the command surface - a container started, the project mounted, a step given
+# its environment, everything removed - this one runs the tool's own command
+# inside a Perl image, so action-run is exercised where it is being tested
+# rather than only from the checkout that started it.
+#
+# The command it runs needs the tool's own dependencies, which the image does
+# not have: they are installed only when they are missing, so the fake daemon
+# (which runs these steps on the host, where they are installed) does not touch
+# the network, and a real container fetches just the one distribution.
+name: Self test CLI
+on: push
+jobs:
+  self-test-cli:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.38
+    steps:
+      - name: Make the tool's dependencies available
+        run: |
+          perl -MYAML::PP -e 1 2>/dev/null || cpanm --notest --quiet YAML::PP
+          echo "the dependencies the tool needs are available"
+      - name: Print the contract
+        run: |
+          perl -Ilib bin/action-run schema check > "$RUNNER_TEMP/check-schema.json"
+          perl -MJSON::PP -e '
+            local $/;
+            open my $handle, "<", $ARGV[0] or die "cannot read $ARGV[0]: $!";
+            my $schema = JSON::PP->new->decode(<$handle>);
+            die "the document is not a schema\n"
+                unless defined $schema->{version}
+                && defined $schema->{properties}{schema_version};
+            print "the CLI printed its check schema inside the container\n";
+          ' "$RUNNER_TEMP/check-schema.json"
+      - name: Validate a document
+        run: |
+          perl -Ilib bin/action-run validate check t/fixtures/check.json
+          echo "the CLI validated a document inside the container"

@@ -40,6 +40,7 @@ t/fixtures/preflight.json
 t/hooks.t
 t/lib/App/Actions/FakeDocker.pm
 t/lib/self_test.yml
+t/lib/self_test_cli.yml
 t/live-knobs.t
 t/matrix.t
 t/process.t

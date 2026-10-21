@@ -455,16 +455,24 @@ sub _run_program {
     }
 
     # The container's PATH names directories that exist only inside it.  The
-    # ones that are mounted are mapped, the rest are kept - a shell ignores a
-    # directory that is not there - and the host's own entries follow, so that
-    # the shell still finds its tools.
+    # ones that are mounted are mapped.  The rest are kept, but after the
+    # host's own entries: a directory with the same name here is not the
+    # container's, and taking its tools for the image's would hand a step the
+    # host's perl or python under the image's name.  A shell ignores a
+    # directory that is not there anyway, which is what keeps the rest useful.
     my @path = (_hostbin());
+    my @unmounted;
     for my $entry (split /:/, defined $environment->{PATH} ? $environment->{PATH} : '') {
         next unless length $entry;
         my $host = to_host($entry, $mounts);
-        push @path, defined $host ? $host : $entry;
+        if (defined $host) {
+            push @path, $host;
+        } else {
+            push @unmounted, $entry;
+        }
     }
     push @path, split /:/, defined $ENV{PATH} ? $ENV{PATH} : '';
+    push @path, @unmounted;
     $child{PATH} = join ':', grep { defined $_ && length $_ } @path;
 
     my $directory = defined $workdir ? to_host($workdir, $mounts) : undef;

@@ -64,8 +64,8 @@ is_deeply(
 );
 
 # A knob nobody documents is a knob nobody sets.  The documentation and the
-# workflow are checked when they are there, and skipped in a copy that only
-# carries lib/, bin/ and t/, as a partial copy of the suite does.
+# workflow are checked when they are there, and skipped in a copy of the suite
+# that does not carry them.
 for my $document (qw(README.md lib/App/Actions.pm)) {
     SKIP: {
         skip "a copy of the suite has no $document to read", scalar @knobs

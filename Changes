@@ -222,6 +222,25 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       step-output assertions are no longer live-only.  t/runner.t asserts a
       plain step's output as well, so the docker exec path is covered there
       too rather than only through the command run in the self test.
+    - Run the tool where it is being tested: t/lib/self_test_cli.yml is a
+      second workflow t/self_test.t runs, in a Perl image, and its steps run
+      "action-run schema check" and "action-run validate" inside the
+      container - the schema it prints and a document it validates, both read
+      back through JSON::PP.  The tool's dependency is installed only when the
+      image lacks it, so the fake run stays off the network; the live run
+      fetches YAML::PP, which is the one thing the image has to gain.
+    - Keep the host's tools ahead of a container PATH entry that only shares
+      its name.  The fake daemon now puts the host's PATH before the
+      directories of the container's PATH that are not mounted, so a step that
+      asks for perl gets the host's perl rather than /usr/bin/perl happening
+      to be there; without it the self test's dependency check ran against the
+      system perl and tried to install a module that was already available.
+    - Build the space-path copy from MANIFEST rather than a hand-written list
+      of directories.  The copy is what the distribution ships, so a test that
+      starts reading a new file finds it there as soon as it is listed, rather
+      than failing - or skipping - in that copy alone; a file the suite reads
+      but MANIFEST omits still fails there, which is the point of making the
+      copy from the same list make dist uses.
     - Say which half of t/self_test.t a run is, since a green run looked the
       same whether it ran in a container or against the fake: with the switch
       it reports a real container, and without it that the steps ran against
