@@ -190,3 +190,82 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       container_start_captured, which keeps the message a quiet start would
       discard, and the fake Docker can now refuse a container the way a real
       daemon does.
+    - Add t/self_test.t, the test that runs the tool on a workflow the
+      distribution ships: it invokes "action-run t/lib/self_test.yml ."
+      against a real Docker daemon, so starting a container, mounting the
+      project, passing a step its environment and cleaning up are covered
+      through the command a user runs rather than through the library.  It is
+      opt-in with LIVE_TESTING=1, as in "make test LIVE_TESTING=1", so the
+      ordinary suite still runs against the fake Docker.
+    - Enable every test that needs a real Docker daemon with one switch:
+      LIVE_TESTING=1 now turns on t/real-docker.t, t/real-docker-preflight.t
+      and t/self_test.t, where REAL_DOCKER=1 used to turn on the first two.
+      A run started with the old name still skips with a message naming the
+      new one, and the Real Docker on Windows workflow sets LIVE_TESTING.
+    - Fail when a checked-in example in t/fixtures/ declares a schema version
+      other than the one the module that prints it ships, naming the file and
+      both numbers, and when an example is not one t/schema.t's coverage walk
+      reads.  The walk only sees the files it lists, so a version bump applied
+      to a schema and its module but not to a document nobody was editing
+      reached CI as a schema mismatch naming only the key at fault; the
+      directory is now walked, so a half-applied bump fails locally with the
+      document that was missed.
+    - Run step scripts for real in the fake Docker.  It maps the paths docker
+      exec was given back to the host and runs the script with the host's
+      shell, so what a step prints and what it writes to GITHUB_ENV and
+      GITHUB_OUTPUT are exercised without a daemon, and a step that asks uname
+      gets the Linux answer a container would give rather than the host's.  A
+      script built from the control markers keeps the emulation, and so does a
+      host with no POSIX shell, which is how the suite still passes on
+      Windows.  t/self_test.t now runs against the fake daemon by default and
+      needs LIVE_TESTING=1 only to run in a real container, so its
+      step-output assertions are no longer live-only.  t/runner.t asserts a
+      plain step's output as well, so the docker exec path is covered there
+      too rather than only through the command run in the self test.
+    - Say which half of t/self_test.t a run is, since a green run looked the
+      same whether it ran in a container or against the fake: with the switch
+      it reports a real container, and without it that the steps ran against
+      the fake and the container path was not exercised, with the command to
+      set for the live run.
+    - Name the image the live tests start LIVE_TESTING_IMAGE, so that both
+      variables they read carry the LIVE_TESTING prefix, and add
+      t/live-knobs.t, which fails when a knob those tests read lacks the
+      prefix, when the README or the module's POD does not name it, and when
+      the Real Docker on Windows workflow does not set it.  A rename applied
+      to the tests alone would not have been an error anywhere: an image
+      nobody sets simply falls back to alpine:3.20.  The copy t/space-path.t
+      makes now carries the README and the workflows too, so the test that
+      reads them runs there instead of dying on a file the copy never had.
+    - Add .githooks/pre-commit, which runs the schema checks against the files
+      a commit stages and refuses the commit when they disagree.  The staged
+      files are written out with git checkout-index and checked there, so a
+      bump whose working tree was corrected after staging is caught, while a
+      corrected document with a broken one left unstaged beside it is not
+      refused.  A commit touching nothing under lib/, bin/, t/schema.t or
+      t/fixtures/ does not start the checks.  The clone opts in with "git
+      config core.hooksPath .githooks"; the hook itself clears the test
+      harness's environment so its TAP is the same however it was started.
+    - Hold each shipped schema to itself before any document is read: the
+      schema's own version, the const its schema_version property promises
+      and the constant the module reports have to agree, and the failure
+      names the schema and both numbers - "the preflight schema says version
+      3, but its schema_version const says 2" - where a document that no
+      longer matches would have named only the key at fault.  The fixtures
+      are checked against a schema that is known to agree with itself, which
+      is also what the pre-commit hook relies on when it runs t/schema.t.
+    - Add the Live Docker workflow, which sets LIVE_TESTING=1 on every push
+      and pull request and runs t/self_test.t on a real daemon, so the live
+      path is exercised in CI rather than only on a developer's machine.  The
+      daemon is checked before the test runs, with the daemon's own message
+      when it cannot run Linux containers, and t/live-knobs.t now fails when
+      no workflow sets the switch and runs the self test, so removing the job
+      cannot quietly return the live half to being hand-checked.
+    - Run the command of a docker:// action in the fake Docker.  A one-shot
+      container's program is run with the host's shell, with the container's
+      environment, working directory and mounts mapped back to the host (an
+      entrypoint that names a mounted script is run as that script), so what
+      the action prints and the status it exits with are what the run sees -
+      a failing action now fails the job instead of passing as a log line.
+      A command built from the control markers keeps the emulation, and so
+      does a host with no POSIX shell, which is how the suite still passes on
+      Windows.

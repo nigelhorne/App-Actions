@@ -17,19 +17,19 @@ use App::Actions::Docker;
 # nothing here is Windows-specific: point DOCKER or DOCKER_HOST at any Linux
 # daemon and it runs there too.
 #
-#     REAL_DOCKER=1 prove -l t/real-docker-preflight.t
+#     LIVE_TESTING=1 prove -l t/real-docker-preflight.t
 #
 # An image that cannot be pulled is how a real daemon is made to fail the
 # probe and the image preparation: unlike a stopped daemon, it leaves the rest
 # of the checks working.
-my $enabled = defined $ENV{REAL_DOCKER} && length $ENV{REAL_DOCKER}
-    && $ENV{REAL_DOCKER} ne '0';
-plan skip_all => 'set REAL_DOCKER=1 to exercise the preflight against a real Docker daemon'
+my $enabled = defined $ENV{LIVE_TESTING} && length $ENV{LIVE_TESTING}
+    && $ENV{LIVE_TESTING} ne '0';
+plan skip_all => 'set LIVE_TESTING=1 to exercise the preflight against a real Docker daemon'
     unless $enabled;
 
 my $docker = defined $ENV{DOCKER} && length $ENV{DOCKER} ? $ENV{DOCKER} : 'docker';
-my $image  = defined $ENV{REAL_DOCKER_IMAGE} && length $ENV{REAL_DOCKER_IMAGE}
-    ? $ENV{REAL_DOCKER_IMAGE}
+my $image  = defined $ENV{LIVE_TESTING_IMAGE} && length $ENV{LIVE_TESTING_IMAGE}
+    ? $ENV{LIVE_TESTING_IMAGE}
     : 'alpine:3.20';
 
 # Small images for the service and the action, so that the test is about the

@@ -124,15 +124,58 @@ sub run_cli {
 # of it that could drift.
 my $check_schema     = App::Actions::Check->json_schema;
 my $preflight_schema = App::Actions::Runner->json_schema;
+
+my %shipped_schema = (
+    check     => $check_schema,
+    preflight => $preflight_schema,
+);
+
+# The version of a shape is written in three places: the schema's own version,
+# the const its schema_version property promises, and the constant the module
+# reports.  A bump that reaches one or two of them changes what the contract
+# says without changing the number a caller compares against, and a document
+# that then fails would name a key rather than the version that moved.  So the
+# schemas are held to themselves here, before any document is read.
+my %schema_source = (
+    check     => [ 'App::Actions::Check',  'json_schema_version' ],
+    preflight => [ 'App::Actions::Runner', 'preflight_schema_version' ],
+);
+
+for my $document (sort keys %shipped_schema) {
+    my ($module, $reported_by) = @{ $schema_source{$document} };
+    my $schema = $shipped_schema{$document};
+
+    my $version  = $schema->{version};
+    my $const    = $schema->{properties}{schema_version}{const};
+    my $reported = $module->$reported_by;
+
+    my $show = sub {
+        my ($value) = @_;
+
+        return defined $value ? "$value" : 'nothing';
+    };
+
+    my @problems;
+    push @problems, sprintf(
+        'the %s schema says version %s, but its schema_version const says %s',
+        $document, $show->($version), $show->($const),
+    ) unless defined $const && defined $version && "$const" eq "$version";
+
+    push @problems, sprintf(
+        'the %s schema says version %s, but %s->%s returns %s',
+        $document, $show->($version), $module, $reported_by, $show->($reported),
+    ) unless defined $version && defined $reported && "$version" eq "$reported";
+
+    is_deeply(
+        \@problems,
+        [],
+        "the $document schema version, its const key and the module that prints it agree",
+    );
+    diag "$_\n" for @problems;
+}
+
 my $check_example     = load_json(File::Spec->catfile($fixtures, 'check.json'));
 my $preflight_example = load_json(File::Spec->catfile($fixtures, 'preflight.json'));
-
-# The schema files, the documents and the modules all name the same version,
-# so an assertion can say which shape it was written for.
-is($check_schema->{version}, App::Actions::Check->json_schema_version,
-    'the check schema version is the version the module reports');
-is($preflight_schema->{version}, App::Actions::Runner->preflight_schema_version,
-    'the preflight schema version is the version the module reports');
 
 is_deeply(
     [ validate($check_example, $check_schema) ],
@@ -373,11 +416,6 @@ my %shipped_examples = (
     preflight => [qw(preflight.json preflight-unready.json preflight-unreachable.json
                     preflight-not-ready.json)],
 );
-my %shipped_schema = (
-    check     => $check_schema,
-    preflight => $preflight_schema,
-);
-
 for my $document (sort keys %shipped_examples) {
     my $schema = $shipped_schema{$document};
     my %coverage = (keys => {}, alternatives => {});
@@ -399,6 +437,76 @@ for my $document (sort keys %shipped_examples) {
         "the checked-in $document examples exercise every key, enum value and null variant in the $document schema");
     diag "$document schema, unexercised: $_\n" for @gaps;
 }
+
+# A version bump is applied by hand to the schema, the module that prints it
+# and every checked-in document, and the copy that gets forgotten is exactly
+# the one that was not on somebody's list.  The assertions above only see the
+# files named in %shipped_examples, so the directory itself is walked here:
+# every document has to declare the version the module that prints it ships.
+# That is what fails on a half-applied bump, with the file and both numbers
+# named, instead of a CI job reporting the key at fault in a document nobody
+# was editing.
+my @fixture_files = do {
+    opendir my $directory, $fixtures or die "Unable to read '$fixtures': $!";
+    my @names = sort grep { /\.json\z/ } readdir $directory;
+    closedir $directory;
+    @names;
+};
+
+ok(scalar @fixture_files, 'the fixtures directory holds the checked-in examples');
+
+my %document_of;
+my @version_problems;
+
+for my $name (@fixture_files) {
+    my $example = load_json(File::Spec->catfile($fixtures, $name));
+
+    # A document says which command printed it by what it carries - the
+    # preflight adds images and the pull concurrency - rather than by how its
+    # file happens to be named.
+    my $document = exists $example->{pull_concurrency}
+        && ref $example->{images} eq 'ARRAY'
+        ? 'preflight'
+        : 'check';
+    $document_of{$name} = $document;
+
+    my $shipped  = $shipped_schema{$document};
+    my $declared = $example->{schema_version};
+
+    next if defined $declared && $declared eq $shipped->{version};
+
+    push @version_problems, sprintf(
+        '%s declares schema version %s, but %s ships %s',
+        $name,
+        defined $declared ? $declared : 'nothing',
+        $document eq 'preflight' ? 'App::Actions::Runner' : 'App::Actions::Check',
+        $shipped->{version},
+    );
+}
+
+is_deeply(
+    \@version_problems,
+    [],
+    'every checked-in example declares the schema version it is written for',
+);
+diag "$_\n" for @version_problems;
+
+# An example nobody listed is one the walk above never reads, so its keys,
+# enum values and null variants would go unchecked while it looked covered.
+my @unlisted;
+for my $name (@fixture_files) {
+    my $listed = grep { $_ eq $name }
+        @{ $shipped_examples{ $document_of{$name} } || [] };
+
+    push @unlisted, $name unless $listed;
+}
+
+is_deeply(
+    \@unlisted,
+    [],
+    'every checked-in example is one the coverage walk reads',
+);
+diag "add '$_' to \%shipped_examples\n" for @unlisted;
 
 # Now the documents the commands actually print, against the same schemas.
 my $project = tempdir(CLEANUP => 1);

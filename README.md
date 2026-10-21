@@ -39,7 +39,7 @@ steps are honoured.  If an image has no `sudo` and the container is running
 as root, a small `sudo` shim is placed on `PATH` so that steps such as
 `sudo apt update` work locally.
 
-The host may run Unix or Windows; only the containers are Linux.  Command
+The host may run UNIX or Windows; only the containers are Linux.  Command
 output is captured without `fork` or a piped `open`, and paths, volumes and
 permissions are handled in a platform-neutral way, so the same code and test
 suite run on both.  Step scripts, the `sudo` and `apt` shims, and
@@ -187,14 +187,46 @@ spaces are covered on every platform.  That doubles the running time; set
 `SPACE_PATH=0` to skip it, or run just that check with
 `prove -l t/space-path.t`.
 
-One small workflow can be run against a real Docker daemon instead:
+The repository ships a pre-commit hook in `.githooks/` that runs the schema
+checks against the files a commit stages, so a version bump applied to the
+schema or to the documents but not to both is refused where it happens rather
+than by CI afterwards.  It is off until a clone asks for it:
 
 ```
-REAL_DOCKER=1 prove -l t/real-docker.t
+git config core.hooksPath .githooks
 ```
 
-`REAL_DOCKER_IMAGE` overrides the image (the default is `alpine:3.20`) and
+A commit that touches nothing which can move a schema version passes without
+the checks being run at all, and `git commit --no-verify` skips it for one
+commit.
+
+The tests that need a real Docker daemon sit behind one switch,
+`LIVE_TESTING`: `make test LIVE_TESTING=1` runs them all.  `t/real-docker.t`
+runs one small workflow end to end with `action-run check` and the smoke
+script, `t/real-docker-preflight.t` the preflight including an image that
+cannot be pulled, and `t/self_test.t` the command a user runs -
+`bin/action-run t/lib/self_test.yml .` - in a real container rather than the
+fake one it uses by default.  One of them on its own is `LIVE_TESTING=1
+prove -l t/real-docker.t`.
+
+The _Live Docker_ workflow sets the switch and runs `t/self_test.t` on every
+push, so the command a user runs is exercised on a daemon in CI rather than
+only on a machine that has one.  The two daemon-specific files stay where a
+particular daemon is the point: a local `LIVE_TESTING=1` run, and the
+_Real Docker on Windows_ workflow.
+
+The fake Docker executes step scripts with the host's shell, mapping the paths
+`docker exec` was given back to the host, so a step's output and the files it
+writes to `GITHUB_ENV` and `GITHUB_OUTPUT` are exercised without a daemon.
+It runs the command of a `docker://` action the same way, so what a one-shot
+container prints, and the status it exits with, are what the run sees.
+
+The live tests read two variables and both carry the `LIVE_TESTING`
+prefix, so there is one name to remember: `LIVE_TESTING` turns them on and
+`LIVE_TESTING_IMAGE` names the image they start, `alpine:3.20` by default.
 `DOCKER` overrides the Docker command.  The daemon must run Linux containers.
+`t/live-knobs.t` holds the tests, the documentation and the workflow to that
+prefix, so a rename that misses one of them fails the ordinary suite.
 The same ground is covered by `action-run-smoke`, which does not need `prove`
 and reports the environment before it runs anything; use it when Docker, not
 the code, is in doubt.  On Windows it is the check to run against Docker

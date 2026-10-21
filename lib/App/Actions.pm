@@ -13,9 +13,9 @@ use App::Actions::Runner;
 our $VERSION = '0.01';
 
 sub new {
-    my ($class, %args) = @_;
+	my ($class, %args) = @_;
 
-    croak 'workflow_file is required' unless defined $args{workflow_file};
+	croak 'workflow_file is required' unless defined $args{workflow_file};
 
     my $workflow_file = abs_path($args{workflow_file});
     croak "Workflow file '$args{workflow_file}' does not exist"
@@ -176,7 +176,7 @@ steps are honoured.  If an image has no C<sudo> and the container is running
 as root, a small C<sudo> shim is placed on C<PATH> so that steps such as
 C<sudo apt update> work locally.
 
-The host may run Unix or Windows; only the containers are Linux.  Command
+The host may run UNIX or Windows; only the containers are Linux.  Command
 output is captured without C<fork> or a piped C<open>, and paths, volumes and
 permissions are handled in a platform-neutral way, so the same code and test
 suite run on both.  Step scripts, the C<sudo> and C<apt> shims, and
@@ -314,12 +314,47 @@ spaces are covered on every platform.  That doubles the running time; set
 C<SPACE_PATH=0> to skip it, or run just that check with
 C<prove -l t/space-path.t>.
 
-One small workflow can be run against a real Docker daemon instead:
+The repository ships a pre-commit hook in F<.githooks/> that runs the schema
+checks against the files a commit stages, so a version bump applied to the
+schema or to the documents but not to both is refused where it happens rather
+than by CI afterwards.  It is off until a clone asks for it:
 
-    REAL_DOCKER=1 prove -l t/real-docker.t
+    git config core.hooksPath .githooks
 
-C<REAL_DOCKER_IMAGE> overrides the image (the default is C<alpine:3.20>) and
+A commit that touches nothing which can move a schema version passes without
+the checks being run at all, and C<git commit --no-verify> skips it for one
+commit.
+
+The tests that need a real Docker daemon sit behind one switch,
+C<LIVE_TESTING>: C<make test LIVE_TESTING=1> runs them all.  C<t/real-docker.t>
+runs one small workflow end to end with C<action-run check> and the smoke
+script, C<t/real-docker-preflight.t> the preflight including an image that
+cannot be pulled, and C<t/self_test.t> the command a user runs -
+C<bin/action-run t/lib/self_test.yml .> - in a real container rather than the
+fake one it uses by default.  One of them on its own is C<LIVE_TESTING=1
+prove -l t/real-docker.t>.
+
+The I<Live Docker> workflow sets the switch and runs C<t/self_test.t> on every
+push, so the command a user runs is exercised on a daemon in CI rather than
+only on a machine that has one.  The two daemon-specific files stay where a
+particular daemon is the point: a local C<LIVE_TESTING=1> run, and the
+I<Real Docker on Windows> workflow.
+
+The fake Docker executes step scripts with the host's shell, mapping the paths
+C<docker exec> was given back to the host, so a step's output and the files it
+writes to C<GITHUB_ENV> and C<GITHUB_OUTPUT> are exercised without a daemon.
+It runs the command of a C<docker://> action the same way, so what a one-shot
+container prints, and the status it exits with, are what the run sees.  The
+test says which half it ran: with C<LIVE_TESTING=1> it reports that the
+workflow is in a real container, and without it that the steps ran against the
+fake and the container path was not exercised.
+
+The live tests read two variables and both carry the C<LIVE_TESTING>
+prefix, so there is one name to remember: C<LIVE_TESTING> turns them on and
+C<LIVE_TESTING_IMAGE> names the image they start, C<alpine:3.20> by default.
 C<DOCKER> overrides the Docker command.  The daemon must run Linux containers.
+C<t/live-knobs.t> holds the tests, the documentation and the workflow to that
+prefix, so a rename that misses one of them fails the ordinary suite.
 The same ground is covered by C<action-run-smoke>, which does not need C<prove>
 and reports the environment before it runs anything; use it when Docker, not
 the code, is in doubt.  On Windows it is the check to run against Docker

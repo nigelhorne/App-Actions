@@ -35,8 +35,8 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     env:
-      REAL_DOCKER: '1'
-      REAL_DOCKER_IMAGE: ${{ inputs.image }}
+      LIVE_TESTING: '1'
+      LIVE_TESTING_IMAGE: ${{ inputs.image }}
       DOCKER: ${{ inputs.docker }}
     steps:
       - uses: actions/checkout@v7
@@ -95,8 +95,8 @@ jobs:
       - name: Run the preflight against real Docker
         shell: pwsh
         run: |
-          if ($env:REAL_DOCKER -ne '1') {
-            throw 'REAL_DOCKER is not set to 1; refusing to report a skipped test as success.'
+          if ($env:LIVE_TESTING -ne '1') {
+            throw 'LIVE_TESTING is not set to 1; refusing to report a skipped test as success.'
           }
 
           $env:PATH = "$env:USERPROFILE\perl5\bin;$env:PATH"
@@ -108,8 +108,8 @@ jobs:
         shell: pwsh
         run: |
           # A skipped test would report success without touching Docker.
-          if ($env:REAL_DOCKER -ne '1') {
-            throw 'REAL_DOCKER is not set to 1; refusing to report a skipped test as success.'
+          if ($env:LIVE_TESTING -ne '1') {
+            throw 'LIVE_TESTING is not set to 1; refusing to report a skipped test as success.'
           }
 
           $env:PATH = "$env:USERPROFILE\perl5\bin;$env:PATH"

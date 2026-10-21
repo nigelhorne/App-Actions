@@ -1,0 +1,152 @@
+#!/usr/bin/env perl
+
+# The schema a document in t/fixtures/ declares has to match the version the
+# module that prints it ships, and a version bump is applied by hand - to the
+# module, to the documents, and sometimes to neither of the two files
+# somebody happened to be editing.  The suite catches that, but only once it
+# runs, which is this hook's job: refuse the commit rather than let CI find it.
+#
+# It checks the snapshot being committed, not the working tree.  A bump that
+# is staged in half looks the same as a working tree with an unstaged change,
+# and only the staged half is what gets committed, so the staged files are
+# written to a temporary directory and the checks run there.  Nothing in the
+# working tree is touched.
+#
+# Enable it once per clone with
+#
+#     git config core.hooksPath .githooks
+#
+# and skip it for one commit with "git commit --no-verify".
+
+use strict;
+use warnings;
+use File::Spec;
+use File::Temp qw(tempdir);
+use FindBin;
+
+use lib File::Spec->catdir($FindBin::Bin, File::Spec->updir, 'lib');
+
+use App::Actions::Process ();
+
+# The files whose staging can change what the schema looks like.  A commit
+# that touches none of them has nothing for this check to say, which keeps an
+# ordinary commit cheap.
+my @relevant = ('lib', 'bin', 't/schema.t', 't/fixtures');
+
+sub run_command {
+    my ($command, %options) = @_;
+
+    return App::Actions::Process::capture($command, %options);
+}
+
+# Not a git work tree - an unpacked distribution, say: there is no commit to
+# guard and no index to read.  git says so itself; its message is not this
+# hook's to repeat, so it is dropped.
+my ($root, $root_status) = run_command(
+    [qw(git rev-parse --show-toplevel)],
+    quiet_stderr => 1,
+);
+exit 0 if $root_status;
+
+chomp $root;
+chdir $root or do {
+    print STDERR "pre-commit: cannot change to '$root': $!\n";
+    exit 0;
+};
+
+# Nothing staged that could move a schema version: the commit cannot be the
+# half-applied bump this guards against.  An unborn HEAD makes the diff fail,
+# and the first commit is checked like any other.
+my ($changed, $changed_status) = run_command(
+    [ 'git', 'diff', '--cached', '--name-only', 'HEAD', '--', @relevant ],
+    quiet_stderr => 1,
+);
+exit 0 unless $changed_status || $changed =~ /\S/;
+
+# The staged snapshot, written out somewhere the checks can read it.  This is
+# what the commit will contain; the working tree is deliberately not
+# consulted.
+my $snapshot = tempdir(
+    'app-actions pre-commit XXXX',
+    TMPDIR => 1, CLEANUP => 1,
+);
+(my $prefix = $snapshot) =~ s{\\}{/}g;
+
+my ($checkout_error, $checkout_status) = run_command(
+    [ 'git', 'checkout-index', '-a', '-f', "--prefix=$prefix/" ],
+    merge_stderr => 1,
+);
+
+# A conflicted index cannot be written out.  A merge commit is not the
+# half-applied bump this is for, and refusing it would block the merge.
+if ($checkout_status) {
+    print STDERR "pre-commit: the staged files could not be read, so the schema "
+        . "checks were skipped.\n";
+    print STDERR "$checkout_error\n" if length $checkout_error;
+    exit 0;
+}
+
+my $check = File::Spec->catfile($snapshot, 't', 'schema.t');
+my $lib   = File::Spec->catdir($snapshot, 'lib');
+
+chdir $snapshot or do {
+    print STDERR "pre-commit: cannot change to '$snapshot': $!\n";
+    exit 0;
+};
+
+# The checks are run for a person, not for the harness that may have started
+# this hook (a pre-commit hook run from "make test", say), so the child is
+# given a plain environment and prints the TAP this reads.
+my ($output, $status);
+{
+    local $ENV{HARNESS_ACTIVE};
+    local $ENV{HARNESS_VERSION};
+    local $ENV{HARNESS_OPTIONS};
+
+    ($output, $status) = run_command(
+        [ $^X, "-I$lib", $check ],
+        merge_stderr => 1,
+    );
+}
+
+exit 0 unless $status;
+
+# The temporary directory is gone by the time anyone reads this, so its path
+# would be a distraction in a file name the reader has to act on.
+$output =~ s{\Q$snapshot\E/?}{}g;
+
+my @report;
+my $in_diagnostic = 0;
+for my $line (split /\n/, $output) {
+    if ($line =~ /\A(?:not ok|Bail out!)/) {
+        push @report, $line;
+        $in_diagnostic = 1;
+        next;
+    }
+    if ($in_diagnostic && $line =~ /\A#/) {
+        push @report, $line;
+        next;
+    }
+    $in_diagnostic = 0;
+}
+
+# A run that failed before it printed a verdict - a missing module, say - has
+# no failing assertion to show, so it is quoted instead of summarised.
+if (!@report) {
+    my @lines = grep { /\S/ } split /\n/, $output;
+    @report = @lines > 20 ? @lines[-20 .. -1] : @lines;
+}
+
+print STDERR <<"REFUSED";
+pre-commit: the schema checks failed against what this commit stages, so it was
+refused and nothing has been committed.
+
+@{ [ join "\n", @report ] }
+
+A schema version lives in the module that prints it - lib/App/Actions/Check.pm
+or lib/App/Actions/Runner.pm - and in every document in t/fixtures/ written for
+it.  A bump applied to some of them is what this refuses.  Fix the file named
+above, stage it, and commit again; "git commit --no-verify" skips this check.
+REFUSED
+
+exit 1;

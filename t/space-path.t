@@ -44,6 +44,12 @@ sub copy_tree {
                 }
                 copy($path, $destination)
                     or die "cannot copy '$path' to '$destination': $!\n";
+
+                # A copy is only a copy if it keeps the mode: the hook is run
+                # rather than read, so an executable bit lost on the way would
+                # fail a test that has nothing to do with paths.
+                chmod((stat $path)[2] & 07777, $destination)
+                    or die "cannot set the mode of '$destination': $!\n";
             },
         },
         $source,
@@ -56,7 +62,22 @@ my $temp = tempdir('app-actions space XXXX', TMPDIR => 1, CLEANUP => 1);
 my $copy = File::Spec->catdir($temp, 'suite with spaces');
 make_path($copy);
 
-copy_tree($root, $copy, $_) for qw(lib bin t);
+# The documentation, the workflows and the hooks are copied too, not just the
+# code: a test that reads them then runs in the copy rather than failing - or,
+# worse, skipping - because the copy never had the file.  t/live-knobs.t reads
+# the documentation and the workflow, and t/hooks.t runs the hook itself.
+for my $directory (qw(lib bin t .github .githooks)) {
+    copy_tree($root, $copy, $directory)
+        if -d File::Spec->catdir($root, $directory);
+}
+
+for my $file (qw(README.md)) {
+    my $from = File::Spec->catfile($root, $file);
+
+    copy($from, File::Spec->catfile($copy, $file))
+        or die "cannot copy '$from': $!\n"
+        if -e $from;
+}
 
 like($copy, qr/ /, 'the copy lives under a path with spaces');
 

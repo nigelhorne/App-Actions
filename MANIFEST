@@ -1,3 +1,5 @@
+.githooks/pre-commit
+.github/workflows/live-docker.yml
 .github/workflows/perl-ci.yml
 .github/workflows/real-docker-windows.yml
 .gitignore
@@ -35,13 +37,17 @@ t/fixtures/preflight-not-ready.json
 t/fixtures/preflight-unready.json
 t/fixtures/preflight-unreachable.json
 t/fixtures/preflight.json
+t/hooks.t
 t/lib/App/Actions/FakeDocker.pm
+t/lib/self_test.yml
+t/live-knobs.t
 t/matrix.t
 t/process.t
 t/real-docker-preflight.t
 t/real-docker.t
 t/runner.t
 t/schema.t
+t/self_test.t
 t/smoke.t
 t/space-path.t
 t/workflow.t

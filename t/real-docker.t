@@ -13,14 +13,21 @@ use App::Actions::Check;
 use App::Actions::Docker;
 use App::Actions::Process;
 
-my $enabled = defined $ENV{REAL_DOCKER} && length $ENV{REAL_DOCKER}
-    && $ENV{REAL_DOCKER} ne '0';
-plan skip_all => 'set REAL_DOCKER=1 to run a workflow against a real Docker daemon'
+# One small workflow run end to end against a real daemon rather than the fake
+# one the rest of the suite uses, which is where the bind mounts, the container
+# lifecycle and the cleanup differ most from it.  Like the other live tests it
+# is behind LIVE_TESTING, so the ordinary suite needs no daemon:
+#
+#     LIVE_TESTING=1 prove -l t/real-docker.t
+#
+my $enabled = defined $ENV{LIVE_TESTING} && length $ENV{LIVE_TESTING}
+    && $ENV{LIVE_TESTING} ne '0';
+plan skip_all => 'set LIVE_TESTING=1 to run a workflow against a real Docker daemon'
     unless $enabled;
 
 my $docker = defined $ENV{DOCKER} && length $ENV{DOCKER} ? $ENV{DOCKER} : 'docker';
-my $image  = defined $ENV{REAL_DOCKER_IMAGE} && length $ENV{REAL_DOCKER_IMAGE}
-    ? $ENV{REAL_DOCKER_IMAGE}
+my $image  = defined $ENV{LIVE_TESTING_IMAGE} && length $ENV{LIVE_TESTING_IMAGE}
+    ? $ENV{LIVE_TESTING_IMAGE}
     : 'alpine:3.20';
 
 # Windows writes CRLF when output is redirected to a file, and a few of the

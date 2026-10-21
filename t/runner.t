@@ -216,6 +216,34 @@ like($matrix->{log}, qr/^network\trm\t/m, 'networks are removed');
 like($matrix->{log}, qr/^image\trm\t-f\tperl:5\.38$/m, 'pulled Perl 5.38 image is removed');
 like($matrix->{log}, qr/^image\trm\t-f\tperl:5\.40$/m, 'pulled Perl 5.40 image is removed');
 
+# A step is a program, so what it prints comes back in the run.  The fake
+# daemon runs step scripts with the host's shell, mapping the paths docker exec
+# was given back to the host, so this covers that path without a daemon - the
+# same ground t/self_test.t covers through the command a user runs.  A host
+# with no POSIX shell emulates the script instead, so there is nothing to quote
+# there.
+my $echoed = run_workflow(<<'YAML');
+name: Echo
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say something
+        run: echo hello-from-a-step
+YAML
+
+is($echoed->{exit}, 0, 'a workflow whose step prints succeeds');
+like($echoed->{log}, qr/^exec\t/m, 'the step runs in the job container');
+
+SKIP: {
+    skip 'the fake daemon cannot execute step scripts on this host', 1
+        if $^O eq 'MSWin32';
+
+    like($echoed->{stdout}, qr/^hello-from-a-step$/m,
+        'what the step printed is what the run sees');
+}
+
 my $failure = run_workflow(<<'YAML');
 name: Failure
 on: push
@@ -826,6 +854,71 @@ is($docker_action->{exit}, 0, 'docker action workflow succeeds');
 like($docker_action->{log}, qr/^run\t--rm\t/m, 'docker action uses a one-shot container');
 like($docker_action->{log}, qr/\t-e\tFROM_ACTION=yes\t/, 'docker action environment update is applied');
 like($docker_action->{log}, qr/step-2\.sh/, 'step after docker action ran');
+
+# A one-shot container runs a program, so what the action prints and the
+# status it exits with are what the run sees.  The fake daemon runs the
+# command with the host's shell, mapping the container's mounts back to it,
+# which is how this is covered without a daemon; a host with no POSIX shell
+# cannot do that, and the live run is the one that covers it there.
+my $printing_action = run_workflow(<<'YAML');
+name: Docker action output
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print
+        uses: docker://alpine:3.20
+        with:
+          args: echo hello-from-the-action
+      - name: Through the entrypoint
+        uses: docker://alpine:3.20
+        with:
+          entrypoint: /bin/sh
+          args: -c "echo through-the-entrypoint"
+YAML
+
+is($printing_action->{exit}, 0, 'a docker action that prints succeeds');
+
+SKIP: {
+    skip 'the fake daemon cannot run a container command on this host', 2
+        if $^O eq 'MSWin32';
+
+    like($printing_action->{stdout}, qr/^hello-from-the-action$/m,
+        'what the action printed is in the run');
+    like($printing_action->{stdout}, qr/^through-the-entrypoint$/m,
+        'the entrypoint the action names is the one that runs');
+}
+
+my $failing_action = run_workflow(<<'YAML');
+name: Failing action
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail
+        uses: docker://alpine:3.20
+        with:
+          args: sh -c "echo about-to-fail; exit 3"
+      - name: Never
+        run: echo after
+YAML
+
+SKIP: {
+    skip 'the fake daemon cannot run a container command on this host', 5
+        if $^O eq 'MSWin32';
+
+    is($failing_action->{exit}, 1, 'a docker action that exits non-zero fails the run');
+    like($failing_action->{stdout}, qr/^about-to-fail$/m,
+        'the failing action ran, and its output came back');
+    like($failing_action->{stderr}, qr/docker action exited with status 3/,
+        'the failure says what the action exited with');
+    unlike($failing_action->{stdout}, qr/^after$/m,
+        'the step after a failed action does not run');
+    like($failing_action->{log}, qr/^rm\t-f\t/m,
+        'a failed action still cleans up its container');
+}
 
 my $no_bash = run_workflow(<<'YAML', fake_no_bash => 1);
 name: No bash

@@ -250,10 +250,26 @@ if ($command eq 'run') {
         exit 0;
     }
 
-    # A one-shot "docker run --rm" action.  If it contains a mount and an
-    # action marker, emulate the files the action would write.
+    # A one-shot "docker run --rm" action.  Its command is a program, so it is
+    # run rather than reported: the paths docker gave the container are mapped
+    # back to the host (that is what the mounts are), which is what makes what
+    # the action prints and the status it exits with the ones the run sees.  A
+    # command built from the control markers is test orchestration rather than
+    # a program and keeps the emulation, and so does a host with no POSIX
+    # shell - which is how the suite still passes on Windows.
     my $environment = _environment(\@run_args);
-    _write_action_files($mounts, $environment, join(' ', @run_args));
+    my $description = join(' ', @run_args);
+
+    if ($description !~ /FAKE_(?:ACTION|ENV|OUTPUT|PATH|SUMMARY|EXIT)/) {
+        my $shell = _host_shell();
+
+        if (defined $shell) {
+            my $status = _run_container($shell, \@run_args, $mounts, $environment);
+            exit $status if defined $status;
+        }
+    }
+
+    _write_action_files($mounts, $environment, $description);
     exit 0;
 }
 
@@ -297,8 +313,9 @@ if ($command eq 'exec') {
     my $mounts = _container_mounts($name);
 
     my $contents = '';
+    my $host_script;
     if (defined $script) {
-        my $host_script = to_host($script, $mounts);
+        $host_script = to_host($script, $mounts);
         if (defined $host_script && -f $host_script) {
             # Read the script exactly as the shell would: a CR used as a line
             # ending is part of the command there, so a CRLF script fails.  In
@@ -315,10 +332,176 @@ if ($command eq 'exec') {
         }
     }
 
+    # A step script is a program, so the nearest thing to a container that a
+    # host without one has is to run it: a test can then see what a step
+    # prints and what it writes to GITHUB_ENV, rather than reading a log line
+    # that says a script was found.  A script built from the control markers
+    # (FAKE_ENV and the rest) is test orchestration rather than a program, so
+    # it keeps the emulation, and so does a host with no POSIX shell - which is
+    # what lets the suite pass on Windows.
+    my $shell = defined $host_script ? _host_shell() : undef;
+    if (defined $shell
+        && $contents !~ /^\s*(?:#|\/\/)?\s*FAKE_(?:ENV|OUTPUT|EXIT|PATH|SUMMARY):/m) {
+        exit _execute_script(
+            $shell,
+            $host_script,
+            $mounts,
+            $environment,
+            _option_value(\@exec_args, '-w'),
+        );
+    }
+
     exit _emulate($contents, $mounts, $environment);
 }
 
 exit 0;
+
+# A POSIX shell to run a step script with, or undef where there is not one:
+# Windows has no sh, and the suite has to pass there too.  bash is preferred
+# because that is the shell the runner uses when the image has one.
+sub _host_shell {
+    return undef if $^O eq 'MSWin32';
+
+    for my $candidate (qw(bash sh)) {
+        for my $directory (File::Spec->path) {
+            next unless defined $directory && length $directory;
+            my $path = File::Spec->catfile($directory, $candidate);
+            return $path if -x $path;
+        }
+    }
+
+    return undef;
+}
+
+# Run a step script the way the container's shell would, with the paths docker
+# exec was given mapped back to the host: that is what makes the files a step
+# writes - GITHUB_ENV, GITHUB_OUTPUT and the rest - the ones the runner reads,
+# which is the whole point of executing instead of emulating.
+sub _execute_script {
+    my ($shell, $script, $mounts, $environment, $workdir, $arguments) = @_;
+
+    return _run_program(
+        $shell,
+        [ '-e', $script, @{ $arguments || [] } ],
+        $mounts, $environment, $workdir,
+    );
+}
+
+# Run a command list the way a container would run it: the program is looked
+# up on the host's PATH, because an image's own binaries are not here to run.
+# "exec \"$@\"" keeps the argument boundaries the runner passed, which is what
+# a shellwords-split "with: args" relies on.
+sub _execute_program {
+    my ($shell, $program, $mounts, $environment, $workdir) = @_;
+
+    return _run_program(
+        $shell,
+        [ '-c', 'exec "$@"', 'sh', @$program ],
+        $mounts, $environment, $workdir,
+    );
+}
+
+# The program a one-shot container would run, and what it would run it with.
+# Returns undef when there is nothing to run - a bare image, whose entrypoint
+# only the image knows - which leaves the caller emulating as before.
+sub _run_container {
+    my ($shell, $args, $mounts, $environment) = @_;
+
+    my (undef, $command) = _run_command($args);
+    my $entrypoint = _option_value($args, '--entrypoint');
+    my $workdir    = _option_value($args, '-w');
+    $workdir = _option_value($args, '--workdir') unless defined $workdir;
+
+    my (@program, @arguments);
+    if (defined $entrypoint && length $entrypoint) {
+        @program   = ($entrypoint);
+        @arguments = @$command;
+    } elsif (@$command) {
+        @program   = ($command->[0]);
+        @arguments = @$command[ 1 .. $#$command ];
+    } else {
+        return undef;
+    }
+
+    # A program that lives in a mount is a file on this host: run it as the
+    # script it is, the way a step script is run, rather than making a shell
+    # look for it by name.
+    my $host = to_host($program[0], $mounts);
+    if (defined $host && -f $host) {
+        return _execute_script(
+            $shell, $host, $mounts, $environment, $workdir, \@arguments,
+        );
+    }
+
+    return _execute_program(
+        $shell, [ @program, @arguments ], $mounts, $environment, $workdir,
+    );
+}
+
+# Run one command with the container's environment and working directory, both
+# mapped back to the host.
+sub _run_program {
+    my ($shell, $arguments, $mounts, $environment, $workdir) = @_;
+
+    my %child = %ENV;
+
+    for my $key (keys %$environment) {
+        my $value = $environment->{$key};
+        if (defined $value && $value =~ m{^/}) {
+            my $host = to_host($value, $mounts);
+            $value = $host if defined $host;
+        }
+        $child{$key} = $value;
+    }
+
+    # The container's PATH names directories that exist only inside it.  The
+    # ones that are mounted are mapped, the rest are kept - a shell ignores a
+    # directory that is not there - and the host's own entries follow, so that
+    # the shell still finds its tools.
+    my @path = (_hostbin());
+    for my $entry (split /:/, defined $environment->{PATH} ? $environment->{PATH} : '') {
+        next unless length $entry;
+        my $host = to_host($entry, $mounts);
+        push @path, defined $host ? $host : $entry;
+    }
+    push @path, split /:/, defined $ENV{PATH} ? $ENV{PATH} : '';
+    $child{PATH} = join ':', grep { defined $_ && length $_ } @path;
+
+    my $directory = defined $workdir ? to_host($workdir, $mounts) : undef;
+    my $restore;
+    if (defined $directory && -d $directory) {
+        $restore = File::Spec->rel2abs(File::Spec->curdir);
+        chdir $directory or undef $restore;
+    }
+
+    my $status;
+    {
+        local %ENV = %child;
+        $status = system($shell, @$arguments);
+    }
+
+    chdir $restore if defined $restore;
+
+    return $status == -1 ? 127 : $status >> 8;
+}
+
+# The commands the fake answers itself.  It reports a Linux daemon, so a
+# workflow that asks the container what it is running on gets the container's
+# answer here rather than the host's, which a real container could differ on
+# (macOS would say Darwin) and a job would then fail for no reason.
+sub _hostbin {
+    my $directory = "$state_dir/hostbin";
+    my $uname = "$directory/uname";
+    return $directory if -f $uname;
+
+    make_path($directory);
+    open my $handle, '>', $uname or die "fake-docker: $!";
+    print {$handle} "#!/bin/sh\necho Linux\n";
+    close $handle;
+    chmod 0755, $uname;
+
+    return $directory;
+}
 
 # A container the daemon refuses to start.  FAKE_START_FAILURE holds a
 # substring of the name, for the same reason as FAKE_CONTAINER_EXITS: a test
@@ -406,32 +589,53 @@ sub _container_file {
     return "$state_dir/container-$name";
 }
 
-# The image a "docker run" argument list names: the first token that is
-# neither an option nor the value of one.
-sub _run_image {
-    my ($args) = @_;
+# The options whose next token is a value rather than the image or the
+# command.  The list is written out here rather than in a variable because
+# this script answers its first command long before it reaches the middle of
+# the file, and a variable assigned down there would still be empty.
+sub _option_takes_value {
+    my ($argument) = @_;
 
-    my %takes_value = map { $_ => 1 } qw(
-        --name --network --hostname --platform --entrypoint --user --workdir
-        --volume --mount --env --label --publish --memory --cpus
-        -v -w -e -u -p -m
-    );
+    return 0 unless defined $argument;
+
+    return $argument =~ /\A(?:
+          --name | --network | --hostname | --platform | --entrypoint
+        | --user | --workdir | --volume | --mount | --env | --label
+        | --publish | --memory | --cpus
+        | -v | -w | -e | -u | -p | -m
+    )\z/x ? 1 : 0;
+}
+
+# The image and the command a "docker run" argument list gives the container:
+# the image is the first token that is neither an option nor the value of one,
+# and everything after it is the command.
+sub _run_command {
+    my ($args) = @_;
 
     for (my $index = 0; $index < @$args; $index++) {
         my $argument = $args->[$index];
+        next unless defined $argument;
 
-        if (defined $argument && $takes_value{$argument}) {
+        if (_option_takes_value($argument)) {
             # Its value is not the image.
             $index++;
             next;
         }
 
-        next if defined $argument && $argument =~ /^-/;
+        next if $argument =~ /^-/;
 
-        return $argument;
+        return ($argument, [ @$args[ $index + 1 .. $#$args ] ]);
     }
 
-    return undef;
+    return (undef, []);
+}
+
+sub _run_image {
+    my ($args) = @_;
+
+    my ($image) = _run_command($args);
+
+    return $image;
 }
 
 sub _option_value {
