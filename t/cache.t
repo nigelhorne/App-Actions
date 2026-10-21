@@ -106,6 +106,28 @@ is(App::Actions::Cache::format_size(undef), '0 B', 'an unknown size is 0 B');
     );
 }
 
+{
+    # The document carries the clock it was made against, not just the times an
+    # image was last used, so an age can be computed without the reader's
+    # clock or the record having to be read at the same moment.
+    my $cache = App::Actions::Cache->new(
+        file => File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json'),
+    );
+    $cache->remember('alpine:3.20');
+
+    my $last_used = $cache->entries->[0]{last_used};
+    my $now = $last_used + 120;
+    my $document = $cache->document(now => $now);
+
+    is($document->{generated_at}, $now,
+        'the document records the clock it was given');
+    is(
+        $document->{generated_at} - $document->{images}[0]{last_used},
+        120,
+        'an image age is generated_at minus last_used',
+    );
+}
+
 my $project = tempdir(CLEANUP => 1);
 make_path(File::Spec->catdir($project, '.github', 'workflows'));
 my $workflow = File::Spec->catfile($project, '.github', 'workflows', 'test.yml');
@@ -189,6 +211,119 @@ close $workflow_handle;
 }
 
 {
+    # The JSON document is the same record as the text report, with the values
+    # a caller asserts on rather than padded columns and a date.
+    App::Actions::Cache->new->remember('alpine:3.20');
+    open my $marker, '>', image_marker('alpine:3.20') or die $!;
+    print {$marker} 'alpine:3.20';
+    close $marker;
+
+    my ($out, $err, $exit) = run_cli('cache', '--json', '--docker', $fake_docker);
+    is($exit, 0, 'cache --json exits 0');
+    is($err, '', 'cache --json writes nothing to standard error');
+
+    my $document = eval { JSON::PP->new->decode($out) };
+    ok($document, 'cache --json prints one JSON object') or diag "stderr: $err";
+    is($document->{schema_version}, App::Actions::Cache->json_schema_version,
+        'the document carries the version it was written for');
+    is($document->{cache_file}, $ENV{ACTION_RUN_CACHE_FILE},
+        'the document names the record it read');
+    cmp_ok($document->{generated_at}, '>', 0,
+        'the document records when it was made');
+    cmp_ok($document->{generated_at}, '>=', $document->{images}[0]{last_used},
+        'the image age is measured from generated_at');
+    is($document->{docker}{bin}, $fake_docker, 'the document names the Docker command');
+    ok($document->{docker}{reachable}, 'a working daemon is reported as reachable');
+    is($document->{images}[0]{image}, 'alpine:3.20', 'the recorded image is listed');
+    is($document->{images}[0]{pulls}, 1, 'the document counts the pulls');
+    is($document->{images}[0]{size}, 123_456_789,
+        'the document carries the size rather than formatted text');
+    ok($document->{images}[0]{present}, 'an image the daemon has is marked present');
+    is($document->{totals}{images}, 1, 'the document counts the images');
+    is($document->{totals}{size}, 123_456_789, 'the document totals the size');
+    is($document->{totals}{present}, 1, 'the document counts the present images');
+    is($document->{totals}{missing}, 0, 'the document counts the missing images');
+    is($document->{prune}, undef, 'a listing reports no prune');
+
+    ($out, $err, $exit) = run_cli('cache', '--prune', '--json', '--docker', $fake_docker);
+    is($exit, 0, 'cache --prune --json exits 0');
+    is($err, '', 'cache --prune --json writes nothing to standard error');
+
+    $document = eval { JSON::PP->new->decode($out) };
+    ok($document, 'the prune document decodes') or diag "stderr: $err";
+    cmp_ok($document->{generated_at}, '>', 0,
+        'the prune document records when it was made');
+    is($document->{prune}{removed}, 1, 'the document says what the prune removed');
+    is($document->{prune}{freed}, 123_456_789, 'the document says what the prune freed');
+    is($document->{prune}{forgotten}, 0, 'the document says nothing was merely forgotten');
+    is_deeply($document->{prune}{failed}, [], 'the document says every removal worked');
+    is_deeply($document->{images}, [], 'the prune left no images in the document');
+    is($document->{totals}{images}, 0, 'the prune left nothing to total');
+}
+
+{
+    # A removal the daemon refuses is still reported in the document, and the
+    # image it kept stays in the record rather than disappearing from it.
+    App::Actions::Cache->new->remember('alpine:3.20', 'postgres:15');
+    for my $image (qw(alpine:3.20 postgres:15)) {
+        open my $marker, '>', image_marker($image) or die $!;
+        print {$marker} $image;
+        close $marker;
+    }
+
+    local $ENV{FAKE_IMAGE_REMOVE_FAILURE} = 'postgres:15';
+
+    my ($out, $err, $exit) = run_cli(
+        'cache', '--prune', '--json', '--docker', $fake_docker,
+    );
+    is($exit, 1, 'a prune that could not remove an image exits 1');
+    is($err, '', 'the failure is reported in the document, not on standard error');
+
+    my $document = eval { JSON::PP->new->decode($out) };
+    ok($document, 'the failed-prune document decodes') or diag "stderr: $err";
+    is($document->{prune}{removed}, 1, 'the document counts the image it removed');
+    is_deeply($document->{prune}{failed}, ['postgres:15'],
+        'the document names the image it could not remove');
+    is_deeply(
+        [ map { $_->{image} } @{ $document->{images} } ],
+        ['postgres:15'],
+        'the image that stayed in the record is still listed',
+    );
+
+    my $cache = App::Actions::Cache->new;
+    is_deeply(
+        [ map { $_->{image} } @{ $cache->entries } ],
+        ['postgres:15'],
+        'a failed removal leaves the image in the record for a second attempt',
+    );
+
+    $cache->forget('postgres:15');
+    unlink image_marker('postgres:15');
+}
+
+{
+    my $shipped = \&App::Actions::Cache::json_schema;
+    no warnings 'redefine';
+    local *App::Actions::Cache::json_schema = sub {
+        my ($class) = @_;
+        my $schema = $shipped->($class);
+        delete $schema->{properties}{cache_file};
+        return $schema;
+    };
+
+    my $built = eval { App::Actions::Cache->new->document; 1 };
+    my $error = $@;
+    ok(!$built, 'a document that does not match the schema is not returned');
+    ok(ref $error && $error->isa('App::Actions::Schema::Invalid'),
+        'the failure is the schema exception');
+    like(
+        "$error",
+        qr/does not match App::Actions::Cache->json_schema: \$\.cache_file: unexpected key/,
+        'the error names the document, the schema and the key at fault',
+    );
+}
+
+{
     my (undef, undef, $exit) = run_cli('--docker', $fake_docker, $workflow, $project);
     is($exit, 0, 'the workflow runs again to rebuild the cache');
 
@@ -202,6 +337,25 @@ close $workflow_handle;
     like($out, qr/^The Docker daemon is not reachable, so the sizes are unknown\.$/m,
         'the listing says why the sizes are unknown');
 
+    my ($json_out, $json_err, $json_exit) = run_cli(
+        'cache', '--json', '--docker', $fake_docker,
+    );
+    is($json_exit, 0, 'cache --json still exits 0 with the daemon stopped');
+    is($json_err, '', 'cache --json says nothing on standard error without a daemon');
+
+    my $document = eval { JSON::PP->new->decode($json_out) };
+    ok($document, 'the document decodes without a daemon') or diag "stderr: $json_err";
+    ok(!$document->{docker}{reachable}, 'the document says the daemon was not reached');
+    cmp_ok($document->{generated_at}, '>', 0,
+        'the document still records when it was made without a daemon');
+    is($document->{images}[0]{size}, undef,
+        'a size that could not be discovered is null');
+    is($document->{images}[0]{present}, undef,
+        'presence that could not be discovered is null');
+    is($document->{totals}{size}, undef, 'the total size is null');
+    is($document->{totals}{present}, undef, 'the present count is null');
+    is($document->{totals}{missing}, undef, 'the missing count is null');
+
     ($out, $err, $exit) = run_cli('cache', '--prune', '--docker', $fake_docker);
     is($exit, 2, 'prune without a daemon exits 2');
     like($err, qr/cannot prune the image cache/, 'the error says what could not be done');
@@ -213,15 +367,15 @@ close $workflow_handle;
     my ($out, $err, $exit) = run_cli(
         '--prune', '--dry-run', $workflow, $project,
     );
-    is($exit, 2, '--prune without the cache command is a usage error');
-    like($err, qr/--prune is only used by the cache command/,
+    is($exit, 2, '--prune without the cache or logs command is a usage error');
+    like($err, qr/--prune is only used by the cache and logs commands/,
         'the error says where --prune belongs');
 }
 
 {
     my (undef, $err, $exit) = run_cli('cache', 'extra');
     is($exit, 2, 'cache takes no arguments');
-    like($err, qr/Usage: action-run \[options\] cache \[--prune\]/,
+    like($err, qr/Usage: action-run \[options\] cache \[--prune\] \[--json\]/,
         'the usage line says how to invoke cache');
 }
 

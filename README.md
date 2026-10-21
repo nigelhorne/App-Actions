@@ -88,9 +88,15 @@ value removes the ones the run itself pulled when it finishes.  The kept
 images are recorded by [App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache), which is what
 `action-run cache` lists and `action-run cache --prune` removes; the record
 lives in the user's cache directory, and `ACTION_RUN_CACHE_FILE` moves it.
+`action-run cache --json` prints the same record as a versioned document,
+with a `generated_at` clock its image ages are measured from, held to a schema
+that `action-run schema cache` prints.
 `log_dir` says where the per-job logs of a parallel run are kept; it
 defaults to `ACTION_RUN_LOG_DIR`, then to `action-run/logs` under that same
-cache directory.
+cache directory.  `action-run logs` reads that directory, with the sizes and
+ages of the logs, `action-run logs --json` prints them, with the clock their
+ages are measured from, as a versioned document held to a schema that
+`action-run schema logs` prints, and `action-run logs --prune` removes them.
 
 `explain` is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per
@@ -168,13 +174,16 @@ command gives that exit 70.
 ```perl
 my $schema = App::Actions->json_schema('check');
 my $schema = App::Actions->json_schema('preflight');
+my $schema = App::Actions->json_schema('cache');
+my $schema = App::Actions->json_schema('logs');
 ```
 
 Returns the JSON schema of one of the machine-readable documents as a hash,
-which is what `action-run schema` prints.  The name is `check` or
-`preflight`; anything else is an error naming the two that exist.  The
-schemas live in [App::Actions::Check](https://metacpan.org/pod/App%3A%3AActions%3A%3ACheck) and [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner), so the
-contract is available from an installed distribution.
+which is what `action-run schema` prints.  The name is `check`, `preflight`,
+`cache` or `logs`; anything else is an error naming the four that exist.  The
+schemas live in [App::Actions::Check](https://metacpan.org/pod/App%3A%3AActions%3A%3ACheck), [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner),
+[App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache) and [App::Actions::Logs](https://metacpan.org/pod/App%3A%3AActions%3A%3ALogs), so the contract is available from an
+installed distribution.
 
 ### List\_Jobs
 
@@ -202,17 +211,29 @@ set `SPACE_PATH=0` to skip it, or run just that check with
 `prove -l t/space-path.t`.
 
 The repository ships a pre-commit hook in `.githooks/` that runs the schema
-checks against the files a commit stages, so a version bump applied to the
-schema or to the documents but not to both is refused where it happens rather
-than by CI afterwards.  It is off until a clone asks for it:
+checks and the live-knob check against the files a commit stages, so a version
+bump applied to the schema or to the documents but not to both, or a live
+test's knob added without its documentation or whitelist, is refused where it
+happens rather than by CI afterwards.  Each check starts only when a staged
+path can affect it.  It is off until a clone asks for it:
 
 ```
 git config core.hooksPath .githooks
 ```
 
-A commit that touches nothing which can move a schema version passes without
-the checks being run at all, and `git commit --no-verify` skips it for one
-commit.
+A commit that touches nothing either check reads passes without a check being
+run at all, and `git commit --no-verify` skips it for one commit.
+
+The same checks can be run from the command line without attempting a commit:
+
+```
+make check-staged    # against the index
+make check-worktree  # against the working tree, unstaged edits included
+```
+
+`check-worktree` always runs both checks, including files that are not tracked
+yet, so a new fixture or live test is not skipped.  Both targets need the
+`Makefile` that `perl Makefile.PL` writes.
 
 The tests that need a real Docker daemon sit behind one switch,
 `LIVE_TESTING`: `make test LIVE_TESTING=1` runs them all.  `t/real-docker.t`
@@ -237,15 +258,20 @@ container prints, and the status it exits with, are what the run sees.
 
 The self test runs two workflows the distribution ships: the one above, which
 proves the command surface, and `t/lib/self_test_cli.yml`, which runs
-`action-run schema` and `action-run validate` inside a Perl image, so the
-tool is exercised where it is being tested rather than only from the checkout
-that started it.  That image gets the tool's dependencies only when it does
-not have them, so the fake run stays off the network.  It is named by digest
-rather than by the `perl:5.38` tag, so the live job pulls the same image
-every time instead of whatever that tag points at on the day it runs.  The
-test says which half it ran: with `LIVE_TESTING=1` it reports that the
-workflow is in a real container, and without it that the steps ran against the
-fake and the container path was not exercised.
+`action-run schema` and `action-run validate` inside a Perl image for the
+check document and every cache and logs fixture, including the empty,
+unreachable and prune examples, so the tool is exercised where it is being
+tested rather than only from the checkout that started it.  The cache and logs
+examples are discovered from `t/fixtures/cache*.json` and
+`t/fixtures/logs*.json` rather than listed by name, so a new one is validated
+without editing the workflow.  That image gets
+the tool's dependencies only when it does not have them, so the fake run
+stays off the network.  It is named by digest rather than by the `perl:5.38`
+tag, so the live job pulls the same image every time instead of whatever that
+tag points at on the day it runs.  The test says which half it ran: with
+`LIVE_TESTING=1` it reports that the workflow is in a real container, and
+without it that the steps ran against the fake and the container path was not
+exercised.
 
 The live tests read two variables and both carry the `LIVE_TESTING`
 prefix, so there is one name to remember: `LIVE_TESTING` turns them on and

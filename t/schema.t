@@ -12,7 +12,9 @@ use JSON::PP ();
 use Scalar::Util qw(refaddr);
 
 use App::Actions;
+use App::Actions::Cache;
 use App::Actions::Check;
+use App::Actions::Logs;
 use App::Actions::Runner;
 use App::Actions::Schema qw(validate);
 
@@ -131,10 +133,14 @@ sub run_cli {
 # of it that could drift.
 my $check_schema     = App::Actions::Check->json_schema;
 my $preflight_schema = App::Actions::Runner->json_schema;
+my $cache_schema     = App::Actions::Cache->json_schema;
+my $logs_schema      = App::Actions::Logs->json_schema;
 
 my %shipped_schema = (
     check     => $check_schema,
     preflight => $preflight_schema,
+    cache     => $cache_schema,
+    logs      => $logs_schema,
 );
 
 # The version of a shape is written in three places: the schema's own version,
@@ -144,8 +150,10 @@ my %shipped_schema = (
 # that then fails would name a key rather than the version that moved.  So the
 # schemas are held to themselves here, before any document is read.
 my %schema_source = (
-    check     => [ 'App::Actions::Check',  'json_schema_version' ],
+    check     => [ 'App::Actions::Check', 'json_schema_version' ],
     preflight => [ 'App::Actions::Runner', 'preflight_schema_version' ],
+    cache     => [ 'App::Actions::Cache', 'json_schema_version' ],
+    logs      => [ 'App::Actions::Logs', 'json_schema_version' ],
 );
 
 for my $document (sort keys %shipped_schema) {
@@ -183,6 +191,8 @@ for my $document (sort keys %shipped_schema) {
 
 my $check_example     = load_json(File::Spec->catfile($fixtures, 'check.json'));
 my $preflight_example = load_json(File::Spec->catfile($fixtures, 'preflight.json'));
+my $cache_example     = load_json(File::Spec->catfile($fixtures, 'cache.json'));
+my $logs_example      = load_json(File::Spec->catfile($fixtures, 'logs.json'));
 
 is_deeply(
     [ validate($check_example, $check_schema) ],
@@ -194,10 +204,20 @@ is_deeply(
     [],
     'the checked-in preflight example matches its schema',
 );
+is_deeply(
+    [ validate($cache_example, $cache_schema) ],
+    [],
+    'the checked-in cache example matches its schema',
+);
+is_deeply(
+    [ validate($logs_example, $logs_schema) ],
+    [],
+    'the checked-in logs example matches its schema',
+);
 
 # CI should not have to read this file to find the contract, so the command
 # prints it: the same document the tests above hold the examples to.
-for my $document (qw(check preflight)) {
+for my $document (qw(check preflight cache logs)) {
     my ($out, $err, $exit) = run_cli('schema', $document);
     is($exit, 0, "schema $document exits 0");
     is($err, '', "schema $document writes nothing to standard error");
@@ -205,9 +225,7 @@ for my $document (qw(check preflight)) {
     my $printed = eval { JSON::PP->new->decode($out) };
     ok($printed, "schema $document prints one JSON object") or diag "stderr: $err";
 
-    my $module = $document eq 'check'
-        ? App::Actions::Check->json_schema
-        : App::Actions::Runner->json_schema;
+    my $module = $shipped_schema{$document};
 
     is(
         JSON::PP->new->canonical->encode($printed),
@@ -218,24 +236,28 @@ for my $document (qw(check preflight)) {
 
 my (undef, $no_name_err, $no_name_exit) = run_cli('schema');
 is($no_name_exit, 2, 'schema without a document is a usage error');
-like($no_name_err, qr/Usage: action-run \[options\] schema <check\|preflight>/,
+like($no_name_err, qr/Usage: action-run \[options\] schema <check\|preflight\|cache\|logs>/,
     'the usage error says which documents can be named');
 
 my (undef, $unknown_err, $unknown_exit) = run_cli('schema', 'workflow');
 is($unknown_exit, 2, 'an unknown document is a usage error');
-like($unknown_err, qr/Unknown document 'workflow'; expected check or preflight/,
+like($unknown_err, qr/Unknown document 'workflow'; expected check, preflight, cache or logs/,
     'the error names the documents that exist');
 unlike($unknown_err, qr/ at \S+ line \d+/, 'the error reads as a sentence');
 
 my (undef, $json_err, $json_exit) = run_cli('--json', 'schema', 'check');
 is($json_exit, 2, '--json with the schema command is a usage error');
-like($json_err, qr/only used by the check and preflight commands/,
+like($json_err, qr/only used by the check, preflight, cache and logs commands/,
     'the schema command needs no --json');
 
 is($check_example->{schema_version}, $check_schema->{version},
     'the check example carries the version it was written for');
 is($preflight_example->{schema_version}, $preflight_schema->{version},
     'the preflight example carries the version it was written for');
+is($cache_example->{schema_version}, $cache_schema->{version},
+    'the cache example carries the version it was written for');
+is($logs_example->{schema_version}, $logs_schema->{version},
+    'the logs example carries the version it was written for');
 
 # A validator that accepted everything would pass the tests above, so it is
 # shown to reject the ways the document can drift.
@@ -422,6 +444,8 @@ my %shipped_examples = (
     check     => [qw(check.json check-unready.json check-unreachable.json check-uncounted.json)],
     preflight => [qw(preflight.json preflight-unready.json preflight-unreachable.json
                     preflight-not-ready.json)],
+    cache     => [qw(cache.json cache-empty.json cache-unreachable.json cache-prune.json)],
+    logs      => [qw(logs.json logs-empty.json logs-prune.json logs-prune-failed.json)],
 );
 for my $document (sort keys %shipped_examples) {
     my $schema = $shipped_schema{$document};
@@ -469,12 +493,16 @@ for my $name (@fixture_files) {
     my $example = load_json(File::Spec->catfile($fixtures, $name));
 
     # A document says which command printed it by what it carries - the
-    # preflight adds images and the pull concurrency - rather than by how its
-    # file happens to be named.
-    my $document = exists $example->{pull_concurrency}
-        && ref $example->{images} eq 'ARRAY'
-        ? 'preflight'
-        : 'check';
+    # preflight adds the pull concurrency, the cache names its record - rather
+    # than by how its file happens to be named.
+    my $document = exists $example->{cache_file}
+        ? 'cache'
+        : exists $example->{logs_directory}
+            ? 'logs'
+            : exists $example->{pull_concurrency}
+                && ref $example->{images} eq 'ARRAY'
+                ? 'preflight'
+                : 'check';
     $document_of{$name} = $document;
 
     my $shipped  = $shipped_schema{$document};
@@ -486,7 +514,10 @@ for my $name (@fixture_files) {
         '%s declares schema version %s, but %s ships %s',
         $name,
         defined $declared ? $declared : 'nothing',
-        $document eq 'preflight' ? 'App::Actions::Runner' : 'App::Actions::Check',
+        $document eq 'preflight' ? 'App::Actions::Runner'
+            : $document eq 'cache' ? 'App::Actions::Cache'
+            : $document eq 'logs' ? 'App::Actions::Logs'
+            : 'App::Actions::Check',
         $shipped->{version},
     );
 }
@@ -567,6 +598,87 @@ is($preflight_doc->{schema_version}, App::Actions::Runner->preflight_schema_vers
     'the printed preflight document carries the module version');
 is_deeply([ sort keys %$preflight_doc ], [ sort keys %$preflight_example ],
     'the printed preflight document has the keys the example shows');
+
+{
+    # A cache document needs a record and a daemon that knows the image; the
+    # fake daemon reports a size for a marker, which is what makes the size
+    # fields more than null here.
+    my $record = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+    local $ENV{ACTION_RUN_CACHE_FILE} = $record;
+
+    App::Actions::Cache->new(file => $record)->remember('alpine:3.20');
+
+    my $marker = File::Spec->catfile($ENV{FAKE_DOCKER_STATE}, 'image-alpine_3.20');
+    open my $marker_handle, '>', $marker
+        or die "Unable to write '$marker': $!";
+    print {$marker_handle} 'alpine:3.20';
+    close $marker_handle;
+
+    my ($cache_out, $cache_err, $cache_exit) = run_cli(
+        'cache', '--json', '--docker', $fake,
+    );
+    is($cache_exit, 0, 'cache --json exits 0 against the fake daemon');
+
+    my $cache_doc = eval { JSON::PP->new->decode($cache_out) };
+    ok($cache_doc, 'the cache document decodes') or diag "stderr: $cache_err";
+    is_deeply([ validate($cache_doc, $cache_schema) ], [],
+        'the cache document the command prints matches the schema');
+    is($cache_doc->{schema_version}, App::Actions::Cache->json_schema_version,
+        'the printed cache document carries the module version');
+    cmp_ok($cache_doc->{generated_at}, '>=', $cache_doc->{images}[0]{last_used},
+        'the printed cache document carries the clock its image ages use');
+    is_deeply([ sort keys %$cache_doc ], [ sort keys %$cache_example ],
+        'the printed cache document has the keys the example shows');
+    is($cache_doc->{cache_file}, $record, 'the document names the record it read');
+    is($cache_doc->{images}[0]{image}, 'alpine:3.20', 'the recorded image is listed');
+    is($cache_doc->{images}[0]{size}, 123_456_789,
+        'the size the daemon reports is in the document');
+    ok($cache_doc->{images}[0]{present}, 'a present image is marked present');
+    is($cache_doc->{prune}, undef, 'a listing has no prune report');
+}
+
+{
+    # The logs document is read from the filesystem, so a run directory and a
+    # log in it are enough to make the fields more than empty arrays and zeroes.
+    my $logs_dir = File::Spec->catdir(tempdir(CLEANUP => 1), 'logs');
+    local $ENV{ACTION_RUN_LOG_DIR} = $logs_dir;
+
+    my $run = File::Spec->catdir($logs_dir, '20261021-120000-abc123');
+    make_path($run);
+    write_file(File::Spec->catfile($run, 'job-1-test.log'), 'x' x 512);
+
+    my ($logs_out, $logs_err, $logs_exit) = run_cli('logs', '--json');
+    is($logs_exit, 0, 'logs --json exits 0');
+
+    my $logs_doc = eval { JSON::PP->new->decode($logs_out) };
+    ok($logs_doc, 'the logs document decodes') or diag "stderr: $logs_err";
+    is_deeply([ validate($logs_doc, $logs_schema) ], [],
+        'the logs document the command prints matches the schema');
+    is($logs_doc->{schema_version}, App::Actions::Logs->json_schema_version,
+        'the printed logs document carries the module version');
+    is_deeply([ sort keys %$logs_doc ], [ sort keys %$logs_example ],
+        'the printed logs document has the keys the example shows');
+    is($logs_doc->{logs_directory}, $logs_dir, 'the document names the directory it read');
+    is($logs_doc->{logs}[0]{run}, '20261021-120000-abc123', 'the run is named');
+    is($logs_doc->{logs}[0]{name}, 'job-1-test.log', 'the log is named');
+    is($logs_doc->{logs}[0]{size}, 512, 'the document carries the size rather than text');
+    is($logs_doc->{totals}{runs}, 1, 'the document counts the runs');
+    is($logs_doc->{totals}{logs}, 1, 'the document counts the logs');
+    is($logs_doc->{totals}{size}, 512, 'the document totals the size');
+    is($logs_doc->{prune}, undef, 'a listing has no prune report');
+
+    ($logs_out, $logs_err, $logs_exit) = run_cli('logs', '--prune', '--json');
+    is($logs_exit, 0, 'logs --prune --json exits 0');
+
+    $logs_doc = eval { JSON::PP->new->decode($logs_out) };
+    ok($logs_doc, 'the prune document decodes') or diag "stderr: $logs_err";
+    is_deeply([ validate($logs_doc, $logs_schema) ], [],
+        'the prune document matches the schema');
+    is($logs_doc->{prune}{removed}, 1, 'the document says what the prune removed');
+    is($logs_doc->{prune}{freed}, 512, 'the document says what the prune freed');
+    is_deeply($logs_doc->{prune}{failed}, [], 'the document says every removal worked');
+    is_deeply($logs_doc->{logs}, [], 'the prune left no logs in the document');
+}
 
 # The step the fake daemon answers decides an image name, so this document has
 # a deferred record too; the example shows that shape, and the schema allows
@@ -753,8 +865,11 @@ is_deeply(
 {
     my $check_file     = File::Spec->catfile($fixtures, 'check.json');
     my $preflight_file = File::Spec->catfile($fixtures, 'preflight.json');
+    my $cache_file     = File::Spec->catfile($fixtures, 'cache.json');
+    my $logs_file      = File::Spec->catfile($fixtures, 'logs.json');
 
-    for my $example ([ check => $check_file ], [ preflight => $preflight_file ]) {
+    for my $example ([ check => $check_file ], [ preflight => $preflight_file ],
+        [ cache => $cache_file ], [ logs => $logs_file ]) {
         my ($name, $path) = @$example;
 
         my ($out, $err, $exit) = run_cli('validate', $name, $path);
@@ -836,7 +951,7 @@ is_deeply(
     is($unknown_exit, 2, 'an unknown document name is a usage error');
     like(
         $unknown_err,
-        qr/Unknown document 'workflow'; expected check or preflight/,
+        qr/Unknown document 'workflow'; expected check, preflight, cache or logs/,
         'the error names the documents that exist',
     );
 
@@ -844,7 +959,7 @@ is_deeply(
     is($args_exit, 2, 'validate without a document is a usage error');
     like(
         $args_err,
-        qr/Usage: action-run \[options\] validate <check\|preflight> <document\.json>/,
+        qr/Usage: action-run \[options\] validate <check\|preflight\|cache\|logs> <document\.json>/,
         'the usage line says what is needed',
     );
 
@@ -852,8 +967,8 @@ is_deeply(
         '--json', 'validate', 'check', $check_file,
     );
     is($json_exit, 2, '--json with validate is a usage error');
-    like($json_err, qr/only used by the check and preflight commands/,
-        'the validate command needs no --json');
+like($json_err, qr/only used by the check, preflight, cache and logs commands/,
+    'the validate command needs no --json');
 }
 
 done_testing;

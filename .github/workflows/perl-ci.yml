@@ -196,8 +196,9 @@ jobs:
 
   # Windows converts every text file to CRLF when it checks out, so a test
   # that assumes LF passes on Linux and fails only there.  This job makes the
-  # same conversion on Linux and runs the suite, so the assumption fails on
-  # every push instead of waiting for the Windows leg of the matrix.
+  # same conversion on Linux, runs the suite and builds the distribution, so
+  # the assumption fails on every push instead of waiting for the Windows leg
+  # of the matrix.
   crlf:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -281,3 +282,42 @@ jobs:
         run: |
           eval $(perl -I ~/perl5/lib/perl5 -Mlocal::lib)
           prove -lr t/
+
+      # prove reads the checkout in place; "make dist" reads what MANIFEST
+      # names and packs it into the archive a release publishes.  Unpacking
+      # that archive into a fresh directory and testing the copy checks what
+      # the release actually contains - the tar and gzip steps and the file
+      # modes included - rather than only the distribution directory make
+      # left behind.  Doing it from the CRLF checkout also catches a MANIFEST
+      # entry the conversion or the archive does not survive, and pod or
+      # filename handling that only works with LF, before a release does.
+      - name: Build, unpack and test the distribution
+        shell: bash
+        run: |
+          set -eu
+          eval $(perl -I ~/perl5/lib/perl5 -Mlocal::lib)
+          perl Makefile.PL
+
+          rm -f App-Actions-*.tar.gz
+          make dist
+
+          set -- App-Actions-*.tar.gz
+          test "$#" -eq 1
+          test -f "$1"
+          tarball=$1
+
+          unpacked=$(mktemp -d)
+          tar -xzf "$tarball" -C "$unpacked"
+          set -- "$unpacked"/*/
+          test "$#" -eq 1
+          test -d "$1"
+
+          cd "$1"
+
+          # The checkout was CRLF, so every source file in the archive should
+          # still be.  The audit lives in t/ so that t/archive-crlf.t can
+          # exercise its generated-file exemptions and failure messages too.
+          perl t/bin/check-archive-crlf .
+
+          perl Makefile.PL
+          make test

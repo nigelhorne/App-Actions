@@ -8,6 +8,8 @@ use File::Path qw(make_path);
 use File::Spec;
 use JSON::PP ();
 
+use App::Actions::Schema ();
+
 our $VERSION = '0.01';
 
 # The images action-run keeps are a cache: a run records what it pulled, so a
@@ -17,6 +19,124 @@ our $VERSION = '0.01';
 # or replaced behind the tool's back.
 
 my $FORMAT = 1;
+
+# The shape of the JSON document this module prints.  Bump it whenever a key,
+# a value type or an enum changes, and update the schema below and the examples
+# in t/fixtures/ with it; a CI job asserts the number rather than discovering
+# a changed shape at the point where its assertion fails for another reason.
+our $JSON_SCHEMA_VERSION = 2;
+
+# The schema of the document cache --json prints, so that the installed
+# action-run can hand the contract to a caller instead of leaving it in the
+# tests.  A change to the document belongs here, in $JSON_SCHEMA_VERSION and
+# in the examples in t/fixtures/, which t/schema.t holds against this and
+# fails when a key it names appears in none of them.
+my $JSON_SCHEMA = <<'JSON';
+{
+  "title": "action-run cache --json",
+  "description": "The document action-run cache --json prints.  Objects reject keys this file does not name, so a new key is a schema change.",
+  "version": 2,
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "The version of this shape; App::Actions::Cache->json_schema_version returns it.",
+      "type": "integer",
+      "const": 2
+    },
+    "generated_at": {
+      "description": "The epoch second the document was made; an image's age is generated_at minus its last_used.",
+      "type": "integer"
+    },
+    "cache_file": {
+      "description": "The record the images were read from, and that --prune changed.",
+      "type": "string"
+    },
+    "docker": {
+      "description": "The Docker command and whether it could be reached.",
+      "type": "object",
+      "properties": {
+        "bin": { "type": "string" },
+        "reachable": { "type": "boolean" }
+      },
+      "required": [ "bin", "reachable" ]
+    },
+    "images": {
+      "description": "Every image the record holds, sorted by name.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "image": { "type": "string" },
+          "pulls": {
+            "description": "How many runs pulled and kept the image.",
+            "type": "integer"
+          },
+          "last_used": {
+            "description": "When a run last used the image, in epoch seconds, or null in a record written without it.",
+            "type": [ "integer", "null" ]
+          },
+          "size": {
+            "description": "The bytes the daemon reports, or null when it could not report one.",
+            "type": [ "integer", "null" ]
+          },
+          "present": {
+            "description": "Whether the daemon has the image, or null when the daemon could not be reached.",
+            "type": [ "boolean", "null" ]
+          }
+        },
+        "required": [ "image", "pulls", "last_used", "size", "present" ]
+      }
+    },
+    "totals": {
+      "description": "The images and the disk they take.  The size and the counts are null when the daemon could not be reached.",
+      "type": "object",
+      "properties": {
+        "images": { "type": "integer" },
+        "size": { "type": [ "integer", "null" ] },
+        "present": { "type": [ "integer", "null" ] },
+        "missing": { "type": [ "integer", "null" ] }
+      },
+      "required": [ "images", "size", "present", "missing" ]
+    },
+    "prune": {
+      "description": "What --prune did, or null when the command only listed the record.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": {
+            "removed": { "type": "integer" },
+            "freed": { "type": "integer" },
+            "forgotten": { "type": "integer" },
+            "failed": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": [ "removed", "freed", "forgotten", "failed" ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at",
+    "cache_file",
+    "docker",
+    "images",
+    "totals",
+    "prune"
+  ]
+}
+JSON
+
+sub json_schema {
+    my ($class) = @_;
+
+    return JSON::PP->new->decode($JSON_SCHEMA);
+}
+
+sub json_schema_version { return $JSON_SCHEMA_VERSION }
 
 # The per-user directory action-run keeps its own state in: the image cache
 # record and the logs of a run.  XDG_CACHE_HOME is where a Linux or macOS
@@ -297,7 +417,10 @@ sub prune {
     my $entries = $self->entries;
 
     my $out = "Cache file: $self->{file}\n";
-    return $out . "No images have been cached yet.\n" unless @$entries;
+    if (!@$entries) {
+        my $data = { removed => 0, freed => 0, forgotten => 0, failed => [] };
+        return ($out . "No images have been cached yet.\n", 0, $data);
+    }
 
     my ($removed, $freed, $gone) = (0, 0, 0);
     my @failed;
@@ -327,6 +450,13 @@ sub prune {
 
     $self->forget(@forget) if @forget;
 
+    my $data = {
+        removed   => $removed,
+        freed     => $freed,
+        forgotten => $gone,
+        failed    => [ @failed ],
+    };
+
     $out .= sprintf(
         "Removed %d image%s, %s freed.\n",
         $removed, $removed == 1 ? '' : 's', format_size($freed),
@@ -343,10 +473,80 @@ sub prune {
             scalar @failed, @failed == 1 ? '' : 's',
         );
         $out .= "  $_\n" for @failed;
-        return ($out, 1);
+        return ($out, 1, $data);
     }
 
-    return ($out, 0);
+    return ($out, 0, $data);
+}
+
+# The machine-readable form of the listing, or of a prune that was just run.
+# The keys are stable and a value that could not be discovered is null rather
+# than absent, so a reader can assert on the shape without a missing key
+# meaning something different from an unknown value.
+sub document {
+    my ($self, %args) = @_;
+
+    my $now   = defined $args{now} ? $args{now} : time;
+    my $total = 0;
+    my ($present, $missing) = (0, 0);
+    my $reachable = $args{reachable} ? 1 : 0;
+    my $docker = $args{docker};
+    my $entries = $self->entries;
+
+    my $bin = $args{docker_bin};
+    $bin = $docker->bin
+        if (!defined $bin || !length $bin) && $docker;
+    $bin = 'docker' unless defined $bin && length $bin;
+
+    my @images;
+    for my $entry (@$entries) {
+        my ($size, $is_present);
+
+        if ($reachable && $docker) {
+            $size = $docker->image_size($entry->{image});
+            if (defined $size) {
+                $total += $size;
+                $present++;
+                $is_present = JSON::PP::true();
+            } else {
+                $missing++;
+                $is_present = JSON::PP::false();
+            }
+        }
+
+        push @images, {
+            image     => $entry->{image},
+            pulls     => $entry->{pulls} + 0,
+            last_used => $entry->{last_used},
+            size      => $size,
+            present   => $is_present,
+        };
+    }
+
+    my $document = {
+        schema_version => $JSON_SCHEMA_VERSION,
+        generated_at   => $now + 0,
+        cache_file     => $self->{file},
+        docker         => {
+            bin       => $bin,
+            reachable => $reachable ? JSON::PP::true() : JSON::PP::false(),
+        },
+        images => \@images,
+        totals => {
+            images  => scalar @$entries,
+            size    => $reachable ? $total : undef,
+            present => $reachable ? $present : undef,
+            missing => $reachable ? $missing : undef,
+        },
+        prune => $args{prune},
+    };
+
+    App::Actions::Schema::assert_valid(
+        $document, $self->json_schema,
+        'the action-run cache --json document does not match App::Actions::Cache->json_schema',
+    );
+
+    return $document;
 }
 
 1;
@@ -365,7 +565,8 @@ App::Actions::Cache - the record of images that action-run keeps between runs
     $cache->remember('alpine:3.20');
 
     print $cache->report(docker => $docker);
-    my ($report, $exit) = $cache->prune(docker => $docker);
+    my $document = $cache->document(docker => $docker, reachable => 1);
+    my ($report, $exit, $pruned) = $cache->prune(docker => $docker);
 
 =head1 DESCRIPTION
 
@@ -381,6 +582,10 @@ C<~/.cache/action-run/cache.json> when C<XDG_CACHE_HOME> is not set, and
 C<%LOCALAPPDATA%\action-run\cache.json> on Windows.  C<ACTION_RUN_CACHE_FILE>
 overrides it.  A file that cannot be read is treated as empty: the images are
 still on the disk, and the next run records them again.
+
+C<action-run cache --json> prints the same listing as a versioned JSON
+document, which is described under L</JSON OUTPUT> and held to the schema
+L</json_schema> returns.
 
 =head1 METHODS
 
@@ -420,11 +625,90 @@ unknown, which is what happens when the daemon is not running.
 
 =head2 prune
 
-    my ($report, $exit) = $cache->prune(docker => $docker);
+    my ($report, $exit, $pruned) = $cache->prune(docker => $docker);
 
 Remove every recorded image and forget it.  An image that has already gone is
 forgotten, one that cannot be removed stays in the record, and C<$exit> is 1
-when any removal failed.
+when any removal failed.  C<$pruned> is the C<prune> object of the JSON
+document, with the counts the report says in words.
+
+=head2 document
+
+    my $document = $cache->document(
+        docker     => $docker,      # undef when it could not be reached
+        docker_bin => $docker->bin, # the command named in the document
+        reachable  => 1,
+        prune      => $pruned,      # optional, from prune()
+        now        => time,         # optional, for a fixed clock
+    );
+
+Returns the document C<action-run cache --json> prints, described under
+L</JSON OUTPUT>.  The daemon is asked for each image's size only when
+C<reachable> is true; otherwise the sizes, the presence of each image and the
+counts that depend on them are C<undef>, which is written as C<null>.  C<now>
+(epoch seconds) can be passed for a fixed clock in a test; it becomes the
+document's C<generated_at>, and an image's age is that value minus its
+C<last_used>.  The
+document is checked against L</json_schema> before it is returned, so a key
+that was added or retyped without the schema changing raises an
+L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
+exception naming the first mismatch instead of being printed.
+
+=head2 json_schema
+
+    my $schema = App::Actions::Cache->json_schema;
+
+Returns the JSON schema of the C<cache --json> document as a hash, the same
+document C<action-run schema cache> prints.  It lives here rather than in the
+test directory so that an installed distribution can hand the contract to a
+caller; F<t/schema.t> validates the examples and the document against it.
+
+=head2 json_schema_version
+
+    my $version = App::Actions::Cache->json_schema_version;
+
+Returns the version of the JSON document, which is also its C<schema_version>
+key.  It is bumped when the shape changes, so an assertion can name the shape
+it was written for.
+
+=head1 JSON OUTPUT
+
+With C<json> the listing is a single object, with every key always present and
+C<null> for a value that could not be discovered:
+
+    {
+      "schema_version": 2,
+      "generated_at": 1792540920,
+      "cache_file": "/home/me/.cache/action-run/cache.json",
+      "docker": { "bin": "docker", "reachable": true },
+      "images": [
+        { "image": "alpine:3.20", "pulls": 3, "last_used": 1792540800, "size": 12345678, "present": true },
+        { "image": "perl:5.38", "pulls": 1, "last_used": 1792440000, "size": null, "present": false }
+      ],
+      "totals": { "images": 2, "size": 12345678, "present": 1, "missing": 1 },
+      "prune": null
+    }
+
+C<size> is the bytes the daemon reports, C<present> whether it still has the
+image, and C<last_used> the epoch second a run last used it.  C<generated_at>
+is the epoch second the document was made, so an image's age is that value
+minus its C<last_used> without either machine having to agree on a clock.
+When the daemon
+cannot be reached, C<docker.reachable> is false and the sizes, C<present> and
+the C<totals> that would count them are C<null>; the record's own values are
+still listed.  C<prune> is C<null> for a listing and an object after
+C<--prune>, carrying C<removed>, C<freed>, C<forgotten> and the C<failed>
+images that stayed in the record.  The command's exit status is unchanged, so
+a prune that could not remove an image still prints its document and exits 1.
+
+C<schema_version> names the shape of the document; it is the number
+L</json_schema_version> returns.  The schema is what C<action-run schema
+cache> prints, and the checked-in examples are F<t/fixtures/cache.json> (two
+images, one present and one missing), F<t/fixtures/cache-empty.json>,
+F<t/fixtures/cache-unreachable.json> (the nulls for what the daemon could not
+say) and F<t/fixtures/cache-prune.json>.  F<t/schema.t> validates them against
+it and fails when a property or a null variant it names appears in none of
+them.
 
 =head1 AUTHOR
 

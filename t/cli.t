@@ -557,7 +557,7 @@ my ($json_usage_out, $json_usage_err, $json_usage_exit) = run_cli(
     '--json', 'workflow.yml', 'project',
 );
 is($json_usage_exit, 2, '--json without a command that uses it is a usage error');
-like($json_usage_err, qr/only used by the check and preflight commands/,
+like($json_usage_err, qr/only used by the check, preflight, cache and logs commands/,
     'the misuse is explained');
 
 my ($check_usage_out, $check_usage_err, $check_usage_exit) = run_cli('check', 'a', 'b');

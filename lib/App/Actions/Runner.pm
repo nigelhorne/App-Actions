@@ -21,6 +21,7 @@ use App::Actions::Cache;
 use App::Actions::Check;
 use App::Actions::Docker;
 use App::Actions::Expression;
+use App::Actions::Logs;
 use App::Actions::Process;
 use App::Actions::Schema;
 
@@ -3705,18 +3706,17 @@ sub _cleanup {
     return;
 }
 
-# Where the logs of a parallel run go: ACTION_RUN_LOG_DIR, then the usual
-# per-user cache directory, under action-run/logs.
+# Where the logs of a parallel run go: the log_dir the caller gave, then
+# ACTION_RUN_LOG_DIR and the usual per-user cache directory.  The last two are
+# App::Actions::Logs' default, so `action-run logs` reads the directory a run
+# wrote to.
 sub _log_root {
     my ($self) = @_;
 
-    for my $candidate ($self->{log_dir}, $ENV{ACTION_RUN_LOG_DIR}) {
-        return $candidate if defined $candidate && length $candidate;
-    }
+    return $self->{log_dir}
+        if defined $self->{log_dir} && length $self->{log_dir};
 
-    return File::Spec->catdir(
-        App::Actions::Cache::base_directory(), 'action-run', 'logs',
-    );
+    return App::Actions::Logs->default_directory;
 }
 
 # A job's log is worth keeping for more than the run that wrote it: after a

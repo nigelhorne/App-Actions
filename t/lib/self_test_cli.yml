@@ -45,3 +45,53 @@ jobs:
         run: |
           perl -Ilib bin/action-run validate check t/fixtures/check.json
           echo "the CLI validated a document inside the container"
+      - name: Print the cache contract
+        run: |
+          perl -Ilib bin/action-run schema cache > "$RUNNER_TEMP/cache-schema.json"
+          perl -MJSON::PP -e '
+            local $/;
+            open my $handle, "<", $ARGV[0] or die "cannot read $ARGV[0]: $!\n";
+            my $schema = JSON::PP->new->decode(<$handle>);
+            die "the document is not the cache schema\n"
+                unless defined $schema->{version}
+                && ref $schema->{properties} eq "HASH"
+                && ref $schema->{properties}{generated_at} eq "HASH"
+                && ref $schema->{properties}{images} eq "HASH"
+                && ref $schema->{properties}{totals} eq "HASH";
+            die "the cache schema is not the version its schema_version names\n"
+                unless defined $schema->{properties}{schema_version}{const}
+                && $schema->{properties}{schema_version}{const} == $schema->{version};
+            print "the CLI printed its cache schema inside the container\n";
+          ' "$RUNNER_TEMP/cache-schema.json"
+      - name: Validate every cache document
+        run: |
+          for fixture in t/fixtures/cache*.json
+          do
+            perl -Ilib bin/action-run validate cache "$fixture"
+            echo "the CLI validated ${fixture##*/} inside the container"
+          done
+      - name: Print the logs contract
+        run: |
+          perl -Ilib bin/action-run schema logs > "$RUNNER_TEMP/logs-schema.json"
+          perl -MJSON::PP -e '
+            local $/;
+            open my $handle, "<", $ARGV[0] or die "cannot read $ARGV[0]: $!\n";
+            my $schema = JSON::PP->new->decode(<$handle>);
+            die "the document is not the logs schema\n"
+                unless defined $schema->{version}
+                && ref $schema->{properties} eq "HASH"
+                && ref $schema->{properties}{generated_at} eq "HASH"
+                && ref $schema->{properties}{logs} eq "HASH"
+                && ref $schema->{properties}{totals} eq "HASH";
+            die "the logs schema is not the version its schema_version names\n"
+                unless defined $schema->{properties}{schema_version}{const}
+                && $schema->{properties}{schema_version}{const} == $schema->{version};
+            print "the CLI printed its logs schema inside the container\n";
+          ' "$RUNNER_TEMP/logs-schema.json"
+      - name: Validate every logs document
+        run: |
+          for fixture in t/fixtures/logs*.json
+          do
+            perl -Ilib bin/action-run validate logs "$fixture"
+            echo "the CLI validated ${fixture##*/} inside the container"
+          done

@@ -17,6 +17,7 @@ BEGIN {
 use App::Actions;
 use App::Actions::Cache;
 use App::Actions::Check;
+use App::Actions::Logs;
 use App::Actions::Process ();
 use App::Actions::Schema;
 
@@ -112,21 +113,21 @@ if (!defined $parallel) {
 my $command = 'run';
 if (@ARGV && ($ARGV[0] eq 'check' || $ARGV[0] eq 'preflight'
         || $ARGV[0] eq 'schema' || $ARGV[0] eq 'validate'
-        || $ARGV[0] eq 'cache')) {
+        || $ARGV[0] eq 'cache' || $ARGV[0] eq 'logs')) {
     $command = shift @ARGV;
 }
 
-if ($prune && $command ne 'cache') {
+if ($prune && $command ne 'cache' && $command ne 'logs') {
     pod2usage(
         -exitval => 2,
         -verbose => 0,
-        -message => "--prune is only used by the cache command\n",
+        -message => "--prune is only used by the cache and logs commands\n",
     );
 }
 
 # Before the commands run: an explain run reports the containers a workflow
-# would start, so there is nothing for check, preflight, schema or validate to
-# explain.
+# would start, so there is nothing for check, preflight, schema, validate,
+# cache or logs to explain.
 if ($explain && $command ne 'run') {
     pod2usage(
         -exitval => 2,
@@ -163,11 +164,12 @@ if ($command eq 'check') {
     exit $exit;
 }
 
-if ($json && $command ne 'preflight') {
+if ($json && $command ne 'preflight' && $command ne 'cache'
+        && $command ne 'logs') {
     pod2usage(
         -exitval => 2,
         -verbose => 0,
-        -message => "--json is only used by the check and preflight commands\n",
+        -message => "--json is only used by the check, preflight, cache and logs commands\n",
     );
 }
 
@@ -176,7 +178,7 @@ if ($command eq 'schema') {
         pod2usage(
             -exitval => 2,
             -verbose => 0,
-            -message => "Usage: action-run [options] schema <check|preflight>\n",
+            -message => "Usage: action-run [options] schema <check|preflight|cache|logs>\n",
         );
     }
 
@@ -195,7 +197,7 @@ if ($command eq 'validate') {
         pod2usage(
             -exitval => 2,
             -verbose => 0,
-            -message => "Usage: action-run [options] validate <check|preflight> <document.json>\n",
+            -message => "Usage: action-run [options] validate <check|preflight|cache|logs> <document.json>\n",
         );
     }
 
@@ -248,7 +250,7 @@ if ($command eq 'cache') {
         pod2usage(
             -exitval => 2,
             -verbose => 0,
-            -message => "Usage: action-run [options] cache [--prune]\n",
+            -message => "Usage: action-run [options] cache [--prune] [--json]\n",
         );
     }
 
@@ -263,12 +265,105 @@ if ($command eq 'cache') {
             exit 2;
         }
 
-        my ($text, $exit) = $cache->prune(docker => $docker);
+        my ($text, $exit, $data) = $cache->prune(docker => $docker);
+
+        if ($json) {
+            # The document is printed whether or not every removal worked: the
+            # record is what a caller needs, and the exit status says how the
+            # prune went.
+            my $document = eval {
+                $cache->document(
+                    docker     => $docker,
+                    docker_bin => $docker->bin,
+                    reachable  => 1,
+                    prune      => $data,
+                );
+            };
+            if (my $error = $@) {
+                exit _fail($error);
+            }
+            print JSON::PP->new->canonical->encode($document), "\n";
+            exit $exit;
+        }
+
         print $text;
         exit $exit;
     }
 
+    if ($json) {
+        my $document = eval {
+            $cache->document(
+                docker     => $docker,
+                docker_bin => $docker->bin,
+                reachable  => $reachable ? 1 : 0,
+            );
+        };
+        if (my $error = $@) {
+            exit _fail($error);
+        }
+        print JSON::PP->new->canonical->encode($document), "\n";
+        exit 0;
+    }
+
     print $cache->report(docker => $reachable ? $docker : undef);
+    exit 0;
+}
+
+# The per-job logs are another thing action-run keeps between runs, and the
+# command to read and remove them is the cache command's shape: a listing, and
+# --prune to remove what it lists.
+if ($command eq 'logs') {
+    if (@ARGV) {
+        pod2usage(
+            -exitval => 2,
+            -verbose => 0,
+            -message => "Usage: action-run [options] logs [--prune] [--json]\n",
+        );
+    }
+
+    my $logs = App::Actions::Logs->new;
+
+    if ($prune) {
+        my ($text, $exit, $data) = eval { $logs->prune };
+        if (my $error = $@) {
+            print STDERR 'action-run: cannot prune the job logs: ',
+                _error_text($error), "\n";
+            exit 2;
+        }
+
+        if ($json) {
+            # The document is printed whether or not every removal worked: the
+            # remaining logs are what a caller needs, and the exit status says
+            # how the prune went.
+            my $document = eval { $logs->document(prune => $data) };
+            if (my $error = $@) {
+                exit _fail($error);
+            }
+            print JSON::PP->new->canonical->encode($document), "\n";
+            exit $exit;
+        }
+
+        print $text;
+        exit $exit;
+    }
+
+    if ($json) {
+        my $document = eval { $logs->document };
+        if (my $error = $@) {
+            exit _fail($error);
+        }
+        print JSON::PP->new->canonical->encode($document), "\n";
+        exit 0;
+    }
+
+    my $text = eval { $logs->report };
+    if (my $error = $@) {
+        print STDERR 'action-run: cannot list the job logs: ',
+            _error_text($error), "\n";
+        exit 2;
+    }
+
+    print $text;
     exit 0;
 }
 
@@ -412,9 +507,10 @@ action-run - run a GitHub Actions workflow locally with Docker
     action-run [options] <workflow.yml> [project-directory]
     action-run [options] check [directory]
     action-run [options] preflight <workflow.yml> [project-directory]
-    action-run [options] schema <check|preflight>
-    action-run [options] validate <check|preflight> <document.json>
-    action-run [options] cache [--prune]
+    action-run [options] schema <check|preflight|cache|logs>
+    action-run [options] validate <check|preflight|cache|logs> <document.json>
+    action-run [options] cache [--prune] [--json]
+    action-run [options] logs [--prune] [--json]
 
 =head1 DESCRIPTION
 
@@ -443,7 +539,8 @@ its containers are gone.  They are kept whether the job passed or failed, and
 C<--quiet> suppresses the note without suppressing the files.  The default
 directory is F<$XDG_CACHE_HOME/action-run/logs>, or
 F<~/.cache/action-run/logs> when that is not set, and
-C<ACTION_RUN_LOG_DIR> moves it.
+C<ACTION_RUN_LOG_DIR> moves it.  C<action-run logs> lists those copies with
+their sizes and ages, and C<action-run logs --prune> removes them.
 
 The project directory is optional when the workflow lives inside a
 C<.github/workflows> directory; the repository root is inferred in that case.
@@ -636,10 +733,12 @@ copy of it in a test directory.
 
 =head2 schema
 
-    action-run [options] schema <check|preflight>
+    action-run [options] schema <check|preflight|cache|logs>
 
 Prints the JSON schema of the named document and exits: C<check> for the
-C<check --json> document, C<preflight> for the C<preflight --json> one.  The
+C<check --json> document, C<preflight> for the C<preflight --json> one,
+C<cache> for the C<cache --json> listing and C<logs> for the
+C<logs --json> one.  The
 output is a single JSON object, so a CI job can fetch the contract the
 document is written against rather than keeping its own copy:
 
@@ -654,12 +753,13 @@ number as the document's C<schema_version>.
 
 =head2 validate
 
-    action-run [options] validate <check|preflight> <document.json>
+    action-run [options] validate <check|preflight|cache|logs> <document.json>
 
 Checks a saved document against the schema that C<action-run schema> prints,
-without Docker and without a workflow.  The name is C<check> or C<preflight>,
-because a document says which shape its C<schema_version> refers to but not
-which command produced it.  A matching document prints one line and exits 0:
+without Docker and without a workflow.  The name is C<check>, C<preflight>,
+C<cache> or C<logs>, because a document says which shape its C<schema_version>
+refers to but not which command produced it.  A matching document prints one line and
+exits 0:
 
     action-run validate preflight preflight.json
     'preflight.json' is a valid preflight document (schema version 3)
@@ -676,9 +776,15 @@ another machine, where Docker and the workflow are not available:
     action-run preflight --json .github/workflows/test.yml . > preflight.json
     action-run validate preflight preflight.json
 
+    action-run cache --json > cache.json
+    action-run validate cache cache.json
+
+    action-run logs --json > logs.json
+    action-run validate logs logs.json
+
 =head2 cache
 
-    action-run [options] cache [--prune]
+    action-run [options] cache [--prune] [--json]
 
 Lists the images that runs have kept, with the size each one takes on disk and
 when a run last pulled it, and with C<--prune> removes them:
@@ -702,6 +808,112 @@ because it has to know what is still there: an image that has already gone is
 forgotten, one that cannot be removed stays in the record and makes the
 command exit 1, so a second attempt still sees it.  An unreachable daemon
 exits 2 without touching the record.
+
+With C<--json> the listing is a single versioned object instead of the text
+report, for a CI job to assert on:
+
+    {
+      "schema_version": 2,
+      "generated_at": 1792540920,
+      "cache_file": "/home/me/.cache/action-run/cache.json",
+      "docker": { "bin": "docker", "reachable": true },
+      "images": [
+        { "image": "alpine:3.20", "pulls": 3, "last_used": 1792540800, "size": 12345678, "present": true },
+        { "image": "perl:5.38", "pulls": 1, "last_used": 1792440000, "size": null, "present": false }
+      ],
+      "totals": { "images": 2, "size": 12345678, "present": 1, "missing": 1 },
+      "prune": null
+    }
+
+C<size> is the bytes the daemon reports, C<present> whether the daemon still
+has the image and C<last_used> the epoch second a run last used it.
+C<generated_at> is the epoch second the document was made, so an image's age
+is that value minus its C<last_used> rather than a subtraction from the
+reader's clock.  A daemon
+that cannot be reached leaves its C<reachable> flag false and the sizes, the
+C<present> values and the counts that depend on them C<null>, so an assertion
+can tell "unknown" from "missing" rather than reading 0 as either.  After
+C<--prune> the C<prune> key is an object rather than C<null>, holding
+C<removed>, C<freed>, C<forgotten> and the C<failed> images that stayed in the
+record; the document is printed even when a removal failed, and the exit
+status is 1.  A prune without a daemon still exits 2 without printing a
+document, because nothing was attempted.
+
+The document is checked against its schema before it is printed, so a key
+that was added, removed or retyped without the schema changing exits 70 with a
+message naming the first mismatch (see L</EXIT STATUS>), as it does for
+C<check --json> and C<preflight --json>.  The schema is what C<action-run
+schema cache> prints, and the checked-in examples validated against it in
+F<t/schema.t> are F<t/fixtures/cache.json>,
+F<t/fixtures/cache-empty.json>, F<t/fixtures/cache-unreachable.json> and
+F<t/fixtures/cache-prune.json>.  C<schema_version> is
+C<App::Actions::Cache-E<gt>json_schema_version>.
+
+=head2 logs
+
+    action-run [options] logs [--prune] [--json]
+
+Lists the per-job logs that parallel runs have kept, with the size each one
+takes and how long ago the run wrote it, and with C<--prune> removes them:
+
+  Logs directory: /home/me/.cache/action-run/logs
+
+    RUN                               LOG                          SIZE  AGE
+    20261021-121355-6ad8e4c30f83      job-1-test_n_one.log        1.2 KB  2 hours ago
+    20261021-121355-6ad8e4c30f83      job-2-test_n_two.log        0.8 KB  2 hours ago
+    20261020-091201-1f4b2c3d4e5f      job-1-test_n_one.log        1.0 KB  1 day ago
+
+  3 logs, 3.0 KB on disk.
+
+A sequential run has no interleaved output to untangle and keeps no copies,
+so only parallel runs appear.  The age is the file's own modification time,
+not the run's start, and is shown in the largest whole unit: minutes, hours,
+days, months or years.  A log deleted outside C<action-run> simply stops
+being listed.
+
+C<--prune> removes every log it listed and the run directory once that is
+empty, which is what the listing's "Remove them with" line names.  Only a file
+that matched the listing is unlinked, so a note left in a run directory
+survives; only a directory named the way C<action-run> writes one - a
+timestamp followed by the run id - is considered, so a directory that
+C<ACTION_RUN_LOG_DIR> shares with other things is not emptied.  A removal
+that fails is reported, the rest of the prune carries on, and the command
+exits 1 so a second attempt still sees it.
+
+With C<--json> the listing is a single versioned object instead of the text
+report, for a CI job to assert on:
+
+    {
+      "schema_version": 3,
+      "generated_at": 1792540920,
+      "logs_directory": "/home/me/.cache/action-run/logs",
+      "logs": [
+        { "run": "20261021-121355-6ad8e4c30f83", "name": "job-1-test_n_one.log", "path": "/home/me/.cache/action-run/logs/20261021-121355-6ad8e4c30f83/job-1-test_n_one.log", "size": 1229, "mtime": 1792540800, "age": 120 },
+        { "run": "20261021-121355-6ad8e4c30f83", "name": "job-2-test_n_two.log", "path": "/home/me/.cache/action-run/logs/20261021-121355-6ad8e4c30f83/job-2-test_n_two.log", "size": 819, "mtime": 1792540800, "age": 120 }
+      ],
+      "totals": { "runs": 1, "logs": 2, "size": 2048 },
+      "prune": null
+    }
+
+C<logs> is sorted by run and then by file name.  C<size> is the bytes the log
+takes, C<generated_at> the epoch second the document was made, C<mtime> the
+epoch second the log was last written and C<age> the seconds between them.
+C<age> is C<generated_at> minus C<mtime>, so a caller can use it without
+subtracting from its own clock or parsing a phrase; it is 0 when the log's
+clock is ahead of C<generated_at>.  C<totals> counts the runs, logs and bytes
+the listing found.  After C<--prune> the C<prune> key is an object rather than
+C<null>, holding C<removed>, C<freed> and the C<failed> runs that stayed, each
+with its C<run> name and C<error>; the document is printed even when a removal
+failed, and the exit status is 1.
+
+The document is checked against its schema before it is printed, so a key that
+was added, removed or retyped without the schema changing exits 70 with a
+message naming the first mismatch (see L</EXIT STATUS>).  The schema is what
+C<action-run schema logs> prints, and the checked-in examples validated against
+it in F<t/schema.t> are F<t/fixtures/logs.json>,
+F<t/fixtures/logs-empty.json>, F<t/fixtures/logs-prune.json> and
+F<t/fixtures/logs-prune-failed.json>.  C<schema_version> is
+C<App::Actions::Logs-E<gt>json_schema_version>.
 
 =head1 OPTIONS
 
@@ -767,8 +979,8 @@ bad command:
         entrypoint (the image's own)
         command    (the image's own)
 
-It belongs to a run: C<check>, C<preflight>, C<schema> and C<validate> have no
-containers to explain and reject it.
+It belongs to a run: C<check>, C<preflight>, C<schema>, C<validate>, C<cache>
+and C<logs> have no containers to explain and reject it.
 
 =item B<--list>
 
@@ -776,8 +988,8 @@ List the expanded jobs and exit.
 
 =item B<--prune>
 
-With C<cache>, remove the images a run kept and forget them.  It is rejected
-by every other command.
+With C<cache>, remove the images a run kept and forget them; with C<logs>,
+remove the kept job logs.  It is rejected by every other command.
 
 =item B<--keep>, B<-k>
 
@@ -798,8 +1010,10 @@ Treat unsupported actions as failures instead of skipping them.
 =item B<--json>
 
 With C<check>, print a JSON object instead of the text report; with
-C<preflight>, print the check report with the images it prepared added.  It is
-rejected for a workflow run.
+C<preflight>, print the check report with the images it prepared added; with
+C<cache>, print the image record as a versioned document instead of the text
+listing; with C<logs>, print the kept logs as a versioned document instead of
+the table.  It is rejected for a workflow run.
 
 =item B<--skip-check>
 
@@ -861,9 +1075,10 @@ time.  The option wins over it, and it wins over the built-in four.
 
 =item C<ACTION_RUN_LOG_DIR>
 
-Where a parallel run keeps its per-job logs.  The default is
-F<$XDG_CACHE_HOME/action-run/logs>, or F<~/.cache/action-run/logs> when
-C<XDG_CACHE_HOME> is not set, and F<%LOCALAPPDATA%\action-run\logs> on Windows.
+Where a parallel run keeps its per-job logs and where C<action-run logs>
+reads them.  The default is F<$XDG_CACHE_HOME/action-run/logs>, or
+F<~/.cache/action-run/logs> when C<XDG_CACHE_HOME> is not set, and
+F<%LOCALAPPDATA%\action-run\logs> on Windows.
 
 =item C<ACTION_RUN_CACHE_FILE>
 
@@ -894,26 +1109,42 @@ record.
 
     action-run cache
 
-    action-run cache --prune
+    action-run cache --json | jq -r '.totals.size'
+
+    action-run cache --prune --json | jq '.prune.failed'
+
+    action-run schema cache | jq '.version'
+
+    action-run logs
+
+    action-run logs --prune
+
+    action-run logs --json | jq '.totals.logs'
+
+    action-run schema logs | jq '.version'
 
 =head1 EXIT STATUS
 
 0 if every runnable job succeeded, 1 if a job failed, and 2 for a usage,
 Docker, or infrastructure error.  C<check> exits 0 when the environment is
 ready and 2 otherwise.  C<cache --prune> exits 1 if an image could not be
-removed, because the record still holds it.
+removed, because the record still holds it, and C<cache --json> keeps that
+status while still printing the record.  C<logs --prune> exits 1 when a kept
+log could not be removed, and names the run it left behind; C<logs --json>
+keeps that status while still printing the document.
 
 70 means a document did not match the schema it was checked against: either
-C<check --json> or C<preflight --json> refused to print one of its own (so
-nothing was printed), or C<validate> was given a saved document that does not
-match, including one that is not JSON at all.  It is C<EX_SOFTWARE> from
+C<check --json>, C<preflight --json>, C<cache --json> or C<logs --json>
+refused to print one of its own (so nothing was printed), or C<validate> was
+given a saved document that does not match, including one that is not JSON at
+all.  It is C<EX_SOFTWARE> from
 F<sysexits.h> and is deliberately separate from 2: a document is at fault,
 not the host a CI job would otherwise repair.
 
 =head1 LIMITATIONS
 
-The per-job logs of a parallel run are kept indefinitely; remove old
-directories under the log directory when they are no longer needed.
+The per-job logs of a parallel run are kept until C<action-run logs --prune>
+removes them; nothing expires them by age.
 
 Only Linux jobs are supported; macOS and Windows matrix entries are skipped.
 JavaScript actions cannot be executed.  C<actions/checkout> and

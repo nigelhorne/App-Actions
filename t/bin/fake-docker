@@ -80,6 +80,17 @@ if ($command eq 'image') {
     }
     if ($subcommand eq 'rm') {
         my $image = $args[-1];
+
+        # FAKE_IMAGE_REMOVE_FAILURE names an image, or '*' for every image, a
+        # daemon refuses to remove: the case where a prune has to leave it in
+        # the record and say so.
+        my $broken = $ENV{FAKE_IMAGE_REMOVE_FAILURE};
+        if (defined $broken && length $broken
+            && ($broken eq '*' || $broken eq $image)) {
+            print STDERR "Error response from daemon: conflict: image '$image' is being used\n";
+            exit 1;
+        }
+
         unlink _image_marker($image);
         exit 0;
     }

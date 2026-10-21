@@ -75,3 +75,18 @@ WriteMakefile(
         },
     },
 );
+
+# Run the pre-commit hook's checks from the command line.  The staged target
+# reads the index with git checkout-index, so it checks what would be committed
+# without creating a commit; the worktree target checks the checkout as it is,
+# unstaged edits included.  An ordinary clone needs no hook setup for either
+# target to work.
+sub MY::postamble {
+    return <<'MAKE';
+.PHONY: check-staged check-worktree
+check-staged:
+	$(PERLRUN) .githooks/pre-commit --staged
+check-worktree:
+	$(PERLRUN) .githooks/pre-commit --worktree
+MAKE
+}

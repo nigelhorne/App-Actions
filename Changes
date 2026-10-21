@@ -224,11 +224,16 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       too rather than only through the command run in the self test.
     - Run the tool where it is being tested: t/lib/self_test_cli.yml is a
       second workflow t/self_test.t runs, in a Perl image, and its steps run
-      "action-run schema check" and "action-run validate" inside the
-      container - the schema it prints and a document it validates, both read
-      back through JSON::PP.  The tool's dependency is installed only when the
-      image lacks it, so the fake run stays off the network; the live run
-      fetches YAML::PP, which is the one thing the image has to gain.
+      "action-run schema" and "action-run validate" inside the container for
+      the check document and every cache and logs fixture, including the
+      empty, unreachable and prune examples.  The cache and logs fixtures are
+      discovered from t/fixtures/cache*.json and t/fixtures/logs*.json rather
+      than listed by name, so a new example is validated without editing the
+      workflow.  The schemas it prints and
+      each document it validates are read back through JSON::PP.  The tool's
+      dependency is installed only when the image lacks it, so the fake run
+      stays off the network; the live run fetches YAML::PP, which is the one
+      thing the image has to gain.
     - Keep the host's tools ahead of a container PATH entry that only shares
       its name.  The fake daemon now puts the host's PATH before the
       directories of the container's PATH that are not mounted, so a step that
@@ -255,15 +260,22 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       nobody sets simply falls back to alpine:3.20.  The copy t/space-path.t
       makes now carries the README and the workflows too, so the test that
       reads them runs there instead of dying on a file the copy never had.
-    - Add .githooks/pre-commit, which runs the schema checks against the files
-      a commit stages and refuses the commit when they disagree.  The staged
-      files are written out with git checkout-index and checked there, so a
-      bump whose working tree was corrected after staging is caught, while a
-      corrected document with a broken one left unstaged beside it is not
-      refused.  A commit touching nothing under lib/, bin/, t/schema.t or
-      t/fixtures/ does not start the checks.  The clone opts in with "git
-      config core.hooksPath .githooks"; the hook itself clears the test
-      harness's environment so its TAP is the same however it was started.
+    - Add .githooks/pre-commit, which runs the schema checks and the
+      live-knob check against the files a commit stages and refuses the
+      commit when either disagrees.  The staged files are written out with
+      git checkout-index and checked there, so an edit whose working tree was
+      corrected after staging is caught, while a corrected file with a broken
+      one left unstaged beside it is not refused.  Only the check a staged
+      path can affect is started: the schema when lib/, bin/, t/schema.t or
+      t/fixtures/ changed, and the live knobs when a live test,
+      t/live-knobs.t, README.md, lib/App/Actions.pm or .github/workflows did.
+      A commit touching neither set does not start a check.  The clone opts
+      in with "git config core.hooksPath .githooks"; the hook itself clears
+      the test harness's environment so its TAP is the same however it was
+      started.  "make check-staged" runs the same checks against the index
+      and "make check-worktree" against the working tree, unstaged edits and
+      untracked files included, so a developer can ask what the hook would
+      say before writing a commit message.
     - Hold each shipped schema to itself before any document is read: the
       schema's own version, the const its schema_version property promises
       and the constant the module reports have to agree, and the failure
@@ -344,6 +356,16 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       the suite there, so an assumption about LF fails on Linux before the
       Windows leg of the matrix finds it.  It verifies that every tracked text
       file is CRLF afterwards, so it cannot pass without converting anything.
+      It then runs "make dist" from the same checkout, unpacks the tarball
+      into a fresh directory and tests that copy, so the archive a release
+      publishes - not only the distribution directory - is what runs before
+      a release relies on it.  It also checks that every source file in the
+      unpacked archive still has CRLF line endings, exempting the generated
+      META.yml and META.json and the MANIFEST that make dist rewrites, so a
+      tar or gzip step that normalises the archive cannot pass unnoticed.
+      The audit lives in t/bin/check-archive-crlf, and t/archive-crlf.t
+      exercises its exemptions, binary handling and a normalised source
+      without building a distribution.
     - Keep each parallel job's log after the run, and print where the logs
       are and which job each one holds.  The terminal still shows the
       interleaved prefixed lines while the jobs run, but the copies are the
@@ -353,3 +375,33 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       only the note, and ACTION_RUN_LOG_DIR moves the copies out of the
       user's cache directory.  A sequential run, which has no other job's
       output to tell apart, keeps none.
+    - Add "action-run cache --json", a versioned document of the image record
+      with a schema that "action-run schema cache" prints and examples in
+      t/fixtures/, so a CI job can assert on sizes, missing images and what a
+      prune removed rather than parse the table.  Sizes and presence are null
+      when the daemon cannot be reached, so unknown is not mistaken for
+      missing, and a prune keeps its exit status while still printing the
+      record.  "schema" and "validate" accept "cache" alongside "check" and
+      "preflight".
+    - Add "action-run logs", which lists the per-job logs a parallel run keeps
+      with their sizes and ages, and "action-run logs --prune", which removes
+      them.  It reads the same directory a run writes to - log_dir,
+      ACTION_RUN_LOG_DIR or the per-user cache directory - and only unlinks a
+      file that matched the listing, in a directory named the way the tool
+      names one, so a directory shared with other files is not emptied.  A
+      removal that fails is reported and exits 1, so a second attempt still
+      sees the run.
+    - Add "action-run logs --json", a versioned document of the kept logs
+      with their sizes, modification times, ages in seconds and the
+      generated_at clock those ages are measured from, the totals, and what a
+      prune removed or could not remove.  "action-run schema
+      logs" prints its schema, "validate logs" checks a saved document, and
+      the examples in t/fixtures/ show a listing, an empty directory, a
+      successful prune and one that left a run behind.  Like the cache
+      document, a listing that does not match the schema is not printed, and
+      a failed prune still prints its document while keeping exit status 1.
+    - Add "generated_at" to the "cache --json" document, the epoch second it
+      was made, so an image's age is that clock minus its last_used rather
+      than a subtraction from the reader's clock.  This bumps the cache
+      schema to version 2; the schema, its examples and the self test's
+      contract check are updated with it.
