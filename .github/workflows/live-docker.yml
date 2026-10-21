@@ -60,6 +60,9 @@ jobs:
       - name: Check the daemon the test will use
         run: docker info
 
+      # The Perl image this pulls is named in t/lib/self_test_cli.yml, pinned
+      # there by digest: the job tests the same image on every run rather than
+      # whatever the "perl:5.38" tag points at on the day it runs.
       - name: Run the self test against a real daemon
         run: |
           if [ "$LIVE_TESTING" != "1" ]; then

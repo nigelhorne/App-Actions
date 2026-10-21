@@ -35,6 +35,28 @@ BAIL_OUT("cannot find '$cli_workflow'; the self test would have nothing to run")
 BAIL_OUT("cannot find '$script'; the self test would have nothing to run it with")
     unless -f $script;
 
+# The live CI job pulls the Perl image the second workflow names, so that
+# reference is pinned by digest: a tag would let the image move under the
+# commit that tests against it, which would change what the live run proves
+# without changing anything here.  The test is cheap, runs in both halves, and
+# fails on the checkout that reintroduces a tag rather than in CI weeks later.
+{
+    open my $handle, '<', $cli_workflow
+        or die "Unable to read '$cli_workflow': $!";
+    my $text = do { local $/; <$handle> };
+    close $handle;
+
+    my ($image) = $text =~ /^\s*image:\s*(\S+)\s*$/m;
+    $image = '' unless defined $image;
+
+    ok(length $image, 'the second workflow names the image it runs in');
+    like(
+        $image,
+        qr/\Aperl:5\.38\@sha256:[0-9a-f]{64}\z/,
+        'the Perl image is pinned by digest, so the live run does not follow a tag',
+    );
+}
+
 my $live = defined $ENV{LIVE_TESTING} && length $ENV{LIVE_TESTING}
     && $ENV{LIVE_TESTING} ne '0';
 

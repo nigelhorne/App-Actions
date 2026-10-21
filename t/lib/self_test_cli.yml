@@ -8,13 +8,22 @@
 # not have: they are installed only when they are missing, so the fake daemon
 # (which runs these steps on the host, where they are installed) does not touch
 # the network, and a real container fetches just the one distribution.
+#
+# The image is named by digest and not by the "perl:5.38" tag it came from: a
+# tag is a moving reference, so the live job would run against whatever that
+# tag means on the day it runs, and a rebuilt Perl image would change what the
+# test proves without a commit.  The digest below is the multi-architecture
+# index the tag resolved to on 2026-07-14, the linux/amd64 image among them.
+# To move it on deliberately, read the current digest with
+# "docker buildx imagetools inspect perl:5.38" and replace it here;
+# t/self_test.t fails if the reference is not pinned this way.
 name: Self test CLI
 on: push
 jobs:
   self-test-cli:
     runs-on: ubuntu-latest
     container:
-      image: perl:5.38
+      image: perl:5.38@sha256:587c0c65838dca2fa760e0a0ab169f7260894f208e68f38535ca644f397470c7
     steps:
       - name: Make the tool's dependencies available
         run: |

@@ -288,3 +288,9 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       A command built from the control markers keeps the emulation, and so
       does a host with no POSIX shell, which is how the suite still passes on
       Windows.
+    - Pin the Perl image the second self test runs in by digest rather than by
+      tag.  The Live Docker job pulls the image t/lib/self_test_cli.yml names,
+      so "perl:5.38" would let the tag move under the commit that tests
+      against it, and the live run would prove a different image without a
+      commit to say so.  t/self_test.t now fails when that reference stops
+      being a digest, so the tag cannot quietly come back.

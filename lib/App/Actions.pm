@@ -353,7 +353,9 @@ proves the command surface, and F<t/lib/self_test_cli.yml>, which runs
 C<action-run schema> and C<action-run validate> inside a Perl image, so the
 tool is exercised where it is being tested rather than only from the checkout
 that started it.  That image gets the tool's dependencies only when it does
-not have them, so the fake run stays off the network.  The
+not have them, so the fake run stays off the network.  It is named by digest
+rather than by the C<perl:5.38> tag, so the live job pulls the same image
+every time instead of whatever that tag points at on the day it runs.  The
 test says which half it ran: with C<LIVE_TESTING=1> it reports that the
 workflow is in a real container, and without it that the steps ran against the
 fake and the container path was not exercised.
