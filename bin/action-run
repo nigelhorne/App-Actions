@@ -15,6 +15,7 @@ BEGIN {
 }
 
 use App::Actions;
+use App::Actions::Cache;
 use App::Actions::Check;
 use App::Actions::Process ();
 use App::Actions::Schema;
@@ -34,6 +35,7 @@ my $dry_run;
 my $explain;
 my $list;
 my $keep;
+my $prune;
 # Images are kept when a run finishes by default: they are the download
 # cache, so a second run of the same workflow starts from them instead of
 # fetching them again.  --no-keep-images removes the ones this run pulled.
@@ -65,6 +67,7 @@ GetOptions(
     'explain'        => \$explain,
     'list'           => \$list,
     'keep|k'         => \$keep,
+    'prune'          => \$prune,
     'keep-images!'   => \$keep_images,
     'strict-actions' => \$strict_actions,
     'skip-check'     => \$skip_check,
@@ -108,8 +111,17 @@ if (!defined $parallel) {
 
 my $command = 'run';
 if (@ARGV && ($ARGV[0] eq 'check' || $ARGV[0] eq 'preflight'
-        || $ARGV[0] eq 'schema' || $ARGV[0] eq 'validate')) {
+        || $ARGV[0] eq 'schema' || $ARGV[0] eq 'validate'
+        || $ARGV[0] eq 'cache')) {
     $command = shift @ARGV;
+}
+
+if ($prune && $command ne 'cache') {
+    pod2usage(
+        -exitval => 2,
+        -verbose => 0,
+        -message => "--prune is only used by the cache command\n",
+    );
 }
 
 # Before the commands run: an explain run reports the containers a workflow
@@ -224,6 +236,39 @@ if ($command eq 'validate') {
     }
 
     print "'$path' is a valid $name document (schema version $schema->{version})\n";
+    exit 0;
+}
+
+# The image cache is what action-run keeps between runs, so this command is
+# about the daemon's images rather than a workflow: no workflow file, no
+# project directory.  Listing works without a daemon (the sizes are then
+# unknown), but a prune needs one to know what is still there.
+if ($command eq 'cache') {
+    if (@ARGV) {
+        pod2usage(
+            -exitval => 2,
+            -verbose => 0,
+            -message => "Usage: action-run [options] cache [--prune]\n",
+        );
+    }
+
+    my $cache  = App::Actions::Cache->new;
+    my $docker = App::Actions::Docker->new(bin => $docker_bin, quiet => 1);
+    my $reachable = eval { $docker->check; 1 };
+
+    if ($prune) {
+        if (!$reachable) {
+            print STDERR 'action-run: cannot prune the image cache: ',
+                _error_text($@), "\n";
+            exit 2;
+        }
+
+        my ($text, $exit) = $cache->prune(docker => $docker);
+        print $text;
+        exit $exit;
+    }
+
+    print $cache->report(docker => $reachable ? $docker : undef);
     exit 0;
 }
 
@@ -369,6 +414,7 @@ action-run - run a GitHub Actions workflow locally with Docker
     action-run [options] preflight <workflow.yml> [project-directory]
     action-run [options] schema <check|preflight>
     action-run [options] validate <check|preflight> <document.json>
+    action-run [options] cache [--prune]
 
 =head1 DESCRIPTION
 
@@ -379,12 +425,15 @@ run.  Containers and networks are removed when the run finishes, but the
 images it pulled are kept: they are the next run's cache, so running the same
 workflow again starts from them instead of downloading them again.  Use
 C<--no-keep-images> to remove them, or C<--keep> to keep the containers too.
+C<action-run cache> lists what a run kept and how much disk it takes, and
+C<action-run cache --prune> removes it.
 
 The jobs of one matrix run beside each other, up to the number of processors
 on this machine (C<--parallel>), because a matrix is several independent runs
 that used to wait for one another.  Each job has its own container, network
-and runner directory, and its output is printed in one piece when it
-finishes; C<--parallel=off> goes back to one job at a time.
+and runner directory, and its output is streamed as it is written, prefixed
+with the job it came from - C<[test (n=one)]> - so two jobs working at once
+can be told apart.  C<--parallel=off> goes back to one job at a time.
 
 The project directory is optional when the workflow lives inside a
 C<.github/workflows> directory; the repository root is inferred in that case.
@@ -617,6 +666,33 @@ another machine, where Docker and the workflow are not available:
     action-run preflight --json .github/workflows/test.yml . > preflight.json
     action-run validate preflight preflight.json
 
+=head2 cache
+
+    action-run [options] cache [--prune]
+
+Lists the images that runs have kept, with the size each one takes on disk and
+when a run last pulled it, and with C<--prune> removes them:
+
+  Cache file: /home/me/.cache/action-run/cache.json
+
+    IMAGE                                  SIZE  LAST USED
+    alpine:3.20                         11.8 MB  2026-10-21 15:04
+    perl:5.38                          157.2 MB  2026-10-21 15:04
+
+  2 images, 169.0 MB on disk.
+
+A run records the images it pulled and kept, so the list names only those,
+not every image on the daemon.  A name is removed from the record only when
+the image is gone or was removed by C<--prune>, so an image deleted outside
+C<action-run> is shown as C<missing> rather than silently forgotten.
+
+Listing works with the daemon switched off: the names and dates are still
+printed and the sizes are reported as unknown.  C<--prune> needs the daemon,
+because it has to know what is still there: an image that has already gone is
+forgotten, one that cannot be removed stays in the record and makes the
+command exit 1, so a second attempt still sees it.  An unreachable daemon
+exits 2 without touching the record.
+
 =head1 OPTIONS
 
 =over 4
@@ -687,6 +763,11 @@ containers to explain and reject it.
 =item B<--list>
 
 List the expanded jobs and exit.
+
+=item B<--prune>
+
+With C<cache>, remove the images a run kept and forget them.  It is rejected
+by every other command.
 
 =item B<--keep>, B<-k>
 
@@ -768,6 +849,14 @@ Show the version.
 The default for C<--pull-concurrency>: how many images are pulled at the same
 time.  The option wins over it, and it wins over the built-in four.
 
+=item C<ACTION_RUN_CACHE_FILE>
+
+Where the image cache record lives.  The default is
+F<$XDG_CACHE_HOME/action-run/cache.json>, or F<~/.cache/action-run/cache.json>
+when C<XDG_CACHE_HOME> is not set, and F<%LOCALAPPDATA%\action-run\cache.json>
+on Windows.  Set it to keep one project's images out of the machine-wide
+record.
+
 =back
 
 =head1 EXAMPLES
@@ -787,11 +876,16 @@ time.  The option wins over it, and it wins over the built-in four.
 
     action-run schema preflight | jq '.version'
 
+    action-run cache
+
+    action-run cache --prune
+
 =head1 EXIT STATUS
 
 0 if every runnable job succeeded, 1 if a job failed, and 2 for a usage,
 Docker, or infrastructure error.  C<check> exits 0 when the environment is
-ready and 2 otherwise.
+ready and 2 otherwise.  C<cache --prune> exits 1 if an image could not be
+removed, because the record still holds it.
 
 70 means a document did not match the schema it was checked against: either
 C<check --json> or C<preflight --json> refused to print one of its own (so

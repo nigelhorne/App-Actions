@@ -16,6 +16,7 @@ use Text::ParseWords qw(shellwords);
 use Time::HiRes qw(sleep);
 
 use App::Actions::Action;
+use App::Actions::Cache;
 use App::Actions::Check;
 use App::Actions::Docker;
 use App::Actions::Expression;
@@ -229,6 +230,9 @@ sub new {
         expression    => App::Actions::Expression->new,
         run_id        => sprintf('%x%04x', time, $$ & 0xffff),
         pulled_images => {},
+        # Where the cache command reads the images this run kept.  Tests point
+        # this at a temporary file so a run does not write to the real cache.
+        cache_file    => $args{cache_file},
         # Every image this run has pulled, including one that was already
         # present and was refreshed by --pull.  --pull downloads each image
         # once per run, so a later check of the same image costs nothing.
@@ -548,6 +552,10 @@ sub preflight {
         " (action-run schema preflight)\n" if $schema_line && !$json;
 
     my $ready = $summary->{ready} && !@failures;
+
+    # The preflight keeps what it pulled, so those images belong in the same
+    # cache record a run writes, and the cache command can report them.
+    $self->_remember_cached_images if $self->{keep_images};
 
     return {
         exit    => $ready ? 0 : 2,
@@ -1695,6 +1703,10 @@ sub _run_instances_parallel {
             $entry->{temp}        = File::Spec->catdir($self->{temp_path}, "job-$slot");
             $entry->{log}         = File::Spec->catfile($self->{temp_path}, "job-$slot.log");
             $entry->{result_path} = File::Spec->catfile($self->{temp_path}, "job-$slot.json");
+            # How much of that log the parent has already shown, and the part
+            # of a line it has not shown yet.
+            $entry->{shown}       = 0;
+            $entry->{pending}     = '';
 
             my $pid = fork();
             if (!defined $pid) {
@@ -1712,6 +1724,10 @@ sub _run_instances_parallel {
             if ($pid == 0) {
                 open STDOUT, '>', $entry->{log} or POSIX::_exit(70);
                 open STDERR, '>&', \*STDOUT or POSIX::_exit(70);
+                # Buffered writes would sit in this child until it exited, and
+                # the parent would have nothing to show while the job runs.
+                STDOUT->autoflush(1);
+                STDERR->autoflush(1);
                 POSIX::_exit($self->_run_parallel_job($entry));
             }
 
@@ -1725,8 +1741,17 @@ sub _run_instances_parallel {
 
     eval {
         while (%running) {
-            my $pid = waitpid(-1, 0);
-            last if $pid <= 0;
+            # The jobs' output is shown as it is written rather than in one
+            # block at the end: waiting for any child to finish means waiting
+            # while it works, and a line it has already printed is worth
+            # reading then.
+            my $pid = waitpid(-1, POSIX::WNOHANG());
+            if (!$pid) {
+                $self->_stream_parallel_log($_) for values %running;
+                sleep 0.05;
+                next;
+            }
+            last if $pid < 0;
 
             my $entry = delete $running{$pid};
             next unless $entry;
@@ -1810,6 +1835,8 @@ sub _run_parallel_job_here {
         or croak "Unable to write '$entry->{log}': $!";
     open STDERR, '>&', \*STDOUT
         or croak 'Unable to duplicate STDOUT';
+    STDOUT->autoflush(1);
+    STDERR->autoflush(1);
 
     $self->_run_parallel_job($entry);
 
@@ -1823,19 +1850,89 @@ sub _run_parallel_job_here {
     return;
 }
 
-# Print what a finished job said and read the result it left behind.
+# Show the part of one job's log the parent has not shown yet, a line at a
+# time, with the job named on each line.  Polled while the jobs run, and called
+# once more when the job finishes to pick up what it wrote before it exited.
+sub _stream_parallel_log {
+    my ($self, $entry) = @_;
+
+    return if $self->{quiet};
+
+    my $log = $entry->{log};
+    return unless defined $log && -f $log;
+
+    open my $handle, '<', $log or return;
+    binmode $handle;
+
+    my $shown = $entry->{shown} || 0;
+    unless (seek($handle, $shown, 0)) {
+        close $handle;
+        return;
+    }
+
+    local $/;
+    my $chunk = <$handle>;
+    close $handle;
+
+    return unless defined $chunk && length $chunk;
+
+    $entry->{shown} = $shown + length $chunk;
+    $entry->{pending} = ($entry->{pending} || '') . $chunk;
+
+    my $prefix = $self->_parallel_prefix($entry);
+    while ($entry->{pending} =~ s/\A([^\n]*)\n//) {
+        my $line = $1;
+        $line =~ s/\r\z//;
+
+        # A blank line stays blank: a prefix on it would be noise rather than
+        # a name for something the job said.
+        if (!length $line) {
+            print "\n";
+            next;
+        }
+
+        print $prefix, $line, "\n";
+    }
+
+    STDOUT->flush;
+
+    return;
+}
+
+# What a finished job left without a newline is still its last line.
+sub _flush_parallel_log {
+    my ($self, $entry) = @_;
+
+    $self->_stream_parallel_log($entry);
+
+    return if $self->{quiet};
+
+    my $pending = defined $entry->{pending} ? $entry->{pending} : '';
+    return unless length $pending;
+
+    $entry->{pending} = '';
+    $pending =~ s/\r\z//;
+
+    print $self->_parallel_prefix($entry), $pending, "\n";
+    STDOUT->flush;
+
+    return;
+}
+
+sub _parallel_prefix {
+    my ($self, $entry) = @_;
+
+    my $name = $entry->{plan}{display_name};
+    $name = '' unless defined $name;
+
+    return "[$name] ";
+}
+
+# Read the result a finished job left behind.
 sub _collect_parallel_job {
     my ($self, $entry) = @_;
 
-    my $log = $entry->{log};
-    if (defined $log && -f $log) {
-        open my $handle, '<', $log
-            or croak "Unable to read '$log': $!";
-        my $text = do { local $/; <$handle> };
-        close $handle;
-
-        print $text if defined $text && length $text && !$self->{quiet};
-    }
+    $self->_flush_parallel_log($entry);
 
     my $path = $entry->{result_path};
     return unless defined $path && -s $path;
@@ -3545,6 +3642,8 @@ sub _cleanup {
 
     return if $self->{cleaned_up}++;
 
+    $self->_remember_cached_images if $self->{keep_images};
+
     if ($self->{keep}) {
         if (@{ $self->{containers} } || @{ $self->{networks} } || $self->{temp_path}) {
             print "Kept Docker resources:\n" unless $self->{quiet};
@@ -3571,6 +3670,31 @@ sub _cleanup {
     if ($self->{temp_path} && -d $self->{temp_path}) {
         eval { remove_tree($self->{temp_path}); };
     }
+
+    return;
+}
+
+# The images this run pulled are its cache, so remember them for the cache
+# command.  A failed record must not fail a run that otherwise worked: the
+# images are still on disk, and the next run records them again.
+sub _remember_cached_images {
+    my ($self) = @_;
+
+    my @images = sort keys %{ $self->{pulled_images} };
+    return unless @images;
+    return if $self->{dry_run};
+
+    my $error = eval {
+        App::Actions::Cache->new(
+            file => $self->{cache_file},
+        )->remember(@images);
+        1;
+    };
+
+    return if $error;
+
+    warn "action-run: could not update the image cache: $@\n"
+        if $self->{verbose};
 
     return;
 }
@@ -3711,11 +3835,13 @@ C<keep> for debugging, which keeps the containers and networks as well.
 The jobs of one matrix run beside each other, up to C<parallel> at a time,
 when the host can fork and the run is not one that keeps its containers.  Each
 job gets its own runner directory, network and containers, so two jobs cannot
-write over each other's step files, and each job's output is printed in one
-piece when it finishes rather than mixed into the others'.  C<parallel>
-defaults to 1 in the library; L<action-run> sets it to the number of
-processors unless C<--parallel> says otherwise, and the workflow's
-C<strategy.max-parallel> still caps it.
+write over each other's step files.  Each job's output is streamed as it is
+written, prefixed with the job it came from - C<[test (n=one)]> - so lines
+from jobs working at the same moment can be told apart, and a C<docker://>
+action's log is shown while it runs.  C<parallel> defaults to 1 in the
+library; L<action-run> sets it to the number of processors unless
+C<--parallel> says otherwise, and the workflow's C<strategy.max-parallel>
+still caps it.
 
 =head1 METHODS
 

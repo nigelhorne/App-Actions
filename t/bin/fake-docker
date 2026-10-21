@@ -65,7 +65,18 @@ if ($command eq 'image') {
     my $subcommand = shift @args || '';
     if ($subcommand eq 'inspect') {
         my $image = $args[-1];
-        exit(-e _image_marker($image) ? 0 : 1);
+        my $exists = -e _image_marker($image) ? 1 : 0;
+
+        # The image cache asks for the size this way, one image at a time.
+        # FAKE_IMAGE_SIZE lets a test choose it; the default is large enough
+        # to be reported in megabytes rather than bytes.
+        if ($exists && grep { /Size/ } @args) {
+            my $size = $ENV{FAKE_IMAGE_SIZE};
+            $size = 123_456_789 if !defined $size || $size !~ /\A\d+\z/;
+            print "$size\n";
+        }
+
+        exit $exists ? 0 : 1;
     }
     if ($subcommand eq 'rm') {
         my $image = $args[-1];

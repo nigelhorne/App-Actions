@@ -112,6 +112,26 @@ sub image_exists {
     return $rc == 0 ? 1 : 0;
 }
 
+# The size of an image in bytes, or undef when the daemon does not have it.
+# This is what the image cache reports, so it must not be an error for the
+# image to be absent: an image removed outside the tool is a fact to show, not
+# a reason to fail.
+sub image_size {
+    my ($self, $image) = @_;
+
+    return undef if $self->{dry_run};
+
+    my ($output, $rc) = $self->capture_silent(
+        'image', 'inspect', '--format', '{{.Size}}', $image,
+    );
+    return undef if $rc != 0;
+
+    $output = '' unless defined $output;
+    $output =~ s/\s+//g;
+
+    return $output =~ /\A\d+\z/ ? $output + 0 : undef;
+}
+
 sub pull {
     my ($self, $image) = @_;
 

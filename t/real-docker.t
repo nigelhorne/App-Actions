@@ -30,6 +30,11 @@ my $image  = defined $ENV{LIVE_TESTING_IMAGE} && length $ENV{LIVE_TESTING_IMAGE}
     ? $ENV{LIVE_TESTING_IMAGE}
     : 'alpine:3.20';
 
+# A live run records the images it kept; keep that record out of the test
+# host's real image cache.
+local $ENV{ACTION_RUN_CACHE_FILE}
+    = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+
 # Windows writes CRLF when output is redirected to a file, and a few of the
 # matches below anchor on the end of a line.
 sub useful_text {

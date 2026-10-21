@@ -28,6 +28,11 @@ plan skip_all => 'set LIVE_TESTING=1 to exercise the preflight against a real Do
     unless $enabled;
 
 my $docker = defined $ENV{DOCKER} && length $ENV{DOCKER} ? $ENV{DOCKER} : 'docker';
+
+# A preflight keeps the images it pulls and records them, so point that record
+# at a temporary file rather than the test host's real image cache.
+local $ENV{ACTION_RUN_CACHE_FILE}
+    = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
 my $image  = defined $ENV{LIVE_TESTING_IMAGE} && length $ENV{LIVE_TESTING_IMAGE}
     ? $ENV{LIVE_TESTING_IMAGE}
     : 'alpine:3.20';

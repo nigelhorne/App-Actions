@@ -309,9 +309,11 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       processors on the machine, which is what action-run now does by default;
       --parallel=off, or parallel => 1 in the library, runs them one at a time.
       Each job is a forked process with its own runner directory, network and
-      containers, so two jobs cannot write over each other's step scripts,
-      and its output is printed in one piece when it finishes rather than
-      mixed into the others'.  A job that fails still stops the jobs that
+      containers, so two jobs cannot write over each other's step scripts.
+      Its output is streamed while it runs, every line prefixed with the job
+      it came from - "[test (n=one)]" - so jobs working at the same moment can
+      still be told apart, and the run is read as it happens rather than one
+      block per job at the end.  A job that fails still stops the jobs that
       have not started when fail-fast is on, strategy.max-parallel still caps
       the number, and the summary keeps its rows in job order.  A run that
       keeps its containers, a dry run, an explain run and Windows stay

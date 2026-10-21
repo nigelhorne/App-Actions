@@ -24,6 +24,11 @@ my $workflow = File::Spec->catfile($root, 't', 'lib', 'self_test.yml');
 my $cli_workflow = File::Spec->catfile($root, 't', 'lib', 'self_test_cli.yml');
 my $script   = File::Spec->catfile($root, 'bin', 'action-run');
 
+# Every run in this file goes through the command, which records the images it
+# kept; that record belongs in a temporary file, not the real cache.
+local $ENV{ACTION_RUN_CACHE_FILE}
+    = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+
 # The workflows and the command are part of the distribution, so one missing is
 # a packaging fault rather than an environment without Docker: it is worth
 # failing for even when the run would be skipped, because the suite would

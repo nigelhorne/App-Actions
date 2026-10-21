@@ -39,6 +39,17 @@ steps are honoured.  If an image has no `sudo` and the container is running
 as root, a small `sudo` shim is placed on `PATH` so that steps such as
 `sudo apt update` work locally.
 
+The jobs of one matrix run beside each other, up to the number of processors
+on the machine (`parallel`, or `--parallel` on the command), so a matrix of
+independent jobs does not wait for one container after another.  Each job gets
+its own runner directory as well as its own network and containers, so two
+jobs cannot write over each other's step scripts or environment files, and its
+output is streamed as it is written, prefixed with the job it came from
+(`[test (n=one)]`), so two jobs working at once can still be told apart.
+`--parallel=off` runs them one at a time, and so do a run that keeps its
+containers, a dry run, an explain run and Windows, where `fork()` is not
+reliable.
+
 The host may run UNIX or Windows; only the containers are Linux.  Command
 output is captured without `fork` or a piped `open`, and paths, volumes and
 permissions are handled in a platform-neutral way, so the same code and test

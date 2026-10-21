@@ -6,6 +6,7 @@ use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use File::Spec;
 use File::Temp qw(tempdir);
+use Time::HiRes ();
 
 use JSON::PP ();
 
@@ -13,6 +14,11 @@ my $root = File::Spec->rel2abs(File::Spec->catdir(dirname(__FILE__), '..'));
 my $lib = File::Spec->catdir($root, 'lib');
 my $script = File::Spec->catfile($root, 'bin', 'action-run');
 my $fake_docker = File::Spec->catfile($root, 't', 'bin', 'fake-docker');
+
+# The images a run keeps are recorded for "action-run cache"; point that
+# record at a temporary file so the suite does not touch the real cache.
+local $ENV{ACTION_RUN_CACHE_FILE}
+    = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
 
 sub make_project {
     my ($yaml) = @_;
@@ -190,6 +196,68 @@ unlike($run_out, qr/^ {2}mount\s/m, 'the environment probe is silent when it pas
     is($off_exit, 0, '--parallel=off runs the workflow');
     is($off_err, '', '--parallel=off reports no error');
     like($off_out, qr/Workflow succeeded/, '--parallel=off reaches the summary');
+}
+
+# The output arrives while the jobs run rather than in one block at the end.
+# Each job prints before it sleeps, and the line is read from the pipe while
+# the job is still working; a buffered implementation would show every line at
+# the same moment.
+SKIP: {
+    skip 'parallel jobs need a reliable fork()', 3 if $^O eq 'MSWin32';
+
+    my $stream_yaml = <<'YAML';
+name: Streaming
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        n: [one, two]
+    steps:
+      - run: |
+          echo "starting ${{ matrix.n }}"
+          sleep 1
+          echo "finishing ${{ matrix.n }}"
+YAML
+
+    my ($stream_project, $stream_workflow) = make_project($stream_yaml);
+    my $stream_state = tempdir(CLEANUP => 1);
+    local $ENV{FAKE_DOCKER_STATE} = $stream_state;
+    local $ENV{FAKE_DOCKER_LOG}   = File::Spec->catfile($stream_state, 'stream.log');
+
+    my $start = Time::HiRes::time();
+
+    open my $pipe, '-|', $^X, '-I' . $lib, $script,
+        '--parallel=2', '--docker', $fake_docker, $stream_workflow, $stream_project
+        or die "Unable to run action-run: $!";
+
+    my ($first_job_line, @lines);
+    while (my $line = <$pipe>) {
+        $line = useful_text($line);
+        chomp $line;
+        push @lines, $line;
+        $first_job_line = Time::HiRes::time() - $start
+            if !defined $first_job_line && $line =~ /^\[test \(n=/;
+    }
+    close $pipe;
+
+    my $exit  = $? >> 8;
+    my $total = Time::HiRes::time() - $start;
+
+    is($exit, 0, 'the streaming run succeeds');
+    ok(defined $first_job_line,
+        'a job line names the job it came from');
+
+    # Each job sleeps a second after printing, so a block printed at the end
+    # would put its first line at the end too.
+    ok(
+        defined $first_job_line && $total - $first_job_line > 0.4,
+        sprintf(
+            'the first job line arrived %.2fs before the run finished',
+            defined $first_job_line ? $total - $first_job_line : 0,
+        ),
+    );
 }
 
 {

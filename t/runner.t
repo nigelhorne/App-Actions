@@ -14,6 +14,11 @@ my $fake_docker = File::Spec->rel2abs(
     File::Spec->catfile(dirname(__FILE__), 'bin', 'fake-docker'),
 );
 
+# A run records the images it kept for "action-run cache"; keep that record in
+# a temporary file so the suite never writes to the machine-wide cache.
+local $ENV{ACTION_RUN_CACHE_FILE}
+    = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+
 # Windows writes CRLF when output is redirected to a file, and several tests
 # match against the end of a line.
 sub useful_text {
@@ -252,10 +257,11 @@ jobs:
         n: [one, two, three]
     steps:
       - run: sleep 1
+      - run: echo "job ${{ matrix.n }}"
 YAML
 
 SKIP: {
-    skip 'jobs run one at a time where fork() is not reliable', 2
+    skip 'jobs run one at a time where fork() is not reliable', 3
         if $^O eq 'MSWin32';
 
     my $started = Time::HiRes::time();
@@ -274,7 +280,17 @@ SKIP: {
             $parallel_seconds, $serial_seconds,
         ),
     );
+    like(
+        $together->{stdout},
+        qr/^\[test \(n=one\)\] job one$/m,
+        'each line of a job\'s output names the job it came from',
+    );
 }
+
+# A run that goes one job at a time has no other jobs to tell apart, so its
+# output is left as the job printed it.
+unlike($matrix->{stdout}, qr/^\[test /m,
+    'a sequential run prints no per-job prefixes');
 
 # One job's failure does not let the rest of the matrix start: what was not
 # already running is skipped, as a sequential run with fail-fast skips it.

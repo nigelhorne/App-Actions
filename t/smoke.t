@@ -14,6 +14,10 @@ my $fake_docker = File::Spec->catfile($root, 't', 'bin', 'fake-docker');
 my $state   = tempdir(CLEANUP => 1);
 my $project = tempdir(CLEANUP => 1);
 
+# The smoke script runs workflows, which record the images they keep.
+local $ENV{ACTION_RUN_CACHE_FILE}
+    = File::Spec->catfile($state, 'cache.json');
+
 # The fake Docker keeps its state in FAKE_DOCKER_STATE and is handed to the
 # smoke script through --docker, as a user would hand it their own wrapper.
 local $ENV{FAKE_DOCKER_STATE} = $state;
