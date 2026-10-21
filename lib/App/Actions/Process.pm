@@ -20,6 +20,32 @@ sub exit_code {
     return $status >> 8;
 }
 
+# How many jobs this machine can usefully run at once.  Linux reports the
+# online processors in /proc/cpuinfo, Windows in NUMBER_OF_PROCESSORS, and
+# POSIX systems through sysconf; where none of those answers, one at a time is
+# the safe answer.  The command uses this as the default for --parallel.
+sub cpu_count {
+    if ($^O eq 'MSWin32') {
+        my $count = $ENV{NUMBER_OF_PROCESSORS};
+        return $count + 0 if defined $count && $count =~ /\A[1-9][0-9]*\z/;
+    }
+
+    if (open my $handle, '<', '/proc/cpuinfo') {
+        my $count = 0;
+        while (my $line = <$handle>) {
+            $count++ if $line =~ /\Aprocessor\s*:/;
+        }
+        close $handle;
+
+        return $count if $count > 0;
+    }
+
+    my $count = eval { POSIX::sysconf(POSIX::_SC_NPROCESSORS_ONLN()) };
+    return $count + 0 if defined $count && $count =~ /\A[1-9][0-9]*\z/;
+
+    return 1;
+}
+
 # Run $command (an array reference) and capture its standard output.
 # Standard error is passed through to the caller unless quiet_stderr is true.
 # Returns the output and the exit code.

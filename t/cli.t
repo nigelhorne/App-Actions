@@ -64,6 +64,8 @@ is($help_exit, 0, '--help exits 0');
 like($help_out, qr/Usage:/, '--help prints usage');
 like($help_out, qr/--dry-run/, '--help lists options');
 like($help_out, qr/--explain/, '--help lists the container report');
+like($help_out, qr/--no-keep-images/, '--help lists the way to drop the image cache');
+like($help_out, qr/--parallel/, '--help lists the parallel option');
 
 my $yaml = <<'YAML';
 name: CLI test
@@ -124,6 +126,71 @@ my ($run_out, $run_err, $run_exit) = run_cli('--docker', $fake_docker, $workflow
 is($run_exit, 0, 'CLI run with fake Docker succeeds');
 like($run_out, qr/Workflow succeeded/, 'CLI prints a summary');
 unlike($run_out, qr/^ {2}mount\s/m, 'the environment probe is silent when it passes');
+
+# The images a run pulls are kept by default, so a later run of the same
+# workflow starts from them; --no-keep-images is the opt-out.  Each half gets
+# its own daemon state and log, so one run's image does not answer the other's
+# pull.
+{
+    my $keep_state = tempdir(CLEANUP => 1);
+    my $keep_log   = File::Spec->catfile($keep_state, 'keep.log');
+
+    {
+        local $ENV{FAKE_DOCKER_STATE} = $keep_state;
+        local $ENV{FAKE_DOCKER_LOG}   = $keep_log;
+
+        my (undef, undef, $exit) = run_cli(
+            '--docker', $fake_docker, $workflow, $project,
+        );
+        is($exit, 0, 'a CLI run with the images kept succeeds');
+    }
+
+    open my $kept, '<', $keep_log or die "Unable to read '$keep_log': $!";
+    my $kept_log = useful_text(do { local $/; <$kept> });
+    close $kept;
+
+    unlike($kept_log, qr/^image\trm\t/m,
+        'the images the CLI pulled are still there for the next run');
+
+    my $remove_state = tempdir(CLEANUP => 1);
+    my $remove_log   = File::Spec->catfile($remove_state, 'remove.log');
+
+    local $ENV{FAKE_DOCKER_STATE} = $remove_state;
+    local $ENV{FAKE_DOCKER_LOG}   = $remove_log;
+
+    my (undef, undef, $remove_exit) = run_cli(
+        '--no-keep-images', '--docker', $fake_docker, $workflow, $project,
+    );
+    is($remove_exit, 0, '--no-keep-images runs the workflow');
+
+    open my $removed, '<', $remove_log or die "Unable to read '$remove_log': $!";
+    my $removed_log = useful_text(do { local $/; <$removed> });
+    close $removed;
+
+    like($removed_log, qr/^image\trm\t-f\t/m,
+        '--no-keep-images removes the images it pulled');
+}
+
+# Jobs run beside each other by default, with the number of processors as the
+# ceiling; --parallel=off is the way back to one at a time.
+{
+    my (undef, $bad_err, $bad_exit) = run_cli(
+        '--parallel', 'soon', $workflow, $project,
+    );
+    is($bad_exit, 2, 'a --parallel value that is not a count is a usage error');
+    like(
+        $bad_err,
+        qr/--parallel must be 'off' or a positive integer/,
+        'the error says what --parallel takes',
+    );
+
+    my ($off_out, $off_err, $off_exit) = run_cli(
+        '--parallel=off', '--docker', $fake_docker, $workflow, $project,
+    );
+    is($off_exit, 0, '--parallel=off runs the workflow');
+    is($off_err, '', '--parallel=off reports no error');
+    like($off_out, qr/Workflow succeeded/, '--parallel=off reaches the summary');
+}
 
 {
     local $ENV{FAKE_OS_TYPE} = 'windows';

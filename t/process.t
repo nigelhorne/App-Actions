@@ -254,4 +254,10 @@ my (undef, $passthrough) = capture {
 };
 is(useful_text($passthrough), "noise\n", 'standard error is passed through by default');
 
+# The default for --parallel: a machine that cannot say how many processors it
+# has still runs one job at a time rather than none.
+my $cores = App::Actions::Process::cpu_count();
+like($cores, qr/\A[1-9][0-9]*\z/, 'the processor count is a positive integer');
+ok($cores >= 1, 'the processor count is at least one');
+
 done_testing;

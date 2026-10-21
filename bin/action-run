@@ -16,6 +16,7 @@ BEGIN {
 
 use App::Actions;
 use App::Actions::Check;
+use App::Actions::Process ();
 use App::Actions::Schema;
 
 my @job_filters;
@@ -33,10 +34,14 @@ my $dry_run;
 my $explain;
 my $list;
 my $keep;
-my $keep_images;
+# Images are kept when a run finishes by default: they are the download
+# cache, so a second run of the same workflow starts from them instead of
+# fetching them again.  --no-keep-images removes the ones this run pulled.
+my $keep_images = 1;
 my $strict_actions;
 my $skip_check;
 my $pull_concurrency;
+my $parallel;
 my $json;
 my $verbose;
 my $quiet;
@@ -60,10 +65,11 @@ GetOptions(
     'explain'        => \$explain,
     'list'           => \$list,
     'keep|k'         => \$keep,
-    'keep-images'    => \$keep_images,
+    'keep-images!'   => \$keep_images,
     'strict-actions' => \$strict_actions,
     'skip-check'     => \$skip_check,
     'pull-concurrency=s' => \$pull_concurrency,
+    'parallel=s'     => \$parallel,
     'json'           => \$json,
     'verbose|v'      => \$verbose,
     'quiet|q'        => \$quiet,
@@ -82,6 +88,21 @@ if ($version) {
 
 if ($pull && $no_pull) {
     print STDERR "action-run: --pull and --no-pull cannot be used together\n";
+    exit 2;
+}
+
+# How many matrix jobs to run at once.  The default is what this machine has:
+# a wide matrix that downloads one image and waits for it is otherwise idle
+# cores.  "off" runs them one after another, as every run used to.
+my $parallel_jobs;
+if (!defined $parallel) {
+    $parallel_jobs = App::Actions::Process::cpu_count();
+} elsif ($parallel =~ /\A(?:off|no|false|0)\z/i) {
+    $parallel_jobs = 1;
+} elsif ($parallel =~ /\A([1-9][0-9]*)\z/) {
+    $parallel_jobs = $1 + 0;
+} else {
+    print STDERR "action-run: --parallel must be 'off' or a positive integer, not '$parallel'\n";
     exit 2;
 }
 
@@ -244,6 +265,7 @@ my $actions = eval {
         strict_actions => $strict_actions,
         skip_check    => $skip_check,
         pull_concurrency => $pull_concurrency,
+        parallel      => $parallel_jobs,
         docker_bin    => $docker_bin,
     );
 };
@@ -353,8 +375,16 @@ action-run - run a GitHub Actions workflow locally with Docker
 C<action-run> reads a GitHub Actions workflow file and executes its Linux jobs
 inside Docker.  Each job gets a private Docker network, any service containers
 declared by the workflow, and a long-lived job container in which each step is
-run.  Containers, networks, and images pulled by the run are removed when the
-run finishes.
+run.  Containers and networks are removed when the run finishes, but the
+images it pulled are kept: they are the next run's cache, so running the same
+workflow again starts from them instead of downloading them again.  Use
+C<--no-keep-images> to remove them, or C<--keep> to keep the containers too.
+
+The jobs of one matrix run beside each other, up to the number of processors
+on this machine (C<--parallel>), because a matrix is several independent runs
+that used to wait for one another.  Each job has its own container, network
+and runner directory, and its output is printed in one piece when it
+finishes; C<--parallel=off> goes back to one job at a time.
 
 The project directory is optional when the workflow lives inside a
 C<.github/workflows> directory; the repository root is inferred in that case.
@@ -662,9 +692,13 @@ List the expanded jobs and exit.
 
 Keep containers, networks, images, and the temporary directory for debugging.
 
-=item B<--keep-images>
+=item B<--keep-images>, B<--no-keep-images>
 
-Remove containers and networks but keep images that were pulled.
+Keep the images the run pulled, so running the workflow again uses them
+instead of downloading them again.  This is the default.  C<--no-keep-images>
+removes the images this run pulled once its containers and networks are gone,
+which is what a one-off image, or a machine that should not accumulate them,
+wants.
 
 =item B<--strict-actions>
 
@@ -685,6 +719,18 @@ still prepares them, so it can be used to warm the images without probing.
 Use it when the probes do not apply, for example when the project directory
 lives on a network share that the daemon cannot mount but the workflow does
 not need it.
+
+=item B<--parallel> I<number>, B<--parallel=off>
+
+How many jobs of a matrix may run at the same time.  The default is the
+number of processors on this machine, so a matrix of independent jobs uses the
+machine rather than waiting on one container after another.  C<--parallel=off>
+runs them one at a time, which is what to use when the jobs compete for
+something a unit of concurrency cannot see, such as a fixed port or a service
+that is shared.  The workflow's own C<strategy.max-parallel> still caps the
+number.  A run that keeps its containers (C<--keep>), a dry run and an explain
+run always go one at a time, and so does Windows, where C<fork()> is not
+reliable.
 
 =item B<--pull-concurrency> I<number>
 

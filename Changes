@@ -294,3 +294,39 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       against it, and the live run would prove a different image without a
       commit to say so.  t/self_test.t now fails when that reference stops
       being a digest, so the tag cannot quietly come back.
+    - Keep the images a run pulls instead of removing them when it finishes.
+      They are the next run's cache: a second run of the same workflow starts
+      from them rather than downloading the whole matrix again, which is what
+      made every rerun of a job pay for its images.  --no-keep-images restores
+      the removal for a one-off image, and keep_images => 0 does the same for
+      a caller of the library.  The image the environment probe pulls when it
+      starts its container counts as pulled by the run, so the opt-out removes
+      that one too rather than leaving the first image behind.  The test suite
+      now runs the same workflow twice against one daemon state and asserts
+      that the second run pulls nothing, and that a run told not to keep its
+      images removes the one the probe fetched.
+    - Run the jobs of one matrix beside each other, up to the number of
+      processors on the machine, which is what action-run now does by default;
+      --parallel=off, or parallel => 1 in the library, runs them one at a time.
+      Each job is a forked process with its own runner directory, network and
+      containers, so two jobs cannot write over each other's step scripts,
+      and its output is printed in one piece when it finishes rather than
+      mixed into the others'.  A job that fails still stops the jobs that
+      have not started when fail-fast is on, strategy.max-parallel still caps
+      the number, and the summary keeps its rows in job order.  A run that
+      keeps its containers, a dry run, an explain run and Windows stay
+      sequential, and a job that dies before reporting can leave its
+      container behind, which the documentation says.
+    - Make the suite pass on Windows again, which three unrelated assumptions
+      had broken.  t/schema.t injected a drifted schema by finding a "1;"
+      line ending in LF, which a Windows checkout does not have, so it died
+      where it meant to run a check - and the pre-commit hook, which runs the
+      same test against the staged snapshot, then refused a commit it should
+      have passed.  The copy is now read and written byte for byte and
+      normalised to LF before the injection.  The fake Docker printed a
+      default log line for a container with none, so the tests that ask for
+      silence by setting FAKE_CONTAINER_LOGS to an empty string got invented
+      output, because Windows deletes an environment variable set to nothing;
+      absence now means no output.  The smoke test's failing-docker wrapper
+      used exec(), which on Windows starts the program and returns, so the
+      output under test raced the wrapper's exit; it now waits with system().

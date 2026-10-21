@@ -114,13 +114,25 @@ is($spaced_out, "Wrapper version 1.0\n", 'its output is captured');
     is($daemon->container_log_text('run-svc-1'), "out\nerr\n",
         'its last output is returned with standard error merged in');
 
+    {
+        # No output at all is said by leaving the variables out.  A test that
+        # sets them to an empty string gets the same thing on Unix, but Windows
+        # cannot hold an empty environment variable, so absence is the form
+        # that works on both.
+        local $ENV{FAKE_CONTAINER_LOGS};
+        local $ENV{FAKE_CONTAINER_ERR};
+
+        is($daemon->container_log_text('run-svc-1'), '',
+            'a stopped container that printed nothing yields no quotation');
+    }
+
     ok($daemon->container_running('run-job-1'), 'a running container is running');
     is($daemon->container_exit_code('run-job-1'), 0, 'a running container has status 0');
     is($daemon->container_status('run-job-1'), 'running', 'a running container reports its state');
     is($daemon->container_restart_count('run-job-1'), 0,
         'a container that has stayed up has not been restarted');
-    is($daemon->container_log_text('run-job-1'), "fake container logs\n",
-        'a running container logs as before');
+    is($daemon->container_log_text('run-job-1'), '',
+        'a running container has no log of its own to quote');
 
     is($daemon->container_status('run-svc-1'), 'exited',
         'a stopped container reports the state it stopped in');

@@ -110,6 +110,7 @@ sub _runner {
         pull_concurrency => exists $overrides{pull_concurrency}
             ? $overrides{pull_concurrency}
             : $self->{pull_concurrency},
+        parallel      => exists $overrides{parallel} ? $overrides{parallel} : $self->{parallel},
         docker        => $overrides{docker} || $self->{docker},
         docker_bin    => exists $overrides{docker_bin} ? $overrides{docker_bin} : $self->{docker_bin},
     );
@@ -168,9 +169,9 @@ back, stops the run with the state and restart count the daemon reports and
 the last lines the container printed.  A container the daemon refuses to start
 is reported the same way: its message is quoted and the image, entrypoint or
 published port it names is called out, because there is nothing of the
-container's own to quote.  When a job finishes, its containers and
-network are removed; images that this run pulled are removed at the end as
-well.  The C<GITHUB_ENV>, C<GITHUB_PATH>,
+container's own to quote.  When a job finishes, its containers and network are
+removed; the images the run pulled are kept, as the next run's cache, unless
+C<keep_images> is set to a false value.  The C<GITHUB_ENV>, C<GITHUB_PATH>,
 C<GITHUB_OUTPUT>, C<GITHUB_STATE>, and C<GITHUB_STEP_SUMMARY> files written by
 steps are honoured.  If an image has no C<sudo> and the container is running
 as root, a small C<sudo> shim is placed on C<PATH> so that steps such as
@@ -210,10 +211,15 @@ C<.github/workflows> directory; the repository root is then used.
 Options include C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>, C<env>,
 C<secrets>, C<dry_run>, C<explain>, C<verbose>, C<quiet>, C<keep>,
 C<keep_images>, C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>,
-C<pull_concurrency>, C<docker>, and C<docker_bin>.  C<pull_concurrency> says
+C<pull_concurrency>, C<parallel>, C<docker>, and C<docker_bin>.  C<parallel>
+says how many jobs of one matrix may run at the same time; it is 1 unless it
+is set, and C<action-run> sets it to the number of processors unless
+C<--parallel> says otherwise.  C<pull_concurrency> says
 how many images may be pulled at the same time; it defaults to
 C<ACTION_RUN_PULL_CONCURRENCY> from the environment, and to four when that is
-not set or empty.  It must be a positive integer.
+not set or empty.  It must be a positive integer.  C<keep_images> defaults to
+true: the images a run pulls stay behind as the next run's cache, and a false
+value removes the ones the run itself pulled when it finishes.
 
 C<explain> is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per

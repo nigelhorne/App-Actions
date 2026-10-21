@@ -31,9 +31,9 @@ back, stops the run with the state and restart count the daemon reports and
 the last lines the container printed.  A container the daemon refuses to start
 is reported the same way: its message is quoted and the image, entrypoint or
 published port it names is called out, because there is nothing of the
-container's own to quote.  When a job finishes, its containers and
-network are removed; images that this run pulled are removed at the end as
-well.  The `GITHUB_ENV`, `GITHUB_PATH`,
+container's own to quote.  When a job finishes, its containers and network are
+removed; the images the run pulled are kept, as the next run's cache, unless
+`keep_images` is set to a false value.  The `GITHUB_ENV`, `GITHUB_PATH`,
 `GITHUB_OUTPUT`, `GITHUB_STATE`, and `GITHUB_STEP_SUMMARY` files written by
 steps are honoured.  If an image has no `sudo` and the container is running
 as root, a small `sudo` shim is placed on `PATH` so that steps such as
@@ -75,10 +75,15 @@ my $actions = App::Actions->new(
 Options include `jobs`, `image`, `perl_image`, `platform`, `user`, `env`,
 `secrets`, `dry_run`, `explain`, `verbose`, `quiet`, `keep`,
 `keep_images`, `pull`, `no_pull`, `strict_actions`, `skip_check`,
-`pull_concurrency`, `docker`, and `docker_bin`.  `pull_concurrency` says
+`pull_concurrency`, `parallel`, `docker`, and `docker_bin`.  `parallel`
+says how many jobs of one matrix may run at the same time; it is 1 unless it
+is set, and `action-run` sets it to the number of processors unless
+`--parallel` says otherwise.  `pull_concurrency` says
 how many images may be pulled at the same time; it defaults to
 `ACTION_RUN_PULL_CONCURRENCY` from the environment, and to four when that is
-not set or empty.  It must be a positive integer.
+not set or empty.  It must be a positive integer.  `keep_images` defaults to
+true: the images a run pulls stay behind as the next run's cache, and a false
+value removes the ones the run itself pulled when it finishes.
 
 `explain` is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per
@@ -229,8 +234,8 @@ proves the command surface, and `t/lib/self_test_cli.yml`, which runs
 tool is exercised where it is being tested rather than only from the checkout
 that started it.  That image gets the tool's dependencies only when it does
 not have them, so the fake run stays off the network.  It is named by digest
-rather than by the `perl:5.38` tag, so the live job pulls the same image every
-time instead of whatever that tag points at on the day it runs.  The
+rather than by the `perl:5.38` tag, so the live job pulls the same image
+every time instead of whatever that tag points at on the day it runs.  The
 test says which half it ran: with `LIVE_TESTING=1` it reports that the
 workflow is in a real container, and without it that the steps ran against the
 fake and the container path was not exercised.

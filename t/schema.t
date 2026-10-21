@@ -64,6 +64,12 @@ sub drift_schema {
     close $handle;
     $source = '' unless defined $source;
 
+    # A checkout on Windows can carry CRLF line endings, and the module is
+    # found by the line that holds the trailing "1;".  The copy is a scratch
+    # file, so it is normalised to LF and written back byte for byte; the
+    # module it is made from is not touched.
+    $source =~ s/\r\n/\n/g;
+
     my $injection = <<"CODE";
 {
     no warnings 'redefine';
@@ -80,6 +86,7 @@ CODE
         or die "cannot inject a drifted schema into '$path'";
 
     open my $out, '>', $path or die "Unable to write '$path': $!";
+    binmode $out;
     print {$out} $source;
     close $out;
 

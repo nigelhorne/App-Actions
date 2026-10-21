@@ -161,12 +161,15 @@ if ($command eq 'logs') {
         # caller merges them, so the buffered one has to go first for the
         # lines to keep the order the container printed them in.
         local $| = 1;
-        print defined $stdout ? $stdout : "fake container logs\n";
+        print $stdout if defined $stdout;
         print STDERR $stderr if defined $stderr && length $stderr;
         exit 0;
     }
 
-    print "fake container logs\n";
+    # A container that is still up has printed nothing this fake did not see:
+    # an unset FAKE_CONTAINER_LOGS means no output, which is also how a test
+    # asks for none - Windows cannot hold an empty string in the environment,
+    # so setting one there deletes the variable instead.
     exit 0;
 }
 

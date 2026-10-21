@@ -10,6 +10,7 @@ use File::Spec;
 use File::Temp ();
 use IO::Handle ();
 use JSON::PP ();
+use POSIX ();
 use Scalar::Util qw(blessed);
 use Text::ParseWords qw(shellwords);
 use Time::HiRes qw(sleep);
@@ -211,12 +212,20 @@ sub new {
         verbose       => $args{verbose} ? 1 : 0,
         quiet         => $args{quiet} ? 1 : 0,
         keep          => $args{keep} ? 1 : 0,
-        keep_images   => $args{keep_images} ? 1 : 0,
+        # The images a run pulls are its cache: keeping them means the next
+        # run of the same workflow starts from them rather than downloading
+        # them again, so removal is the opt-out and keeping is the default.
+        keep_images   => defined $args{keep_images} ? ($args{keep_images} ? 1 : 0) : 1,
         pull          => $args{pull} ? 1 : 0,
         no_pull       => $args{no_pull} ? 1 : 0,
         strict_actions => $args{strict_actions} ? 1 : 0,
         skip_check    => $args{skip_check} ? 1 : 0,
         pull_concurrency => _pull_concurrency($args{pull_concurrency}),
+        # How many jobs of one matrix may run at the same time.  The library
+        # runs them one at a time unless asked for more; --parallel sets the
+        # command's default to the machine's core count.
+        parallel      => _job_parallelism($args{parallel}),
+        parallel_slots => 0,
         expression    => App::Actions::Expression->new,
         run_id        => sprintf('%x%04x', time, $$ & 0xffff),
         pulled_images => {},
@@ -265,6 +274,17 @@ sub _pull_concurrency {
 
     croak "pull concurrency must be a positive integer, not '$value'"
         unless !ref $value && $value =~ /^[1-9][0-9]*$/;
+
+    return $value + 0;
+}
+
+# How many jobs of one matrix may run at once.  Anything that is not a
+# positive integer means one at a time, which is what a library caller gets
+# unless it asks for more.
+sub _job_parallelism {
+    my ($value) = @_;
+
+    return 1 unless defined $value && !ref $value && $value =~ /\A[1-9][0-9]*\z/;
 
     return $value + 0;
 }
@@ -349,11 +369,28 @@ sub _check_environment {
         quiet      => $self->{verbose} ? 0 : 1,
     );
 
+    # The probe starts a container from the image the run is about to use, and
+    # a daemon that has never seen that image pulls it right there - before the
+    # explicit pull, which then finds it present.  A run told not to keep its
+    # images has to remember that it fetched this one, or the opt-out would
+    # leave it behind.  The extra inspect is only made for such a run.
+    my $probe_image   = $check->image;
+    my $probe_present = 1;
+    if (!$self->{keep_images} && defined $probe_image && length $probe_image) {
+        $probe_present = $self->{docker}->image_exists($probe_image);
+    }
+
     if ($check->run != 0) {
         # die, not croak, and with a trailing newline: the advice should read
         # as a sentence rather than end in " at <file> line <n>".
         die "the environment is not ready; fix what the report above asks for, or pass --skip-check to run anyway\n";
     }
+
+    $self->{pulled_images}{$probe_image} = 1
+        if !$probe_present
+        && defined $probe_image
+        && length $probe_image
+        && $self->{docker}->image_exists($probe_image);
 
     my ($records, $failures) = $self->_prepare_images($instances);
 
@@ -1147,16 +1184,25 @@ sub _write_container_file {
 }
 
 sub _prepare_temp {
-    my ($self) = @_;
-
-    my $temp = File::Temp->newdir('app-actions-XXXXXX', TMPDIR => 1, CLEANUP => 0);
-    $self->{tempdir} = $temp;
-    $self->{temp_path} = "$temp";
+    my ($self, $root) = @_;
 
     # The temp directory contains scripts and environment files, which may
     # contain secrets.  Keep it private unless the caller explicitly asked for
     # a different container user.
     my $directory_mode = defined $self->{user} ? 0777 : 0700;
+
+    if (defined $root && length $root) {
+        # A job running beside another gets its own directory under the run's
+        # temporary root, so two jobs cannot write over each other's step
+        # scripts, environment files or home directory.
+        make_path($root);
+        $self->{temp_path} = $root;
+    } else {
+        my $temp = File::Temp->newdir('app-actions-XXXXXX', TMPDIR => 1, CLEANUP => 0);
+        $self->{tempdir} = $temp;
+        $self->{temp_path} = "$temp";
+    }
+
     chmod $directory_mode, $self->{temp_path};
 
     for my $directory (qw(_temp _tool home scripts env output summary path event bin aptbin)) {
@@ -1399,120 +1445,85 @@ sub _run_base_job {
     my $group_result = 'skipped';
     my $skipped_remaining = 0;
 
-    for my $instance (@$instances) {
-        my $matrix = $instance->{matrix} || {};
-        my $display_name = $self->_redact($instance->{display_name});
-        my $github = $self->_github_context($instance);
-        my $strategy = {
-            'fail-fast'   => $fail_fast,
-            'job-index'   => $instance->{matrix_index},
-            'job-total'   => $instance->{matrix_total},
-            'max-parallel' => $instance->{strategy}{'max-parallel'},
-        };
-        my $context = {
-            github   => $github,
-            matrix   => $matrix,
-            needs    => \%need_results,
-            secrets  => $self->{secrets},
-            vars     => {},
-            inputs   => {},
-            runner   => $self->_runner_context,
-            strategy => $strategy,
-            env      => {},
-            job      => { status => $needs_failed ? 'failure' : 'success' },
-            steps    => {},
-        };
-        my $status = {
-            success   => $needs_failed ? 0 : 1,
-            failure   => $needs_failed ? 1 : 0,
-            cancelled => 0,
-        };
+    # Every instance is planned before any of them runs: in parallel mode the
+    # runnable ones start together, so their conditions have to be decided
+    # first rather than one job at a time.
+    my @plans = map {
+        $self->_plan_instance($_, \%need_results, $needs_failed, $fail_fast)
+    } @$instances;
 
-        my $should_run;
-        if (defined $instance->{if}) {
-            my $condition = eval {
-                $self->{expression}->condition($instance->{if}, $context, $status);
+    my @runnable;
+    for my $plan (@plans) {
+        my $display_name = $plan->{display_name};
+
+        if (defined $plan->{error}) {
+            print STDERR "action-run: unable to evaluate if for '$display_name': $plan->{error}\n"
+                unless $self->{quiet};
+            $group_result = 'failure';
+            $self->{workflow_failed} = 1;
+            push @{ $self->{summary} }, {
+                name   => $plan->{instance}{display_name},
+                result => 'failure',
             };
-            if ($@) {
-                my $error = $@;
-                $error =~ s/\s+$//;
-                print STDERR "action-run: unable to evaluate if for '$display_name': $error\n"
-                    unless $self->{quiet};
-                $group_result = 'failure';
-                $self->{workflow_failed} = 1;
-                push @{ $self->{summary} }, {
-                    name   => $instance->{display_name},
-                    result => 'failure',
-                };
-                next;
-            }
-            $should_run = $condition;
-            # An `if` without a status function gets an implicit success().
-            $should_run = 0 if $should_run && $needs_failed
-                && !_has_status_function($instance->{if});
-        } else {
-            $should_run = $needs_failed ? 0 : 1;
+            next;
         }
 
-        if (!$should_run) {
+        if (!$plan->{should_run}) {
             print "==> Job: $display_name (skipped)\n"
                 unless $self->{quiet};
             push @{ $self->{summary} }, {
-                name   => $instance->{display_name},
+                name   => $plan->{instance}{display_name},
                 result => 'skipped',
             };
             next;
         }
 
-        if ($skipped_remaining) {
-            print "==> Job: $display_name (skipped by fail-fast)\n"
-                unless $self->{quiet};
-            push @{ $self->{summary} }, {
-                name   => $instance->{display_name},
-                result => 'skipped',
-            };
-            next;
-        }
+        $plan->{instance}{needs_results} = \%need_results;
+        push @runnable, $plan;
+    }
 
-        $instance->{needs_results} = \%need_results;
-        $instance->{context} = $context;
+    my $outcomes = $self->_run_instances_parallel(\@runnable, $fail_fast);
 
-        my $result = $self->_run_instance($instance, $context);
+    if ($outcomes) {
+        for my $outcome (@$outcomes) {
+            my $plan = $outcome->{plan};
 
-        my $continue_on_error = 0;
-        if (defined $instance->{'continue-on-error'}) {
-            $continue_on_error = eval {
-                $self->_boolean_value(
-                    $instance->{'continue-on-error'},
-                    $context,
-                    { success => 1, failure => 0, cancelled => 0 },
-                );
-            };
-            if ($@) {
-                my $error = $@;
-                $error =~ s/\s+$//;
-                print STDERR "action-run: unable to evaluate continue-on-error for '$display_name': $error\n"
+            if (!$outcome->{started}) {
+                print "==> Job: $plan->{display_name} (skipped by fail-fast)\n"
                     unless $self->{quiet};
+                push @{ $self->{summary} }, {
+                    name   => $plan->{instance}{display_name},
+                    result => 'skipped',
+                };
+                next;
             }
-        }
 
-        if ($result->{result} eq 'failure') {
-            $group_result = 'failure';
-            if ($continue_on_error) {
-                print "!! Job failed but continue-on-error is set: $display_name\n"
+            my $result = $outcome->{result}
+                || { result => 'failure', reason => 'the job did not report a result' };
+            $self->_record_instance_result(
+                $plan, $result, \$group_result, \$skipped_remaining,
+            );
+        }
+    }
+    else {
+        for my $plan (@runnable) {
+            my $display_name = $plan->{display_name};
+
+            if ($skipped_remaining) {
+                print "==> Job: $display_name (skipped by fail-fast)\n"
                     unless $self->{quiet};
-            } else {
-                $self->{workflow_failed} = 1;
+                push @{ $self->{summary} }, {
+                    name   => $plan->{instance}{display_name},
+                    result => 'skipped',
+                };
+                next;
             }
-            $skipped_remaining = 1 if $fail_fast;
-        } elsif ($result->{result} eq 'success') {
-            $group_result = 'success' if $group_result eq 'skipped';
-        }
 
-        push @{ $self->{summary} }, {
-            name   => $instance->{display_name},
-            result => $result->{result},
-        };
+            my $result = $self->_run_instance($plan->{instance}, $plan->{context});
+            $self->_record_instance_result(
+                $plan, $result, \$group_result, \$skipped_remaining,
+            );
+        }
     }
 
     my $entry = {
@@ -1525,6 +1536,339 @@ sub _run_base_job {
     delete $running->{$base_id};
 
     return $entry;
+}
+
+# Decide whether one matrix instance runs, and with what context.  Planning
+# is separate from running because a parallel group has to decide every
+# condition before it starts anything.
+sub _plan_instance {
+    my ($self, $instance, $need_results, $needs_failed, $fail_fast) = @_;
+
+    my $matrix = $instance->{matrix} || {};
+    my $display_name = $self->_redact($instance->{display_name});
+    my $github = $self->_github_context($instance);
+    my $strategy = {
+        'fail-fast'   => $fail_fast,
+        'job-index'   => $instance->{matrix_index},
+        'job-total'   => $instance->{matrix_total},
+        'max-parallel' => $instance->{strategy}{'max-parallel'},
+    };
+    my $context = {
+        github   => $github,
+        matrix   => $matrix,
+        needs    => $need_results,
+        secrets  => $self->{secrets},
+        vars     => {},
+        inputs   => {},
+        runner   => $self->_runner_context,
+        strategy => $strategy,
+        env      => {},
+        job      => { status => $needs_failed ? 'failure' : 'success' },
+        steps    => {},
+    };
+    my $status = {
+        success   => $needs_failed ? 0 : 1,
+        failure   => $needs_failed ? 1 : 0,
+        cancelled => 0,
+    };
+
+    my $plan = {
+        instance     => $instance,
+        display_name => $display_name,
+        context      => $context,
+        status       => $status,
+        fail_fast    => $fail_fast,
+        max_parallel => $instance->{strategy}{'max-parallel'},
+        should_run   => 1,
+        error        => undef,
+    };
+
+    if (defined $instance->{if}) {
+        my $condition = eval {
+            $self->{expression}->condition($instance->{if}, $context, $status);
+        };
+        if ($@) {
+            my $error = $@;
+            $error =~ s/\s+$//;
+            $plan->{error} = $error;
+            return $plan;
+        }
+
+        $plan->{should_run} = $condition;
+        # An `if` without a status function gets an implicit success().
+        $plan->{should_run} = 0 if $condition && $needs_failed
+            && !_has_status_function($instance->{if});
+    } else {
+        $plan->{should_run} = $needs_failed ? 0 : 1;
+    }
+
+    return $plan;
+}
+
+# Record what one instance's run means for the group: whether it failed, the
+# line the summary gets, and whether fail-fast should stop the jobs after it.
+sub _record_instance_result {
+    my ($self, $plan, $result, $group_result, $skipped_remaining) = @_;
+
+    my $instance     = $plan->{instance};
+    my $context      = $plan->{context};
+    my $display_name = $plan->{display_name};
+
+    my $continue_on_error = 0;
+    if (defined $instance->{'continue-on-error'}) {
+        $continue_on_error = eval {
+            $self->_boolean_value(
+                $instance->{'continue-on-error'},
+                $context,
+                { success => 1, failure => 0, cancelled => 0 },
+            );
+        };
+        if ($@) {
+            my $error = $@;
+            $error =~ s/\s+$//;
+            print STDERR "action-run: unable to evaluate continue-on-error for '$display_name': $error\n"
+                unless $self->{quiet};
+        }
+    }
+
+    if ($result->{result} eq 'failure') {
+        $$group_result = 'failure';
+        if ($continue_on_error) {
+            print "!! Job failed but continue-on-error is set: $display_name\n"
+                unless $self->{quiet};
+        } else {
+            $self->{workflow_failed} = 1;
+        }
+        $$skipped_remaining = 1 if $plan->{fail_fast};
+    } elsif ($result->{result} eq 'success') {
+        $$group_result = 'success' if $$group_result eq 'skipped';
+    }
+
+    push @{ $self->{summary} }, {
+        name   => $instance->{display_name},
+        result => $result->{result},
+    };
+
+    return;
+}
+
+# Run one matrix group's jobs beside each other.  Returns undef when the group
+# is better run one at a time - a single job, a host without a reliable
+# fork(), or a run whose output is a report - so the caller can fall back to
+# the simple loop.  Otherwise returns one outcome per plan, in plan order,
+# saying whether the job was started.
+sub _run_instances_parallel {
+    my ($self, $plans, $fail_fast) = @_;
+
+    return undef unless @$plans > 1;
+
+    my $capacity = $self->{parallel};
+    my $max_parallel = $plans->[0]{max_parallel};
+    if (defined $max_parallel && !ref $max_parallel
+        && $max_parallel =~ /\A[1-9][0-9]*\z/ && $max_parallel < $capacity) {
+        $capacity = $max_parallel + 0;
+    }
+    $capacity = @$plans if $capacity > @$plans;
+
+    return undef if $capacity < 2;
+    return undef if $^O eq 'MSWin32';
+    # A run that keeps its containers has to name them, which only the process
+    # that started them can do, and a dry run or an explain run is a report
+    # whose blocks belong in one order.
+    return undef if $self->{keep} || $self->{dry_run} || $self->{explain};
+
+    my @state = map {
+        { plan => $_, started => 0, result => undef }
+    } @$plans;
+
+    my %running;
+    my $next = 0;
+    my $stopping = 0;
+    my $error;
+
+    my $start = sub {
+        while ($next < @state && keys %running < $capacity) {
+            my $entry = $state[$next++];
+            my $slot  = ++$self->{parallel_slots};
+
+            $entry->{started}     = 1;
+            $entry->{temp}        = File::Spec->catdir($self->{temp_path}, "job-$slot");
+            $entry->{log}         = File::Spec->catfile($self->{temp_path}, "job-$slot.log");
+            $entry->{result_path} = File::Spec->catfile($self->{temp_path}, "job-$slot.json");
+
+            my $pid = fork();
+            if (!defined $pid) {
+                # No child could be created, so this job runs here, with its
+                # output collected rather than mixed into the others'.
+                $self->_run_parallel_job_here($entry);
+                if (!$entry->{result}) {
+                    $stopping = 1;
+                    $error = "job '$entry->{plan}{display_name}' did not run\n"
+                        unless defined $error;
+                }
+                next;
+            }
+
+            if ($pid == 0) {
+                open STDOUT, '>', $entry->{log} or POSIX::_exit(70);
+                open STDERR, '>&', \*STDOUT or POSIX::_exit(70);
+                POSIX::_exit($self->_run_parallel_job($entry));
+            }
+
+            $running{$pid} = $entry;
+        }
+
+        return;
+    };
+
+    $start->();
+
+    eval {
+        while (%running) {
+            my $pid = waitpid(-1, 0);
+            last if $pid <= 0;
+
+            my $entry = delete $running{$pid};
+            next unless $entry;
+
+            $self->_collect_parallel_job($entry);
+
+            if (!$entry->{result}) {
+                # The job died before it could report; the output just printed
+                # is where its own account of the failure is.
+                $stopping = 1;
+                $error = "job '$entry->{plan}{display_name}' did not run\n"
+                    unless defined $error;
+            } elsif ($entry->{result}{result} eq 'failure' && $fail_fast) {
+                $stopping = 1;
+            }
+
+            $start->() unless $stopping;
+        }
+
+        1;
+    } or do {
+        $error = $@;
+    };
+
+    if (defined $error) {
+        # An interrupted or broken run should not leave jobs working behind the
+        # report.  They are killed rather than waited for, which is why a
+        # container they had started can outlive this one.
+        for my $pid (keys %running) {
+            kill 'KILL', $pid;
+            waitpid($pid, 0);
+        }
+
+        die $error;
+    }
+
+    return \@state;
+}
+
+# One job in its own process: its own runner directory, its own log, and its
+# result written where the parent can read it.
+sub _run_parallel_job {
+    my ($self, $entry) = @_;
+
+    my $ok = eval {
+        $self->_prepare_temp($entry->{temp});
+        $self->_build_base_env;
+
+        my $result = $self->_run_instance(
+            $entry->{plan}{instance}, $entry->{plan}{context},
+        );
+        $result->{pulled} = [ sort keys %{ $self->{pulled_images} } ];
+
+        $self->_write_result_file($entry->{result_path}, $result);
+        1;
+    };
+
+    if (!$ok) {
+        my $error = $@ || "job '$entry->{plan}{display_name}' did not run\n";
+        $error =~ s/\s+$//;
+        print STDERR "action-run: $error\n";
+    }
+
+    STDOUT->flush;
+    STDERR->flush;
+
+    return $ok ? 0 : 1;
+}
+
+# The same job, for a host where fork() failed: the output is redirected here
+# rather than in a child, so the run still prints one job's output at a time.
+sub _run_parallel_job_here {
+    my ($self, $entry) = @_;
+
+    open my $saved_stdout, '>&', \*STDOUT
+        or croak 'Unable to duplicate STDOUT';
+    open my $saved_stderr, '>&', \*STDERR
+        or croak 'Unable to duplicate STDERR';
+
+    open STDOUT, '>', $entry->{log}
+        or croak "Unable to write '$entry->{log}': $!";
+    open STDERR, '>&', \*STDOUT
+        or croak 'Unable to duplicate STDOUT';
+
+    $self->_run_parallel_job($entry);
+
+    open STDOUT, '>&', $saved_stdout
+        or croak 'Unable to restore STDOUT';
+    open STDERR, '>&', $saved_stderr
+        or croak 'Unable to restore STDERR';
+
+    $self->_collect_parallel_job($entry);
+
+    return;
+}
+
+# Print what a finished job said and read the result it left behind.
+sub _collect_parallel_job {
+    my ($self, $entry) = @_;
+
+    my $log = $entry->{log};
+    if (defined $log && -f $log) {
+        open my $handle, '<', $log
+            or croak "Unable to read '$log': $!";
+        my $text = do { local $/; <$handle> };
+        close $handle;
+
+        print $text if defined $text && length $text && !$self->{quiet};
+    }
+
+    my $path = $entry->{result_path};
+    return unless defined $path && -s $path;
+
+    open my $handle, '<', $path
+        or croak "Unable to read '$path': $!";
+    my $json = do { local $/; <$handle> };
+    close $handle;
+
+    my $result = eval { JSON::PP->new->decode($json) };
+    return unless ref $result eq 'HASH';
+
+    $entry->{result} = $result;
+
+    # An image a job's own step pulled is this run's image too, so a run told
+    # not to keep its images removes that one as well.
+    for my $image (@{ $result->{pulled} || [] }) {
+        $self->{pulled_images}{$image} = 1;
+    }
+
+    return;
+}
+
+sub _write_result_file {
+    my ($self, $path, $result) = @_;
+
+    open my $handle, '>', $path
+        or croak "Unable to write '$path': $!";
+    print {$handle} JSON::PP->new->canonical->encode($result);
+    close $handle
+        or croak "Unable to write '$path': $!";
+
+    return;
 }
 
 sub _run_instance {
@@ -3359,8 +3703,19 @@ not have, or a published port already in use.  A message that names none of
 those is quoted without a verdict, and one that says nothing is reported as
 silent, so the report never invents a cause.
 
-Containers, networks, and any images that this run pulled are removed when the
-job or run finishes.  Use C<keep> for debugging.
+Containers and networks are removed when the job or run finishes.  The images
+the run pulled are kept by default, because they are the next run's cache;
+C<keep_images> set to a false value removes the ones this run pulled.  Use
+C<keep> for debugging, which keeps the containers and networks as well.
+
+The jobs of one matrix run beside each other, up to C<parallel> at a time,
+when the host can fork and the run is not one that keeps its containers.  Each
+job gets its own runner directory, network and containers, so two jobs cannot
+write over each other's step files, and each job's output is printed in one
+piece when it finishes rather than mixed into the others'.  C<parallel>
+defaults to 1 in the library; L<action-run> sets it to the number of
+processors unless C<--parallel> says otherwise, and the workflow's
+C<strategy.max-parallel> still caps it.
 
 =head1 METHODS
 

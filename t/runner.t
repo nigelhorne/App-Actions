@@ -3,6 +3,7 @@ use warnings;
 use Test::Most;
 use Capture::Tiny qw(capture);
 use File::Basename qw(dirname);
+use Time::HiRes ();
 use File::Path qw(make_path remove_tree);
 use File::Spec;
 use File::Temp qw(tempdir);
@@ -53,6 +54,10 @@ sub remove_kept_dir {
     return;
 }
 
+# Each run writes its own log, so two runs that share a daemon state - the
+# cache test below - do not read each other's commands.
+my $docker_log_count = 0;
+
 sub run_workflow {
     my ($yaml, %options) = @_;
 
@@ -72,8 +77,11 @@ sub run_workflow {
         close $file;
     }
 
-    my $state = tempdir(CLEANUP => 1);
-    my $log   = File::Spec->catfile($state, 'docker.log');
+    # A caller that runs the same workflow twice passes one state directory,
+    # which is what a developer's daemon is between two invocations of the
+    # command: the images the first run pulled are already there for the second.
+    my $state = delete $options{state} || tempdir(CLEANUP => 1);
+    my $log   = File::Spec->catfile($state, 'docker-' . ++$docker_log_count . '.log');
 
     local $ENV{FAKE_DOCKER_STATE} = $state;
     local $ENV{FAKE_DOCKER_LOG}   = $log;
@@ -182,7 +190,7 @@ sub preflight_workflow {
     };
 }
 
-my $matrix = run_workflow(<<'YAML');
+my $matrix_yaml = <<'YAML';
 name: Matrix
 on: push
 jobs:
@@ -204,6 +212,8 @@ jobs:
         run: echo $FROM_STEP
 YAML
 
+my $matrix = run_workflow($matrix_yaml);
+
 is($matrix->{exit}, 0, 'matrix workflow succeeds');
 like($matrix->{stdout}, qr/Perl 5\.38/, 'first matrix job ran');
 like($matrix->{stdout}, qr/Perl 5\.40/, 'second matrix job ran');
@@ -213,8 +223,94 @@ like($matrix->{log}, qr/\t-e\tFROM_STEP=one\t/, 'GITHUB_ENV updates reach later 
 like($matrix->{log}, qr/\t-e\tPATH=\/opt\/fake\/bin:/, 'GITHUB_PATH updates reach later steps');
 like($matrix->{log}, qr/^rm\t-f\t/m, 'containers are removed');
 like($matrix->{log}, qr/^network\trm\t/m, 'networks are removed');
-like($matrix->{log}, qr/^image\trm\t-f\tperl:5\.38$/m, 'pulled Perl 5.38 image is removed');
-like($matrix->{log}, qr/^image\trm\t-f\tperl:5\.40$/m, 'pulled Perl 5.40 image is removed');
+unlike($matrix->{log}, qr/^image\trm\t/m,
+    'the images the run pulled are kept rather than removed');
+
+# The kept images are a cache, not leftovers: a second run of the same
+# workflow against the same daemon downloads nothing at all.
+my $cache_state = tempdir(CLEANUP => 1);
+my $first_cached  = run_workflow($matrix_yaml, state => $cache_state);
+my $second_cached = run_workflow($matrix_yaml, state => $cache_state);
+
+is($first_cached->{exit}, 0, 'the first run of a workflow succeeds');
+is($second_cached->{exit}, 0, 'the second run of the same workflow succeeds');
+like($first_cached->{log}, qr/^pull\tperl:5\.38$/m,
+    'the first run downloads the job image');
+unlike($second_cached->{log}, qr/^pull\t/m,
+    'the second run downloads nothing, because the image was kept');
+
+# A matrix of independent jobs runs beside each other, so the wall clock shows
+# the overlap rather than the sum of the jobs.
+my $slow_matrix = <<'YAML';
+name: Slow matrix
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        n: [one, two, three]
+    steps:
+      - run: sleep 1
+YAML
+
+SKIP: {
+    skip 'jobs run one at a time where fork() is not reliable', 2
+        if $^O eq 'MSWin32';
+
+    my $started = Time::HiRes::time();
+    my $serial = run_workflow($slow_matrix);
+    my $serial_seconds = Time::HiRes::time() - $started;
+
+    $started = Time::HiRes::time();
+    my $together = run_workflow($slow_matrix, parallel => 3);
+    my $parallel_seconds = Time::HiRes::time() - $started;
+
+    is($together->{exit}, 0, 'a matrix run three jobs at a time succeeds');
+    ok(
+        $parallel_seconds < $serial_seconds - 1,
+        sprintf(
+            'the jobs overlapped: %.2fs three at a time, %.2fs one at a time',
+            $parallel_seconds, $serial_seconds,
+        ),
+    );
+}
+
+# One job's failure does not let the rest of the matrix start: what was not
+# already running is skipped, as a sequential run with fail-fast skips it.
+my $fail_fast_matrix = <<'YAML';
+name: Fail fast
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        n: [one, bad, three, four]
+    steps:
+      - run: |
+          if [ "${{ matrix.n }}" = bad ]; then exit 7; fi
+          sleep 1
+YAML
+
+SKIP: {
+    skip 'jobs run one at a time where fork() is not reliable', 3
+        if $^O eq 'MSWin32';
+
+    my $failing = run_workflow($fail_fast_matrix, parallel => 2);
+
+    is($failing->{exit}, 1, 'a failed job fails a parallel matrix');
+    like(
+        $failing->{stdout},
+        qr/^==> Job: test \(n=three\) \(skipped by fail-fast\)$/m,
+        'a job that had not started is skipped when the one beside it failed',
+    );
+    like(
+        $failing->{stdout},
+        qr/^ {2}test \(n=four\)\s+skipped$/m,
+        'the summary records the job fail-fast skipped',
+    );
+}
 
 # A step is a program, so what it prints comes back in the run.  The fake
 # daemon runs step scripts with the host's shell, mapping the paths docker exec
@@ -1042,8 +1138,11 @@ if (defined $temp_dir) {
     remove_kept_dir($line_endings);
 }
 
-my $keep_images = run_workflow(<<'YAML', keep_images => 1);
-name: Keep images
+# Removing the images is the opt-out, which action-run spells
+# --no-keep-images: what this run pulled goes once its containers and networks
+# are gone.
+my $no_cache = run_workflow(<<'YAML', keep_images => 0);
+name: No cache
 on: push
 jobs:
   test:
@@ -1052,9 +1151,23 @@ jobs:
       - run: echo hello
 YAML
 
-is($keep_images->{exit}, 0, 'keep-images workflow succeeds');
-like($keep_images->{log}, qr/^rm\t-f\t/m, 'keep-images still removes containers');
-unlike($keep_images->{log}, qr/^image\trm\t/m, 'keep-images leaves images in place');
+is($no_cache->{exit}, 0, 'a workflow run with the images removed succeeds');
+like($no_cache->{log}, qr/^rm\t-f\t/m, 'its containers are still removed');
+like($no_cache->{log}, qr/^image\trm\t-f\tubuntu:latest$/m,
+    'the image it pulled is removed when it finishes');
+
+# The environment probe starts a container from the run's own image, so a
+# daemon that has never seen it pulls it there, before the explicit pull that
+# then finds it present.  A run told not to keep its images has to remove that
+# one too, or the opt-out quietly leaves the first image behind.
+my $probe_pull = run_workflow(
+    $matrix_yaml,
+    keep_images          => 0,
+    fake_run_needs_image => 1,
+);
+is($probe_pull->{exit}, 0, 'a run whose probe pulls its image succeeds');
+like($probe_pull->{log}, qr/^image\trm\t-f\tperl:5\.38$/m,
+    'the image the probe pulled is removed with the rest');
 
 my $implicit_success = run_workflow(<<'YAML');
 name: Implicit success
@@ -1450,8 +1563,8 @@ for my $image (qw(perl:5.38 postgres:15 alpine:3.20)) {
 }
 is(scalar(() = $pulled_once->{stdout} =~ /^Pulling image \S+\.\.\.$/mg), 3,
     '--pull announces each pull once');
-like($pulled_once->{log}, qr/^image\trm\t-f\tpostgres:15$/m,
-    'an image pulled by the run is still removed afterwards');
+unlike($pulled_once->{log}, qr/^image\trm\t/m,
+    'the images --pull refreshed are kept for the next run');
 
 # The same image in two matrix jobs is one download, not two.
 my $shared_image_yaml = <<'YAML';
@@ -1836,7 +1949,9 @@ SKIP: {
 
 # A pull that fails is still reported in the order the run needs the images,
 # even though the pulls themselves finish in any order.
-my $failing_pair = run_workflow($many_images, fake_pull_failure => 'second:1');
+my $failing_pair = run_workflow(
+    $many_images, fake_pull_failure => 'second:1', keep_images => 0,
+);
 is($failing_pair->{exit}, 2, 'one unpullable image among several stops the run');
 like(
     $failing_pair->{stderr},
@@ -1845,7 +1960,8 @@ like(
 );
 unlike($failing_pair->{log}, qr/^run\t-d\t/m, 'no job container is started');
 
-# Images that did arrive are removed again, even though the run stopped.
+# Images that did arrive are removed again when the run was told not to keep
+# them, even though it stopped.
 like($failing_pair->{log}, qr/^image\trm\t-f\tperl:5\.38$/m,
     'the job image is removed after a failed preflight');
 like($failing_pair->{log}, qr/^image\trm\t-f\tthird:1$/m,

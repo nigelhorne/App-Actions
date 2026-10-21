@@ -197,7 +197,11 @@ my $failing_docker = File::Spec->catfile(tempdir(CLEANUP => 1), 'failing-docker'
 # Delegate everything to the fake Docker, but fail every docker exec, which is
 # where the steps run.
 exit 1 if \@ARGV && \$ARGV[0] eq 'exec';
-exec(\$^X, '$fake_docker', \@ARGV) or exit 127;
+# system(), not exec(): on Windows exec() starts the program and returns, so
+# the output the caller is reading would race the process that writes it.
+system(\$^X, '$fake_docker', \@ARGV);
+my \$status = \$?;
+exit(\$status == -1 ? 127 : \$status >> 8);
 PERL
     close $handle;
     chmod 0755, $failing_docker;
