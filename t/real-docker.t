@@ -34,6 +34,8 @@ my $image  = defined $ENV{LIVE_TESTING_IMAGE} && length $ENV{LIVE_TESTING_IMAGE}
 # host's real image cache.
 local $ENV{ACTION_RUN_CACHE_FILE}
     = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+local $ENV{ACTION_RUN_LOG_DIR}
+    = File::Spec->catdir(tempdir(CLEANUP => 1), 'logs');
 
 # Windows writes CRLF when output is redirected to a file, and a few of the
 # matches below anchor on the end of a line.

@@ -17,6 +17,8 @@ my $project = tempdir(CLEANUP => 1);
 # The smoke script runs workflows, which record the images they keep.
 local $ENV{ACTION_RUN_CACHE_FILE}
     = File::Spec->catfile($state, 'cache.json');
+local $ENV{ACTION_RUN_LOG_DIR}
+    = File::Spec->catdir($state, 'logs');
 
 # The fake Docker keeps its state in FAKE_DOCKER_STATE and is handed to the
 # smoke script through --docker, as a user would hand it their own wrapper.

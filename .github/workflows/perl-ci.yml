@@ -193,3 +193,91 @@ jobs:
       - name: Show cpanm build log on failure (non-Windows)
         if: runner.os != 'Windows' && failure()
         run: tail -100 "$HOME/.cpanm/work/*/build.log"
+
+  # Windows converts every text file to CRLF when it checks out, so a test
+  # that assumes LF passes on Linux and fails only there.  This job makes the
+  # same conversion on Linux and runs the suite, so the assumption fails on
+  # every push instead of waiting for the Windows leg of the matrix.
+  crlf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: Suite from a CRLF checkout
+    env:
+      AUTOMATED_TESTING: 1
+      NO_NETWORK_TESTING: 1
+      NONINTERACTIVE_TESTING: 1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Perl
+        uses: shogo82148/actions-setup-perl@v1.44.2
+        with:
+          perl-version: '5.38'
+
+      - name: Install cpanm and local::lib
+        run: cpanm --notest --local-lib=~/perl5 local::lib
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          eval $(perl -I ~/perl5/lib/perl5 -Mlocal::lib)
+          cpanm --notest --installdeps .
+
+      # Every tracked text file gets CRLF line endings, including the tests
+      # themselves.  The conversion then verifies itself: a file that still
+      # has a bare LF, or a checkout with too few text files to be this
+      # project, fails here rather than letting the suite pass for the wrong
+      # reason.
+      - name: Convert the checkout to CRLF
+        shell: bash
+        run: |
+          eval $(perl -I ~/perl5/lib/perl5 -Mlocal::lib)
+          perl -e '
+          use strict;
+          use warnings;
+
+          my @files = split /\0/, qx{git ls-files -z};
+          die "git ls-files returned nothing; is this a checkout?\n" unless @files;
+
+          my ($text, $converted) = (0, 0);
+          for my $file (@files) {
+              next unless -f $file;
+              open my $in, "<:raw", $file or die "cannot read $file: $!\n";
+              my $bytes = do { local $/; <$in> };
+              close $in;
+              $bytes = "" unless defined $bytes;
+              next if index($bytes, "\0") >= 0;
+
+              $text++;
+              (my $crlf = $bytes) =~ s/\r?\n/\r\n/g;
+              next if $crlf eq $bytes;
+
+              open my $out, ">:raw", $file or die "cannot write $file: $!\n";
+              print {$out} $crlf;
+              close $out or die "cannot write $file: $!\n";
+              $converted++;
+          }
+
+          my @bare;
+          for my $file (@files) {
+              next unless -f $file;
+              open my $in, "<:raw", $file or die "cannot read $file: $!\n";
+              my $bytes = do { local $/; <$in> };
+              close $in;
+              next unless defined $bytes;
+              next if index($bytes, "\0") >= 0;
+              push @bare, $file if $bytes =~ /(?<!\r)\n/;
+          }
+
+          die "still LF: @bare\n" if @bare;
+          die "found only $text text files; the checkout looks incomplete\n"
+              if $text < 40;
+
+          print "converted $converted of $text text files to CRLF\n";
+          '
+
+      - name: Run tests
+        shell: bash
+        run: |
+          eval $(perl -I ~/perl5/lib/perl5 -Mlocal::lib)
+          prove -lr t/

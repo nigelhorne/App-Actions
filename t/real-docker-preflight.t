@@ -33,6 +33,8 @@ my $docker = defined $ENV{DOCKER} && length $ENV{DOCKER} ? $ENV{DOCKER} : 'docke
 # at a temporary file rather than the test host's real image cache.
 local $ENV{ACTION_RUN_CACHE_FILE}
     = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+local $ENV{ACTION_RUN_LOG_DIR}
+    = File::Spec->catdir(tempdir(CLEANUP => 1), 'logs');
 my $image  = defined $ENV{LIVE_TESTING_IMAGE} && length $ENV{LIVE_TESTING_IMAGE}
     ? $ENV{LIVE_TESTING_IMAGE}
     : 'alpine:3.20';

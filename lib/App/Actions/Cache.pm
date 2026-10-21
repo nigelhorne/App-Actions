@@ -18,10 +18,10 @@ our $VERSION = '0.01';
 
 my $FORMAT = 1;
 
-sub default_path {
-    my $override = $ENV{ACTION_RUN_CACHE_FILE};
-    return $override if defined $override && length $override;
-
+# The per-user directory action-run keeps its own state in: the image cache
+# record and the logs of a run.  XDG_CACHE_HOME is where a Linux or macOS
+# desktop puts that, and LOCALAPPDATA where Windows does.
+sub base_directory {
     my $base;
     if ($^O eq 'MSWin32') {
         $base = $ENV{LOCALAPPDATA};
@@ -29,17 +29,23 @@ sub default_path {
             $base = File::Spec->catdir($ENV{USERPROFILE}, 'AppData', 'Local')
                 if defined $ENV{USERPROFILE} && length $ENV{USERPROFILE};
         }
-        $base = File::Spec->catdir(File::Spec->curdir, '.cache')
-            if !defined $base || !length $base;
     } else {
         $base = $ENV{XDG_CACHE_HOME};
         $base = File::Spec->catdir($ENV{HOME}, '.cache')
             if !defined $base || !length $base;
-        $base = File::Spec->catdir(File::Spec->curdir, '.cache')
-            if !defined $base || !length $base;
     }
 
-    return File::Spec->catfile($base, 'action-run', 'cache.json');
+    $base = File::Spec->catdir(File::Spec->curdir, '.cache')
+        if !defined $base || !length $base;
+
+    return $base;
+}
+
+sub default_path {
+    my $override = $ENV{ACTION_RUN_CACHE_FILE};
+    return $override if defined $override && length $override;
+
+    return File::Spec->catfile(base_directory(), 'action-run', 'cache.json');
 }
 
 sub new {
@@ -344,3 +350,89 @@ sub prune {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+App::Actions::Cache - the record of images that action-run keeps between runs
+
+=head1 SYNOPSIS
+
+    use App::Actions::Cache;
+
+    my $cache = App::Actions::Cache->new;
+    $cache->remember('alpine:3.20');
+
+    print $cache->report(docker => $docker);
+    my ($report, $exit) = $cache->prune(docker => $docker);
+
+=head1 DESCRIPTION
+
+A run keeps the images it pulls, because they are the next run's cache.  This
+module is the record of which images those are: it is a small JSON file that
+names each image, when a run last pulled it and how many runs have, so
+C<action-run cache> can list them and C<action-run cache --prune> can remove
+them.  Sizes are asked of Docker each time rather than stored, because an
+image can be removed or replaced outside the tool.
+
+The file is C<$XDG_CACHE_HOME/action-run/cache.json>, or
+C<~/.cache/action-run/cache.json> when C<XDG_CACHE_HOME> is not set, and
+C<%LOCALAPPDATA%\action-run\cache.json> on Windows.  C<ACTION_RUN_CACHE_FILE>
+overrides it.  A file that cannot be read is treated as empty: the images are
+still on the disk, and the next run records them again.
+
+=head1 METHODS
+
+=head2 new
+
+    my $cache = App::Actions::Cache->new(%options);
+
+C<file> names the record; the default is the path described above.
+
+=head2 remember
+
+    my $count = $cache->remember(@images);
+
+Record that a run pulled and kept each image, incrementing its use count and
+setting the time it was last used.
+
+=head2 entries
+
+    my $entries = $cache->entries;
+
+Returns an array of C<{ image, pulls, last_used }>, sorted by image name.
+
+=head2 forget
+
+    my $count = $cache->forget(@images);
+
+Drop images from the record without contacting Docker.  The record file is
+removed when the last image goes.
+
+=head2 report
+
+    print $cache->report(docker => $docker);
+
+The listing C<action-run cache> prints.  Pass C<docker> to have the sizes and
+missing images reported; without it the names are listed with their sizes
+unknown, which is what happens when the daemon is not running.
+
+=head2 prune
+
+    my ($report, $exit) = $cache->prune(docker => $docker);
+
+Remove every recorded image and forget it.  An image that has already gone is
+forgotten, one that cannot be removed stays in the record, and C<$exit> is 1
+when any removal failed.
+
+=head1 AUTHOR
+
+Nigel Horne, C<njh@nigelhorne.com>
+
+=head1 LICENSE
+
+This library is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=cut

@@ -332,3 +332,24 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       absence now means no output.  The smoke test's failing-docker wrapper
       used exec(), which on Windows starts the program and returns, so the
       output under test raced the wrapper's exit; it now waits with system().
+    - Add "action-run cache", which lists the images a run kept with the size
+      each takes and when it was last used, and "action-run cache --prune",
+      which removes them.  A run, or a preflight, records the images it pulled
+      in a small JSON file under the user's cache directory, so the list holds
+      only what action-run fetched rather than every image on the daemon; an
+      image removed outside the tool is reported as missing, and a prune that
+      cannot reach the daemon exits 2 without touching the record.  Listing
+      works without a daemon, showing the names with their sizes unknown.
+    - Add a CI job that converts the checkout to CRLF line endings and runs
+      the suite there, so an assumption about LF fails on Linux before the
+      Windows leg of the matrix finds it.  It verifies that every tracked text
+      file is CRLF afterwards, so it cannot pass without converting anything.
+    - Keep each parallel job's log after the run, and print where the logs
+      are and which job each one holds.  The terminal still shows the
+      interleaved prefixed lines while the jobs run, but the copies are the
+      job's own text in order, so a failure can be read - or pasted into a
+      bug report - after the containers and temporary directory are gone.
+      They are kept for passing and failing runs alike, --quiet suppresses
+      only the note, and ACTION_RUN_LOG_DIR moves the copies out of the
+      user's cache directory.  A sequential run, which has no other job's
+      output to tell apart, keeps none.

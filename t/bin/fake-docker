@@ -76,7 +76,7 @@ if ($command eq 'image') {
             print "$size\n";
         }
 
-        exit $exists ? 0 : 1;
+        exit($exists ? 0 : 1);
     }
     if ($subcommand eq 'rm') {
         my $image = $args[-1];

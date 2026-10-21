@@ -39,17 +39,6 @@ steps are honoured.  If an image has no `sudo` and the container is running
 as root, a small `sudo` shim is placed on `PATH` so that steps such as
 `sudo apt update` work locally.
 
-The jobs of one matrix run beside each other, up to the number of processors
-on the machine (`parallel`, or `--parallel` on the command), so a matrix of
-independent jobs does not wait for one container after another.  Each job gets
-its own runner directory as well as its own network and containers, so two
-jobs cannot write over each other's step scripts or environment files, and its
-output is streamed as it is written, prefixed with the job it came from
-(`[test (n=one)]`), so two jobs working at once can still be told apart.
-`--parallel=off` runs them one at a time, and so do a run that keeps its
-containers, a dry run, an explain run and Windows, where `fork()` is not
-reliable.
-
 The host may run UNIX or Windows; only the containers are Linux.  Command
 output is captured without `fork` or a piped `open`, and paths, volumes and
 permissions are handled in a platform-neutral way, so the same code and test
@@ -86,7 +75,8 @@ my $actions = App::Actions->new(
 Options include `jobs`, `image`, `perl_image`, `platform`, `user`, `env`,
 `secrets`, `dry_run`, `explain`, `verbose`, `quiet`, `keep`,
 `keep_images`, `pull`, `no_pull`, `strict_actions`, `skip_check`,
-`pull_concurrency`, `parallel`, `docker`, and `docker_bin`.  `parallel`
+`pull_concurrency`, `parallel`, `log_dir`, `docker`, and `docker_bin`.
+`parallel`
 says how many jobs of one matrix may run at the same time; it is 1 unless it
 is set, and `action-run` sets it to the number of processors unless
 `--parallel` says otherwise.  `pull_concurrency` says
@@ -94,7 +84,13 @@ how many images may be pulled at the same time; it defaults to
 `ACTION_RUN_PULL_CONCURRENCY` from the environment, and to four when that is
 not set or empty.  It must be a positive integer.  `keep_images` defaults to
 true: the images a run pulls stay behind as the next run's cache, and a false
-value removes the ones the run itself pulled when it finishes.
+value removes the ones the run itself pulled when it finishes.  The kept
+images are recorded by [App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache), which is what
+`action-run cache` lists and `action-run cache --prune` removes; the record
+lives in the user's cache directory, and `ACTION_RUN_CACHE_FILE` moves it.
+`log_dir` says where the per-job logs of a parallel run are kept; it
+defaults to `ACTION_RUN_LOG_DIR`, then to `action-run/logs` under that same
+cache directory.
 
 `explain` is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per

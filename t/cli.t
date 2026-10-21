@@ -19,6 +19,8 @@ my $fake_docker = File::Spec->catfile($root, 't', 'bin', 'fake-docker');
 # record at a temporary file so the suite does not touch the real cache.
 local $ENV{ACTION_RUN_CACHE_FILE}
     = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+local $ENV{ACTION_RUN_LOG_DIR}
+    = File::Spec->catdir(tempdir(CLEANUP => 1), 'logs');
 
 sub make_project {
     my ($yaml) = @_;
@@ -128,10 +130,21 @@ my $state = tempdir(CLEANUP => 1);
 local $ENV{FAKE_DOCKER_STATE} = $state;
 local $ENV{FAKE_DOCKER_LOG} = File::Spec->catfile($state, 'docker.log');
 
-my ($run_out, $run_err, $run_exit) = run_cli('--docker', $fake_docker, $workflow, $project);
+my ($run_out, $run_err, $run_exit) = run_cli(
+    '--parallel=2', '--docker', $fake_docker, $workflow, $project,
+);
 is($run_exit, 0, 'CLI run with fake Docker succeeds');
 like($run_out, qr/Workflow succeeded/, 'CLI prints a summary');
 unlike($run_out, qr/^ {2}mount\s/m, 'the environment probe is silent when it passes');
+
+# A matrix run beside itself keeps a log per job and says where to find them.
+SKIP: {
+    skip 'jobs run one at a time where fork() is not reliable', 1
+        if $^O eq 'MSWin32';
+
+    like($run_out, qr/^Job logs kept in (.+)$/m,
+        'the CLI says where it kept the parallel job logs');
+}
 
 # The images a run pulls are kept by default, so a later run of the same
 # workflow starts from them; --no-keep-images is the opt-out.  Each half gets

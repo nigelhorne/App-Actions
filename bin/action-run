@@ -435,6 +435,16 @@ and runner directory, and its output is streamed as it is written, prefixed
 with the job it came from - C<[test (n=one)]> - so two jobs working at once
 can be told apart.  C<--parallel=off> goes back to one job at a time.
 
+The terminal shows those lines as they arrive, interleaved.  Each job's own
+log is copied out of the run's temporary directory before that is removed,
+and the run ends by printing where the copies are and which job each one
+holds, so a job can still be read in full - or quoted in a bug report - after
+its containers are gone.  They are kept whether the job passed or failed, and
+C<--quiet> suppresses the note without suppressing the files.  The default
+directory is F<$XDG_CACHE_HOME/action-run/logs>, or
+F<~/.cache/action-run/logs> when that is not set, and
+C<ACTION_RUN_LOG_DIR> moves it.
+
 The project directory is optional when the workflow lives inside a
 C<.github/workflows> directory; the repository root is inferred in that case.
 
@@ -849,6 +859,12 @@ Show the version.
 The default for C<--pull-concurrency>: how many images are pulled at the same
 time.  The option wins over it, and it wins over the built-in four.
 
+=item C<ACTION_RUN_LOG_DIR>
+
+Where a parallel run keeps its per-job logs.  The default is
+F<$XDG_CACHE_HOME/action-run/logs>, or F<~/.cache/action-run/logs> when
+C<XDG_CACHE_HOME> is not set, and F<%LOCALAPPDATA%\action-run\logs> on Windows.
+
 =item C<ACTION_RUN_CACHE_FILE>
 
 Where the image cache record lives.  The default is
@@ -895,6 +911,9 @@ F<sysexits.h> and is deliberately separate from 2: a document is at fault,
 not the host a CI job would otherwise repair.
 
 =head1 LIMITATIONS
+
+The per-job logs of a parallel run are kept indefinitely; remove old
+directories under the log directory when they are no longer needed.
 
 Only Linux jobs are supported; macOS and Windows matrix entries are skipped.
 JavaScript actions cannot be executed.  C<actions/checkout> and

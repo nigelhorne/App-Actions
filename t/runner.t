@@ -19,6 +19,12 @@ my $fake_docker = File::Spec->rel2abs(
 local $ENV{ACTION_RUN_CACHE_FILE}
     = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
 
+# A parallel run copies its per-job logs here; keep them out of the real
+# user's log directory.
+local $ENV{ACTION_RUN_LOG_DIR} = File::Spec->catdir(
+    tempdir(CLEANUP => 1), 'logs',
+);
+
 # Windows writes CRLF when output is redirected to a file, and several tests
 # match against the end of a line.
 sub useful_text {
@@ -261,7 +267,7 @@ jobs:
 YAML
 
 SKIP: {
-    skip 'jobs run one at a time where fork() is not reliable', 3
+    skip 'jobs run one at a time where fork() is not reliable', 8
         if $^O eq 'MSWin32';
 
     my $started = Time::HiRes::time();
@@ -285,6 +291,69 @@ SKIP: {
         qr/^\[test \(n=one\)\] job one$/m,
         'each line of a job\'s output names the job it came from',
     );
+
+    # The terminal shows interleaved prefixed lines, so each job's own log is
+    # kept where it can be read in order afterwards.
+    my ($log_dir) = $together->{stdout} =~ /^Job logs kept in (.+)$/m;
+    ok(defined $log_dir, 'a parallel run says where it kept the job logs');
+
+    SKIP: {
+        skip 'the run did not print a log directory', 4 unless defined $log_dir;
+
+        ok(-d $log_dir, 'the directory the run named exists');
+
+        my @files = sort glob(File::Spec->catfile($log_dir, '*.log'));
+        is(scalar @files, 3, 'one log was kept for each job of the matrix');
+
+        my %logs;
+        for my $file (@files) {
+            open my $handle, '<', $file or die "Unable to read '$file': $!";
+            local $/;
+            $logs{$file} = do { <$handle> };
+            close $handle;
+        }
+
+        my ($one) = grep { $logs{$_} =~ /\bjob one\b/ } keys %logs;
+        my ($two) = grep { $logs{$_} =~ /\bjob two\b/ } keys %logs;
+        ok(defined $one && defined $two,
+            'the kept logs name the job each one came from');
+        unlike($logs{$one} || '', qr/^\[test /m,
+            'a kept log is the job\'s own output, without the prefix');
+    }
+}
+
+# A sequential run prints one job at a time, so there is nothing to tell apart
+# afterwards and no log copies are made.
+{
+    local $ENV{ACTION_RUN_LOG_DIR} = File::Spec->catdir(
+        tempdir(CLEANUP => 1), 'logs',
+    );
+
+    my $serial_only = run_workflow($slow_matrix);
+    is($serial_only->{exit}, 0, 'a sequential matrix succeeds');
+    ok(!-e $ENV{ACTION_RUN_LOG_DIR},
+        'a run that is not parallel keeps no log copies');
+}
+
+# --quiet suppresses the note, not the logs: they are still there for whoever
+# needs to read what the jobs said.
+SKIP: {
+    skip 'jobs run one at a time where fork() is not reliable', 4
+        if $^O eq 'MSWin32';
+
+    local $ENV{ACTION_RUN_LOG_DIR} = File::Spec->catdir(
+        tempdir(CLEANUP => 1), 'logs',
+    );
+
+    my $silent = run_workflow($slow_matrix, parallel => 2, quiet => 1);
+    is($silent->{exit}, 0, 'a quiet parallel run succeeds');
+    unlike($silent->{stdout}, qr/Job logs kept in/,
+        'a quiet run does not print where the logs are');
+
+    my @directories = glob(File::Spec->catdir($ENV{ACTION_RUN_LOG_DIR}, '*'));
+    is(scalar @directories, 1, 'a quiet run still keeps one directory of logs');
+    my @files = glob(File::Spec->catfile($directories[0] || '', '*.log'));
+    is(scalar @files, 3, 'a quiet run still keeps one log per job');
 }
 
 # A run that goes one job at a time has no other jobs to tell apart, so its
@@ -310,12 +379,16 @@ jobs:
 YAML
 
 SKIP: {
-    skip 'jobs run one at a time where fork() is not reliable', 3
+    skip 'jobs run one at a time where fork() is not reliable', 4
         if $^O eq 'MSWin32';
 
     my $failing = run_workflow($fail_fast_matrix, parallel => 2);
 
     is($failing->{exit}, 1, 'a failed job fails a parallel matrix');
+
+    my ($failed_dir) = $failing->{stdout} =~ /^Job logs kept in (.+)$/m;
+    ok(defined $failed_dir && -d $failed_dir,
+        'the logs are kept after a job failed');
     like(
         $failing->{stdout},
         qr/^==> Job: test \(n=three\) \(skipped by fail-fast\)$/m,

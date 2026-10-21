@@ -103,6 +103,7 @@ sub _runner {
         quiet         => exists $overrides{quiet} ? $overrides{quiet} : $self->{quiet},
         keep          => exists $overrides{keep} ? $overrides{keep} : $self->{keep},
         keep_images   => exists $overrides{keep_images} ? $overrides{keep_images} : $self->{keep_images},
+        log_dir       => exists $overrides{log_dir} ? $overrides{log_dir} : $self->{log_dir},
         pull          => exists $overrides{pull} ? $overrides{pull} : $self->{pull},
         no_pull       => exists $overrides{no_pull} ? $overrides{no_pull} : $self->{no_pull},
         strict_actions => exists $overrides{strict_actions} ? $overrides{strict_actions} : $self->{strict_actions},
@@ -211,7 +212,8 @@ C<.github/workflows> directory; the repository root is then used.
 Options include C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>, C<env>,
 C<secrets>, C<dry_run>, C<explain>, C<verbose>, C<quiet>, C<keep>,
 C<keep_images>, C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>,
-C<pull_concurrency>, C<parallel>, C<docker>, and C<docker_bin>.  C<parallel>
+C<pull_concurrency>, C<parallel>, C<log_dir>, C<docker>, and C<docker_bin>.
+C<parallel>
 says how many jobs of one matrix may run at the same time; it is 1 unless it
 is set, and C<action-run> sets it to the number of processors unless
 C<--parallel> says otherwise.  C<pull_concurrency> says
@@ -219,7 +221,13 @@ how many images may be pulled at the same time; it defaults to
 C<ACTION_RUN_PULL_CONCURRENCY> from the environment, and to four when that is
 not set or empty.  It must be a positive integer.  C<keep_images> defaults to
 true: the images a run pulls stay behind as the next run's cache, and a false
-value removes the ones the run itself pulled when it finishes.
+value removes the ones the run itself pulled when it finishes.  The kept
+images are recorded by L<App::Actions::Cache>, which is what
+C<action-run cache> lists and C<action-run cache --prune> removes; the record
+lives in the user's cache directory, and C<ACTION_RUN_CACHE_FILE> moves it.
+C<log_dir> says where the per-job logs of a parallel run are kept; it
+defaults to C<ACTION_RUN_LOG_DIR>, then to C<action-run/logs> under that same
+cache directory.
 
 C<explain> is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per

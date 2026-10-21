@@ -5,6 +5,7 @@ use warnings;
 use Carp qw(croak);
 use Cwd qw(abs_path);
 use File::Basename qw(basename);
+use File::Copy qw(copy);
 use File::Path qw(make_path remove_tree);
 use File::Spec;
 use File::Temp ();
@@ -229,6 +230,10 @@ sub new {
         parallel_slots => 0,
         expression    => App::Actions::Expression->new,
         run_id        => sprintf('%x%04x', time, $$ & 0xffff),
+        # Where a parallel run's per-job logs are copied when it finishes, and
+        # the jobs whose logs this run has written.
+        log_dir       => $args{log_dir},
+        parallel_logs => [],
         pulled_images => {},
         # Where the cache command reads the images this run kept.  Tests point
         # this at a temporary file so a run does not write to the real cache.
@@ -1703,6 +1708,15 @@ sub _run_instances_parallel {
             $entry->{temp}        = File::Spec->catdir($self->{temp_path}, "job-$slot");
             $entry->{log}         = File::Spec->catfile($self->{temp_path}, "job-$slot.log");
             $entry->{result_path} = File::Spec->catfile($self->{temp_path}, "job-$slot.json");
+
+            # The log is kept after the run, so it needs a name that says
+            # which job it is once the numbered temporary directory is gone.
+            push @{ $self->{parallel_logs} }, {
+                slot => $slot,
+                name => $entry->{plan}{display_name},
+                file => _parallel_log_name($slot, $entry->{plan}{display_name}),
+                path => $entry->{log},
+            };
             # How much of that log the parent has already shown, and the part
             # of a line it has not shown yet.
             $entry->{shown}       = 0;
@@ -1917,6 +1931,20 @@ sub _flush_parallel_log {
     STDOUT->flush;
 
     return;
+}
+
+# A file name that says which job a kept log belongs to, on a filesystem that
+# may not allow every character a matrix value can contain.
+sub _parallel_log_name {
+    my ($slot, $name) = @_;
+
+    $name = '' unless defined $name;
+    $name =~ s/[^A-Za-z0-9_.-]+/_/g;
+    $name =~ s/\A[_.-]+//;
+    $name =~ s/[_.-]+\z//;
+    $name = substr($name, 0, 60) if length $name > 60;
+
+    return length $name ? "job-$slot-$name.log" : "job-$slot.log";
 }
 
 sub _parallel_prefix {
@@ -3643,6 +3671,7 @@ sub _cleanup {
     return if $self->{cleaned_up}++;
 
     $self->_remember_cached_images if $self->{keep_images};
+    $self->_keep_parallel_logs;
 
     if ($self->{keep}) {
         if (@{ $self->{containers} } || @{ $self->{networks} } || $self->{temp_path}) {
@@ -3670,6 +3699,86 @@ sub _cleanup {
     if ($self->{temp_path} && -d $self->{temp_path}) {
         eval { remove_tree($self->{temp_path}); };
     }
+
+    $self->_print_kept_logs;
+
+    return;
+}
+
+# Where the logs of a parallel run go: ACTION_RUN_LOG_DIR, then the usual
+# per-user cache directory, under action-run/logs.
+sub _log_root {
+    my ($self) = @_;
+
+    for my $candidate ($self->{log_dir}, $ENV{ACTION_RUN_LOG_DIR}) {
+        return $candidate if defined $candidate && length $candidate;
+    }
+
+    return File::Spec->catdir(
+        App::Actions::Cache::base_directory(), 'action-run', 'logs',
+    );
+}
+
+# A job's log is worth keeping for more than the run that wrote it: after a
+# failure it is where the job's own account of what went wrong lives, and on a
+# successful run it is the full unfiltered text rather than the interleaved
+# lines the terminal showed.  They are copied out of the temporary directory
+# before that is removed, so --keep is not needed to read them afterwards.
+sub _keep_parallel_logs {
+    my ($self) = @_;
+
+    my $logs = $self->{parallel_logs};
+    return unless $logs && @$logs;
+
+    my @present = grep { defined $_->{path} && -f $_->{path} } @$logs;
+    return unless @present;
+
+    my $directory = File::Spec->catdir(
+        $self->_log_root,
+        POSIX::strftime('%Y%m%d-%H%M%S', localtime) . '-' . $self->{run_id},
+    );
+
+    my $kept = eval {
+        make_path($directory);
+        # A job's output can quote a secret from its environment, so the
+        # copies are private in the same way the temporary directory is.
+        chmod 0700, $directory;
+        for my $entry (@present) {
+            my $target = File::Spec->catfile($directory, $entry->{file});
+            copy($entry->{path}, $target)
+                or die "cannot copy '$entry->{path}' to '$target': $!\n";
+            chmod 0600, $target;
+            $entry->{kept} = $target;
+        }
+        1;
+    };
+
+    if (!$kept) {
+        my $error = $@;
+        $error =~ s/\s+$//;
+        warn "action-run: could not keep the job logs: $error\n";
+        return;
+    }
+
+    $self->{kept_log_dir} = $directory;
+    $self->{kept_logs}    = [ grep { $_->{kept} } @present ];
+
+    return;
+}
+
+sub _print_kept_logs {
+    my ($self) = @_;
+
+    return if $self->{quiet};
+
+    my $directory = $self->{kept_log_dir};
+    return unless defined $directory && length $directory;
+
+    print "\nJob logs kept in $directory\n";
+    for my $entry (@{ $self->{kept_logs} || [] }) {
+        print '  ', $entry->{name}, '  ', $entry->{file}, "\n";
+    }
+    STDOUT->flush;
 
     return;
 }

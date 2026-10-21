@@ -28,6 +28,8 @@ my $script   = File::Spec->catfile($root, 'bin', 'action-run');
 # kept; that record belongs in a temporary file, not the real cache.
 local $ENV{ACTION_RUN_CACHE_FILE}
     = File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json');
+local $ENV{ACTION_RUN_LOG_DIR}
+    = File::Spec->catdir(tempdir(CLEANUP => 1), 'logs');
 
 # The workflows and the command are part of the distribution, so one missing is
 # a packaging fault rather than an environment without Docker: it is worth

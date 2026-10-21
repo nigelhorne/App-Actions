@@ -9,6 +9,7 @@ Changes
 cpanfile
 lib/App/Actions.pm
 lib/App/Actions/Action.pm
+lib/App/Actions/Cache.pm
 lib/App/Actions/Check.pm
 lib/App/Actions/Docker.pm
 lib/App/Actions/Expression.pm
@@ -24,6 +25,7 @@ README.md
 t/00-load.t
 t/action.t
 t/bin/fake-docker
+t/cache.t
 t/check.t
 t/cli.t
 t/docker.t
