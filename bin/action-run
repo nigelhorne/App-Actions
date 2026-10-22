@@ -37,6 +37,7 @@ my $explain;
 my $list;
 my $keep;
 my $prune;
+my $older_than;
 # Images are kept when a run finishes by default: they are the download
 # cache, so a second run of the same workflow starts from them instead of
 # fetching them again.  --no-keep-images removes the ones this run pulled.
@@ -69,6 +70,7 @@ GetOptions(
     'list'           => \$list,
     'keep|k'         => \$keep,
     'prune'          => \$prune,
+    'older-than=s'   => \$older_than,
     'keep-images!'   => \$keep_images,
     'strict-actions' => \$strict_actions,
     'skip-check'     => \$skip_check,
@@ -122,6 +124,14 @@ if ($prune && $command ne 'cache' && $command ne 'logs') {
         -exitval => 2,
         -verbose => 0,
         -message => "--prune is only used by the cache and logs commands\n",
+    );
+}
+
+if (defined $older_than && $command ne 'cache') {
+    pod2usage(
+        -exitval => 2,
+        -verbose => 0,
+        -message => "--older-than is only used by the cache command\n",
     );
 }
 
@@ -250,13 +260,24 @@ if ($command eq 'cache') {
         pod2usage(
             -exitval => 2,
             -verbose => 0,
-            -message => "Usage: action-run [options] cache [--prune] [--json]\n",
+            -message => "Usage: action-run [options] cache [--prune] [--older-than DURATION] [--json]\n",
         );
+    }
+
+    my $age_limit;
+    if (defined $older_than) {
+        $age_limit = App::Actions::Cache::parse_duration($older_than);
+        if (!defined $age_limit) {
+            print STDERR 'action-run: --older-than must be a duration such as '
+                . "30d, 12h or 90m, not '$older_than'\n";
+            exit 2;
+        }
     }
 
     my $cache  = App::Actions::Cache->new;
     my $docker = App::Actions::Docker->new(bin => $docker_bin, quiet => 1);
     my $reachable = eval { $docker->check; 1 };
+    my $now = time;
 
     if ($prune) {
         if (!$reachable) {
@@ -265,17 +286,23 @@ if ($command eq 'cache') {
             exit 2;
         }
 
-        my ($text, $exit, $data) = $cache->prune(docker => $docker);
+        my ($text, $exit, $data) = $cache->prune(
+            docker     => $docker,
+            older_than => $age_limit,
+            now        => $now,
+        );
 
         if ($json) {
             # The document is printed whether or not every removal worked: the
             # record is what a caller needs, and the exit status says how the
-            # prune went.
+            # prune went.  The filter chose what the prune attempted; the
+            # document lists the whole record that remains.
             my $document = eval {
                 $cache->document(
                     docker     => $docker,
                     docker_bin => $docker->bin,
                     reachable  => 1,
+                    now        => $now,
                     prune      => $data,
                 );
             };
@@ -296,6 +323,8 @@ if ($command eq 'cache') {
                 docker     => $docker,
                 docker_bin => $docker->bin,
                 reachable  => $reachable ? 1 : 0,
+                older_than => $age_limit,
+                now        => $now,
             );
         };
         if (my $error = $@) {
@@ -305,7 +334,11 @@ if ($command eq 'cache') {
         exit 0;
     }
 
-    print $cache->report(docker => $reachable ? $docker : undef);
+    print $cache->report(
+        docker     => $reachable ? $docker : undef,
+        older_than => $age_limit,
+        now        => $now,
+    );
     exit 0;
 }
 
@@ -509,7 +542,7 @@ action-run - run a GitHub Actions workflow locally with Docker
     action-run [options] preflight <workflow.yml> [project-directory]
     action-run [options] schema <check|preflight|cache|logs>
     action-run [options] validate <check|preflight|cache|logs> <document.json>
-    action-run [options] cache [--prune] [--json]
+    action-run [options] cache [--prune] [--older-than DURATION] [--json]
     action-run [options] logs [--prune] [--json]
 
 =head1 DESCRIPTION
@@ -522,7 +555,8 @@ images it pulled are kept: they are the next run's cache, so running the same
 workflow again starts from them instead of downloading them again.  Use
 C<--no-keep-images> to remove them, or C<--keep> to keep the containers too.
 C<action-run cache> lists what a run kept and how much disk it takes, and
-C<action-run cache --prune> removes it.
+C<action-run cache --prune> removes it.  C<--older-than> shows or removes only
+images at least that old.
 
 The jobs of one matrix run beside each other, up to the number of processors
 on this machine (C<--parallel>), because a matrix is several independent runs
@@ -784,23 +818,35 @@ another machine, where Docker and the workflow are not available:
 
 =head2 cache
 
-    action-run [options] cache [--prune] [--json]
+    action-run [options] cache [--prune] [--older-than DURATION] [--json]
 
 Lists the images that runs have kept, with the size each one takes on disk and
 when a run last pulled it, and with C<--prune> removes them:
 
   Cache file: /home/me/.cache/action-run/cache.json
 
-    IMAGE                                  SIZE  LAST USED
-    alpine:3.20                         11.8 MB  2026-10-21 15:04
-    perl:5.38                          157.2 MB  2026-10-21 15:04
+    IMAGE                                  SIZE  LAST USED          AGE
+    alpine:3.20                         11.8 MB  2026-10-21 15:04  2 minutes ago
+    perl:5.38                          157.2 MB  2026-10-21 15:04  2 minutes ago
 
   2 images, 169.0 MB on disk.
 
-A run records the images it pulled and kept, so the list names only those,
-not every image on the daemon.  A name is removed from the record only when
-the image is gone or was removed by C<--prune>, so an image deleted outside
-C<action-run> is shown as C<missing> rather than silently forgotten.
+C<AGE> is measured from the time the listing was made, using the same
+C<generated_at> minus C<last_used> rule as the JSON document; an image with no
+recorded use shows C<unknown>.  A run records the images it pulled and kept,
+so the list names only those, not every image on the daemon.  A name is
+removed from the record only when the image is gone or was removed by
+C<--prune>, so an image deleted outside C<action-run> is shown as C<missing>
+rather than silently forgotten.
+
+C<--older-than> restricts the listing to images at least as old as its
+duration and makes C<--prune> remove only those images.  The duration is a
+number and a unit: C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo> or C<1y>, with
+the unit optionally spelled out.  Months and years are the same 30- and
+365-day spans C<AGE> uses.  An image with no recorded last use cannot be
+shown to be old enough, so it is left out of a filtered listing and left in
+the record by a filtered prune.  An unreadable duration is a usage error,
+not a silent fall back to no filter.
 
 Listing works with the daemon switched off: the names and dates are still
 printed and the sizes are reported as unknown.  C<--prune> needs the daemon,
@@ -813,23 +859,29 @@ With C<--json> the listing is a single versioned object instead of the text
 report, for a CI job to assert on:
 
     {
-      "schema_version": 2,
+      "schema_version": 3,
       "generated_at": 1792540920,
       "cache_file": "/home/me/.cache/action-run/cache.json",
       "docker": { "bin": "docker", "reachable": true },
       "images": [
-        { "image": "alpine:3.20", "pulls": 3, "last_used": 1792540800, "size": 12345678, "present": true },
-        { "image": "perl:5.38", "pulls": 1, "last_used": 1792440000, "size": null, "present": false }
+        { "image": "alpine:3.20", "pulls": 3, "last_used": 1792540800, "age": 120, "size": 12345678, "present": true },
+        { "image": "perl:5.38", "pulls": 1, "last_used": 1792440000, "age": 100920, "size": null, "present": false }
       ],
       "totals": { "images": 2, "size": 12345678, "present": 1, "missing": 1 },
       "prune": null
     }
 
+With C<--older-than> the C<images> array and the C<totals> count only the
+images the listing selected; an image with no recorded use is not selected.
+A prune document still lists the whole record that remains, because the
+filter chose what C<--prune> attempted rather than what is left.
 C<size> is the bytes the daemon reports, C<present> whether the daemon still
-has the image and C<last_used> the epoch second a run last used it.
-C<generated_at> is the epoch second the document was made, so an image's age
-is that value minus its C<last_used> rather than a subtraction from the
-reader's clock.  A daemon
+has the image, C<last_used> the epoch second a run last used it, and C<age>
+the seconds between C<generated_at> and C<last_used>.  C<age> is C<null> when
+the record has no last use, and 0 when the last use is later than
+C<generated_at>, so a clock that is ahead is not reported as a negative age.
+C<generated_at> is the epoch second the document was made, so the age needs
+neither machine to agree on a clock.  A daemon
 that cannot be reached leaves its C<reachable> flag false and the sizes, the
 C<present> values and the counts that depend on them C<null>, so an assertion
 can tell "unknown" from "missing" rather than reading 0 as either.  After
@@ -991,6 +1043,14 @@ List the expanded jobs and exit.
 With C<cache>, remove the images a run kept and forget them; with C<logs>,
 remove the kept job logs.  It is rejected by every other command.
 
+=item B<--older-than> I<duration>
+
+With C<cache>, show only the images at least as old as I<duration>, and make
+C<--prune> remove only those.  A duration is a number and a unit such as
+C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo> or C<1y>; the unit may be spelled
+out.  An image with no recorded last use is not selected, because its age is
+unknown.  It is rejected by every other command.
+
 =item B<--keep>, B<-k>
 
 Keep containers, networks, images, and the temporary directory for debugging.
@@ -1112,6 +1172,10 @@ record.
     action-run cache --json | jq -r '.totals.size'
 
     action-run cache --prune --json | jq '.prune.failed'
+
+    action-run cache --older-than 30d
+
+    action-run cache --prune --older-than 7d
 
     action-run schema cache | jq '.version'
 

@@ -284,34 +284,62 @@ like($untracked_out, qr/untracked-example\.json/,
 unlink $untracked_fixture
     or die "cannot remove '$untracked_fixture': $!\n";
 
-# The make target is what a developer actually runs, so generate its Makefile
-# and run it rather than only the hook mode it invokes.  The bad fixture is
-# untracked, which also keeps the documented untracked-file behaviour covered
-# through the target.
+# The make targets are what a developer actually runs, so generate their
+# Makefile and run them rather than only the hook modes they invoke.  Both
+# targets are run on a passing and a failing snapshot: check-staged reads the
+# index, including a bad untracked file only for check-worktree to reject, and
+# check-worktree rejects an untracked file that the staged run cannot see.
+# A staged live-knob change also fails through check-staged, so the target is
+# shown to reach the hook's second check as well as its schema check.
 {
     my ($configure_out, $configure_status) = run_in_repository($^X, 'Makefile.PL');
     is($configure_status, 0,
-        'the repository generates a Makefile for check-worktree')
+        'the repository generates a Makefile for the check targets')
         or diag $configure_out;
 
     SKIP: {
-        skip 'the generated Makefile is not available', 4
+        skip 'the generated Makefile is not available', 15
             unless $configure_status == 0;
 
         my $makefile = slurp(File::Spec->catfile($repository, 'Makefile'));
+        like($makefile, qr/^check-staged:/m,
+            'the generated Makefile carries the check-staged target');
         like($makefile, qr/^check-worktree:/m,
             'the generated Makefile carries the check-worktree target');
 
         my $make = $Config{make};
-        my (undef, $make_status) = run_in_repository($make, '-n', 'check-worktree');
-        skip "the configured make command '$make' cannot run the target", 3
+        my (undef, $make_status) = run_in_repository($make, '-n', 'check-staged');
+        skip "the configured make command '$make' cannot run the target", 13
             unless $make_status == 0;
+
+        my ($worktree_out, $worktree_status) = run_in_repository(
+            $make, 'check-worktree',
+        );
+        is($worktree_status, 0,
+            'make check-worktree succeeds when every check passes')
+            or diag $worktree_out;
+
+        my $staged_fixture = File::Spec->catfile(
+            $repository, 't', 'fixtures', 'target-staged.json',
+        );
+        spew($staged_fixture, $shipped);
+        my (undef, $staged_add_status) = in_repository(
+            [ 'add', 't/fixtures/target-staged.json' ],
+        );
+        is($staged_add_status, 0, 'the passing fixture is staged');
 
         my $target_fixture = File::Spec->catfile(
             $repository, 't', 'fixtures', 'target-untracked.json',
         );
         (my $target_document = $shipped) =~ s/"schema_version"\s*:\s*\d+/"schema_version": 2/;
         spew($target_fixture, $target_document);
+
+        my ($staged_pass_out, $staged_pass_status) = run_in_repository(
+            $make, 'check-staged',
+        );
+        is($staged_pass_status, 0,
+            'make check-staged succeeds while an untracked fixture is invalid')
+            or diag $staged_pass_out;
 
         my ($target_out, $target_status) = run_in_repository(
             $make, 'check-worktree',
@@ -321,13 +349,66 @@ unlink $untracked_fixture
         like(
             $target_out,
             qr/check-worktree: the checks failed against the working tree/,
-            'the target output names the worktree check',
+            'the worktree target output names the worktree check',
         );
         like($target_out, qr/target-untracked\.json/,
-            'the target output names the untracked fixture');
+            'the worktree target output names the untracked fixture');
 
         unlink $target_fixture
             or die "cannot remove '$target_fixture': $!\n";
+
+        # Stage the bad document but leave the working tree valid: only a run
+        # that reads the index can refuse it.
+        spew($staged_fixture, $target_document);
+        in_repository([ 'add', 't/fixtures/target-staged.json' ]);
+        spew($staged_fixture, $shipped);
+
+        my ($staged_out, $staged_status) = run_in_repository(
+            $make, 'check-staged',
+        );
+        isnt($staged_status, 0,
+            'make check-staged refuses an invalid staged fixture');
+        like(
+            $staged_out,
+            qr/check-staged: the checks failed against what is staged/,
+            'the staged target output names what it checked',
+        );
+        like($staged_out, qr/target-staged\.json/,
+            'the staged target output names the staged fixture');
+
+        in_repository([ 'reset', '-q', '--', 't/fixtures/target-staged.json' ]);
+        unlink $staged_fixture
+            or die "cannot remove '$staged_fixture': $!\n";
+
+        # The staged schema fixture is gone, so stage only the live test
+        # with its unprefixed knob and leave the working tree correct.  A
+        # target that runs only the schema check would pass this snapshot.
+        spew($live_test, $unprefixed);
+        in_repository([ 'add', 't/real-docker.t' ]);
+        spew($live_test, $live_source);
+
+        my ($live_staged_out, $live_staged_status) = run_in_repository(
+            $make, 'check-staged',
+        );
+        isnt($live_staged_status, 0,
+            'make check-staged refuses a live knob staged without its prefix');
+        like(
+            $live_staged_out,
+            qr/check-staged: the checks failed against what is staged/,
+            'the live-knob failure names the staged target',
+        );
+        like(
+            $live_staged_out,
+            qr/UNPREFIXED_KNOB/,
+            'the staged live-knob failure names the knob',
+        );
+        like(
+            $live_staged_out,
+            qr/live knobs/,
+            'the staged target reports the live-knob check',
+        );
+
+        in_repository([ 'reset', '-q', '--', 't/real-docker.t' ]);
     }
 }
 

@@ -24,7 +24,7 @@ my $FORMAT = 1;
 # a value type or an enum changes, and update the schema below and the examples
 # in t/fixtures/ with it; a CI job asserts the number rather than discovering
 # a changed shape at the point where its assertion fails for another reason.
-our $JSON_SCHEMA_VERSION = 2;
+our $JSON_SCHEMA_VERSION = 3;
 
 # The schema of the document cache --json prints, so that the installed
 # action-run can hand the contract to a caller instead of leaving it in the
@@ -35,13 +35,13 @@ my $JSON_SCHEMA = <<'JSON';
 {
   "title": "action-run cache --json",
   "description": "The document action-run cache --json prints.  Objects reject keys this file does not name, so a new key is a schema change.",
-  "version": 2,
+  "version": 3,
   "type": "object",
   "properties": {
     "schema_version": {
       "description": "The version of this shape; App::Actions::Cache->json_schema_version returns it.",
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "generated_at": {
       "description": "The epoch second the document was made; an image's age is generated_at minus its last_used.",
@@ -61,7 +61,7 @@ my $JSON_SCHEMA = <<'JSON';
       "required": [ "bin", "reachable" ]
     },
     "images": {
-      "description": "Every image the record holds, sorted by name.",
+      "description": "Every image the command selected, sorted by name; a listing without --older-than selects the whole record.",
       "type": "array",
       "items": {
         "type": "object",
@@ -75,6 +75,10 @@ my $JSON_SCHEMA = <<'JSON';
             "description": "When a run last used the image, in epoch seconds, or null in a record written without it.",
             "type": [ "integer", "null" ]
           },
+          "age": {
+            "description": "The seconds between generated_at and last_used, or null when last_used is unknown; 0 when last_used is later than generated_at.",
+            "type": [ "integer", "null" ]
+          },
           "size": {
             "description": "The bytes the daemon reports, or null when it could not report one.",
             "type": [ "integer", "null" ]
@@ -84,11 +88,11 @@ my $JSON_SCHEMA = <<'JSON';
             "type": [ "boolean", "null" ]
           }
         },
-        "required": [ "image", "pulls", "last_used", "size", "present" ]
+        "required": [ "image", "pulls", "last_used", "age", "size", "present" ]
       }
     },
     "totals": {
-      "description": "The images and the disk they take.  The size and the counts are null when the daemon could not be reached.",
+      "description": "The selected images and the disk they take.  The size and the counts are null when the daemon could not be reached.",
       "type": "object",
       "properties": {
         "images": { "type": "integer" },
@@ -99,7 +103,7 @@ my $JSON_SCHEMA = <<'JSON';
       "required": [ "images", "size", "present", "missing" ]
     },
     "prune": {
-      "description": "What --prune did, or null when the command only listed the record.",
+      "description": "What --prune did to the images --older-than selected, or null when the command only listed the record.",
       "oneOf": [
         { "type": "null" },
         {
@@ -324,6 +328,113 @@ sub format_size {
     return sprintf('%.1f %s', $value, $units[$unit]);
 }
 
+my %DURATION_SECONDS = (
+    s       => 1,
+    sec     => 1,
+    secs    => 1,
+    second  => 1,
+    seconds => 1,
+    m       => 60,
+    min     => 60,
+    mins    => 60,
+    minute  => 60,
+    minutes => 60,
+    h       => 60 * 60,
+    hr      => 60 * 60,
+    hrs     => 60 * 60,
+    hour    => 60 * 60,
+    hours   => 60 * 60,
+    d       => 60 * 60 * 24,
+    day     => 60 * 60 * 24,
+    days    => 60 * 60 * 24,
+    w       => 60 * 60 * 24 * 7,
+    week    => 60 * 60 * 24 * 7,
+    weeks   => 60 * 60 * 24 * 7,
+    mo      => 60 * 60 * 24 * 30,
+    month   => 60 * 60 * 24 * 30,
+    months  => 60 * 60 * 24 * 30,
+    y       => 60 * 60 * 24 * 365,
+    yr      => 60 * 60 * 24 * 365,
+    yrs     => 60 * 60 * 24 * 365,
+    year    => 60 * 60 * 24 * 365,
+    years   => 60 * 60 * 24 * 365,
+);
+
+# A duration is a number and a unit, with the unit matching the words the age
+# column uses: 30s, 15m, 12h, 7d, 2w, 3mo or 1y.  Months and years are the
+# 30- and 365-day spans format_age uses, so a threshold and the ages it filters
+# cannot disagree about what "2 months" means.
+sub parse_duration {
+    my ($text) = @_;
+
+    return unless defined $text;
+    return unless $text =~ /\A\s*(\d+)\s*([A-Za-z]+)\s*\z/;
+
+    my ($amount, $unit) = ($1, lc $2);
+    return unless exists $DURATION_SECONDS{$unit};
+
+    return $amount * $DURATION_SECONDS{$unit};
+}
+
+sub _format_span {
+    my ($seconds) = @_;
+
+    $seconds = 0 unless defined $seconds && $seconds =~ /\A-?\d+\z/;
+    $seconds = 0 if $seconds < 0;
+
+    my @units = (
+        [ 1,                 'second' ],
+        [ 60,                'minute' ],
+        [ 60 * 60,           'hour'   ],
+        [ 60 * 60 * 24,      'day'    ],
+        [ 60 * 60 * 24 * 30, 'month'  ],
+        [ 60 * 60 * 24 * 365, 'year'  ],
+    );
+
+    # The largest whole unit is used, so 90 minutes is an hour and 40 days is
+    # a month, whether the number is an age or a threshold.
+    my ($index, $amount) = (0, int($seconds / $units[0][0]));
+    for my $next (1 .. $#units) {
+        last if $seconds < $units[$next][0];
+        $index  = $next;
+        $amount = int($seconds / $units[$next][0]);
+    }
+
+    my $label = $units[$index][1];
+    return sprintf('%d %s%s', $amount, $label, $amount == 1 ? '' : 's');
+}
+
+# How old a kept image is, in the words a reader expects rather than a second
+# count.
+sub format_age {
+    my ($seconds) = @_;
+
+    $seconds = 0 unless defined $seconds && $seconds =~ /\A-?\d+\z/;
+    $seconds = 0 if $seconds < 0;
+
+    return 'just now' if $seconds < 60;
+
+    return _format_span($seconds) . ' ago';
+}
+
+# The entries a threshold selects.  An image with no recorded last use cannot
+# be shown to be old enough, so it is left out rather than guessed at; that
+# also keeps it in the record when the listing is a prune.
+sub _selected_entries {
+    my ($self, %args) = @_;
+
+    my $entries = $self->entries;
+    return $entries unless defined $args{older_than};
+
+    my $now = defined $args{now} ? $args{now} : time;
+    return [
+        grep {
+            defined $_->{last_used}
+                && $now - $_->{last_used} >= $args{older_than}
+        } @$entries
+    ];
+}
+
 sub _stamp {
     my ($epoch) = @_;
 
@@ -344,13 +455,25 @@ sub report {
     my ($self, %args) = @_;
 
     my $docker = $args{docker};
-    my $entries = $self->entries;
+    my $now = defined $args{now} ? $args{now} : time;
+    my $older_than = $args{older_than};
+    my $entries = $self->_selected_entries(
+        older_than => $older_than, now => $now,
+    );
 
     my $out = "Cache file: $self->{file}\n";
 
     if (!@$entries) {
+        if (defined $older_than && @{ $self->entries }) {
+            return $out . 'No cached images are older than '
+                . _format_span($older_than) . ".\n";
+        }
+
         return $out . "No images have been cached yet.\n";
     }
+
+    $out .= 'Only images older than ' . _format_span($older_than) . ".\n"
+        if defined $older_than;
 
     my $width = 5;
     for my $entry (@$entries) {
@@ -374,14 +497,22 @@ sub report {
             }
         }
 
+        my $age_text = defined $entry->{last_used}
+            ? format_age($now - $entry->{last_used})
+            : 'unknown';
+
         push @lines, sprintf(
-            '  %-*s  %10s  %s',
+            '  %-*s  %10s  %-16s  %s',
             $width, $entry->{image}, $size_text, _stamp($entry->{last_used}),
+            $age_text,
         );
     }
 
     $out .= "\n";
-    $out .= sprintf("  %-*s  %10s  %s\n", $width, 'IMAGE', 'SIZE', 'LAST USED');
+    $out .= sprintf(
+        "  %-*s  %10s  %-16s  %s\n",
+        $width, 'IMAGE', 'SIZE', 'LAST USED', 'AGE',
+    );
     $out .= "$_\n" for @lines;
 
     my $count = @$entries;
@@ -414,11 +545,25 @@ sub prune {
     my $docker = $args{docker}
         or croak 'pruning the image cache needs a Docker command';
 
-    my $entries = $self->entries;
+    my $now = defined $args{now} ? $args{now} : time;
+    my $older_than = $args{older_than};
+    my $entries = $self->_selected_entries(
+        older_than => $older_than, now => $now,
+    );
 
     my $out = "Cache file: $self->{file}\n";
     if (!@$entries) {
         my $data = { removed => 0, freed => 0, forgotten => 0, failed => [] };
+
+        if (defined $older_than && @{ $self->entries }) {
+            return (
+                $out . 'No cached images are older than '
+                    . _format_span($older_than) . ".\n",
+                0,
+                $data,
+            );
+        }
+
         return ($out . "No images have been cached yet.\n", 0, $data);
     }
 
@@ -491,7 +636,9 @@ sub document {
     my ($present, $missing) = (0, 0);
     my $reachable = $args{reachable} ? 1 : 0;
     my $docker = $args{docker};
-    my $entries = $self->entries;
+    my $entries = $self->_selected_entries(
+        older_than => $args{older_than}, now => $now,
+    );
 
     my $bin = $args{docker_bin};
     $bin = $docker->bin
@@ -514,10 +661,17 @@ sub document {
             }
         }
 
+        my $age;
+        if (defined $entry->{last_used}) {
+            $age = $now - $entry->{last_used};
+            $age = 0 if $age < 0;
+        }
+
         push @images, {
             image     => $entry->{image},
             pulls     => $entry->{pulls} + 0,
             last_used => $entry->{last_used},
+            age       => $age,
             size      => $size,
             present   => $is_present,
         };
@@ -608,6 +762,17 @@ setting the time it was last used.
 
 Returns an array of C<{ image, pulls, last_used }>, sorted by image name.
 
+=head2 parse_duration
+
+    my $seconds = App::Actions::Cache::parse_duration('30d');
+
+Turn a duration such as C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo> or C<1y>
+into seconds.  The unit may be spelled out (C<2 days>).  Months and years are
+the 30- and 365-day spans the age column uses, so a threshold and the ages it
+filters cannot disagree about what C<2 months> means.  An unknown unit, a
+negative number or a number without a unit returns C<undef> instead of a
+quietly wrong threshold.
+
 =head2 forget
 
     my $count = $cache->forget(@images);
@@ -621,16 +786,29 @@ removed when the last image goes.
 
 The listing C<action-run cache> prints.  Pass C<docker> to have the sizes and
 missing images reported; without it the names are listed with their sizes
-unknown, which is what happens when the daemon is not running.
+unknown, which is what happens when the daemon is not running.  Each row
+shows the time an image was last used and its age in words, using the same
+C<generated_at> minus C<last_used> rule as the JSON document; an image with no
+recorded use has an unknown age.  C<older_than> (seconds) restricts the
+listing and its totals to images at least that old; an image with no recorded
+use is left out, because its age cannot be shown to reach the threshold.
+C<now> (epoch seconds) can be passed for a fixed clock in a test.
 
 =head2 prune
 
-    my ($report, $exit, $pruned) = $cache->prune(docker => $docker);
+    my ($report, $exit, $pruned) = $cache->prune(
+        docker     => $docker,
+        older_than => 2 * 24 * 60 * 60,  # optional
+        now        => time,               # optional, for a fixed clock
+    );
 
-Remove every recorded image and forget it.  An image that has already gone is
-forgotten, one that cannot be removed stays in the record, and C<$exit> is 1
-when any removal failed.  C<$pruned> is the C<prune> object of the JSON
-document, with the counts the report says in words.
+Remove the selected images and forget them; without C<older_than> that is
+every recorded image.  With C<older_than> only images at least that old are
+considered, so newer images stay in the record, and an image with no recorded
+last use is left alone.  An image that has already gone is forgotten, one
+that cannot be removed stays in the record, and C<$exit> is 1 when any removal
+failed.  C<$pruned> is the C<prune> object of the JSON document, with the
+counts the report says in words.
 
 =head2 document
 
@@ -638,17 +816,20 @@ document, with the counts the report says in words.
         docker     => $docker,      # undef when it could not be reached
         docker_bin => $docker->bin, # the command named in the document
         reachable  => 1,
+        older_than => 2 * 24 * 60 * 60,  # optional, seconds
         prune      => $pruned,      # optional, from prune()
         now        => time,         # optional, for a fixed clock
     );
 
 Returns the document C<action-run cache --json> prints, described under
-L</JSON OUTPUT>.  The daemon is asked for each image's size only when
+L</JSON OUTPUT>.  C<older_than> restricts C<images> and C<totals> to the
+images the listing selected.  The daemon is asked for each image's size only when
 C<reachable> is true; otherwise the sizes, the presence of each image and the
 counts that depend on them are C<undef>, which is written as C<null>.  C<now>
 (epoch seconds) can be passed for a fixed clock in a test; it becomes the
-document's C<generated_at>, and an image's age is that value minus its
-C<last_used>.  The
+document's C<generated_at>, and each image's C<age> is that value minus its
+C<last_used>, or C<null> when the record has no last use; a last use later
+than C<generated_at> is reported as age 0.  The
 document is checked against L</json_schema> before it is returned, so a key
 that was added or retyped without the schema changing raises an
 L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
@@ -677,23 +858,27 @@ With C<json> the listing is a single object, with every key always present and
 C<null> for a value that could not be discovered:
 
     {
-      "schema_version": 2,
+      "schema_version": 3,
       "generated_at": 1792540920,
       "cache_file": "/home/me/.cache/action-run/cache.json",
       "docker": { "bin": "docker", "reachable": true },
       "images": [
-        { "image": "alpine:3.20", "pulls": 3, "last_used": 1792540800, "size": 12345678, "present": true },
-        { "image": "perl:5.38", "pulls": 1, "last_used": 1792440000, "size": null, "present": false }
+        { "image": "alpine:3.20", "pulls": 3, "last_used": 1792540800, "age": 120, "size": 12345678, "present": true },
+        { "image": "perl:5.38", "pulls": 1, "last_used": 1792440000, "age": 100920, "size": null, "present": false }
       ],
       "totals": { "images": 2, "size": 12345678, "present": 1, "missing": 1 },
       "prune": null
     }
 
+With C<older_than> only the images at least that old are in C<images>, and
+the C<totals> count only them; an image with no C<last_used> is not selected.
 C<size> is the bytes the daemon reports, C<present> whether it still has the
-image, and C<last_used> the epoch second a run last used it.  C<generated_at>
-is the epoch second the document was made, so an image's age is that value
-minus its C<last_used> without either machine having to agree on a clock.
-When the daemon
+image, C<last_used> the epoch second a run last used it, and C<age> the
+seconds between C<generated_at> and C<last_used>.  C<age> is C<null> when the
+record has no last use, and 0 when the last use is later than
+C<generated_at>, so a clock that is ahead is not reported as a negative age.
+C<generated_at> is the epoch second the document was made, so the age needs
+neither machine to agree on a clock.  When the daemon
 cannot be reached, C<docker.reachable> is false and the sizes, C<present> and
 the C<totals> that would count them are C<null>; the record's own values are
 still listed.  C<prune> is C<null> for a listing and an object after

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generated_at": 1792540920,
   "cache_file": "/home/me/.cache/action-run/cache.json",
   "docker": {
@@ -11,6 +11,7 @@
       "image": "postgres:15",
       "pulls": 1,
       "last_used": 1792540800,
+      "age": 120,
       "size": 432100000,
       "present": true
     }

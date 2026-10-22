@@ -217,36 +217,11 @@ sub entries {
     return \@runs;
 }
 
-# How old a kept log is, in the words a reader expects rather than a second
-# count.  The largest whole unit is used, so 90 minutes is an hour ago and
-# 23 hours is still hours rather than a day.
+# The words are shared with the cache listing, which reports an image's age
+# the same way.  The largest whole unit is used, so 90 minutes is an hour ago
+# and 23 hours is still hours rather than a day.
 sub format_age {
-    my ($seconds) = @_;
-
-    $seconds = 0 unless defined $seconds && $seconds =~ /\A-?\d+\z/;
-    $seconds = 0 if $seconds < 0;
-
-    return 'just now' if $seconds < 60;
-
-    my @units = (
-        [ 60,        'minute' ],
-        [ 60 * 60,   'hour'   ],
-        [ 60 * 60 * 24,      'day'   ],
-        [ 60 * 60 * 24 * 30, 'month' ],
-        [ 60 * 60 * 24 * 365, 'year' ],
-    );
-
-    # The first unit whose span the age does not reach is the one to report,
-    # so 90 minutes is an hour and 40 days is a month.
-    my ($index, $amount) = (0, int($seconds / $units[0][0]));
-    for my $next (1 .. $#units) {
-        last if $seconds < $units[$next][0];
-        $index  = $next;
-        $amount = int($seconds / $units[$next][0]);
-    }
-
-    my $label = $units[$index][1];
-    return sprintf('%d %s%s ago', $amount, $label, $amount == 1 ? '' : 's');
+    return App::Actions::Cache::format_age($_[0]);
 }
 
 # The listing: one line per kept job log, with the size it takes and how long

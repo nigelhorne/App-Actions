@@ -204,12 +204,16 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       new one, and the Real Docker on Windows workflow sets LIVE_TESTING.
     - Fail when a checked-in example in t/fixtures/ declares a schema version
       other than the one the module that prints it ships, naming the file and
-      both numbers, and when an example is not one t/schema.t's coverage walk
-      reads.  The walk only sees the files it lists, so a version bump applied
-      to a schema and its module but not to a document nobody was editing
-      reached CI as a schema mismatch naming only the key at fault; the
-      directory is now walked, so a half-applied bump fails locally with the
-      document that was missed.
+      both numbers.  The directory is walked rather than listed, so a version
+      bump applied to a schema and its module but not to a document nobody was
+      editing fails locally with the document that was missed instead of
+      reaching CI as a schema mismatch naming only the key at fault.  The
+      coverage walk also groups every fixture by the document it carries, so
+      a new example is checked for every key, enum value and null variant
+      without editing a list in t/schema.t.  A test copies the fixtures
+      directory, drops one more document into the copy and checks that the
+      walk discovers and groups it, so a newly added fixture cannot be
+      silently left out of the coverage.
     - Run step scripts for real in the fake Docker.  It maps the paths docker
       exec was given back to the host and runs the script with the host's
       shell, so what a step prints and what it writes to GITHUB_ENV and
@@ -225,11 +229,12 @@ Revision history for App-Actions - run GitHub Actions workflows locally
     - Run the tool where it is being tested: t/lib/self_test_cli.yml is a
       second workflow t/self_test.t runs, in a Perl image, and its steps run
       "action-run schema" and "action-run validate" inside the container for
-      the check document and every cache and logs fixture, including the
-      empty, unreachable and prune examples.  The cache and logs fixtures are
-      discovered from t/fixtures/cache*.json and t/fixtures/logs*.json rather
-      than listed by name, so a new example is validated without editing the
-      workflow.  The schemas it prints and
+      every check and preflight document and every cache and logs fixture,
+      including the unready, unreachable, uncounted, empty and prune
+      examples.  All four sets are discovered from t/fixtures/check*.json,
+      t/fixtures/preflight*.json, t/fixtures/cache*.json and
+      t/fixtures/logs*.json rather than listed by name, so a new example is
+      validated without editing the workflow.  The schemas it prints and
       each document it validates are read back through JSON::PP.  The tool's
       dependency is installed only when the image lacks it, so the fake run
       stays off the network; the live run fetches YAML::PP, which is the one
@@ -275,7 +280,10 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       started.  "make check-staged" runs the same checks against the index
       and "make check-worktree" against the working tree, unstaged edits and
       untracked files included, so a developer can ask what the hook would
-      say before writing a commit message.
+      say before writing a commit message.  t/hooks.t runs both targets
+      against passing and failing snapshots, including a staged live-knob
+      change, so the target is shown to reach the hook's second check and not
+      only the schema check.
     - Hold each shipped schema to itself before any document is read: the
       schema's own version, the const its schema_version property promises
       and the constant the module reports have to agree, and the failure
@@ -363,9 +371,17 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       unpacked archive still has CRLF line endings, exempting the generated
       META.yml and META.json and the MANIFEST that make dist rewrites, so a
       tar or gzip step that normalises the archive cannot pass unnoticed.
+      It compares the unpacked file list with the names MANIFEST lists, so a
+      file missing from the archive or one the archive adds also fails, not
+      only a line ending that changed on the way in.
       The audit lives in t/bin/check-archive-crlf, and t/archive-crlf.t
-      exercises its exemptions, binary handling and a normalised source
-      without building a distribution.
+      exercises its exemptions, binary handling, a missing file, an extra
+      file and a normalised source.
+      It also builds a real distribution from a CRLF copy of what MANIFEST
+      ships, unpacks the tarball and audits it, then rebuilds it with one
+      source file normalised to LF to prove the audit rejects that archive.
+      A tar or gzip step that normalises line endings therefore fails in the
+      suite rather than only in that job.
     - Keep each parallel job's log after the run, and print where the logs
       are and which job each one holds.  The terminal still shows the
       interleaved prefixed lines while the jobs run, but the copies are the
@@ -405,3 +421,19 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       than a subtraction from the reader's clock.  This bumps the cache
       schema to version 2; the schema, its examples and the self test's
       contract check are updated with it.
+    - Add an explicit "age" to every image in "cache --json", generated_at
+      minus last_used, so a reader does not have to subtract the two clocks
+      itself.  The age is null when last_used is unknown and 0 when the last
+      use is later than generated_at.  This bumps the cache schema to
+      version 3; the schema, all four examples and the self test's contract
+      check are updated with it.  The text "cache" listing has the same age
+      as an AGE column in words, showing unknown for an image with no
+      recorded use; its formatter is shared with the logs listing.
+    - Add "action-run cache --older-than <duration>", which limits the text
+      and JSON listings to images at least that old, and makes --prune
+      remove only those images.  The duration is a number and a unit (30s,
+      15m, 12h, 7d, 2w, 3mo, 1y), optionally spelled out, with months and
+      years using the same 30- and 365-day spans as the AGE column.  An
+      image with no recorded last use is not guessed to be old enough, so it
+      is left out of a filtered listing and kept by a filtered prune.  An
+      unreadable duration is a usage error rather than an unfiltered prune.

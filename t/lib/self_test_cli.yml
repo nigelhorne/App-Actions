@@ -41,10 +41,38 @@ jobs:
                 && defined $schema->{properties}{schema_version};
             print "the CLI printed its check schema inside the container\n";
           ' "$RUNNER_TEMP/check-schema.json"
-      - name: Validate a document
+      - name: Validate every check document
         run: |
-          perl -Ilib bin/action-run validate check t/fixtures/check.json
-          echo "the CLI validated a document inside the container"
+          for fixture in t/fixtures/check*.json
+          do
+            perl -Ilib bin/action-run validate check "$fixture"
+            echo "the CLI validated ${fixture##*/} inside the container"
+          done
+      - name: Print the preflight contract
+        run: |
+          perl -Ilib bin/action-run schema preflight > "$RUNNER_TEMP/preflight-schema.json"
+          perl -MJSON::PP -e '
+            local $/;
+            open my $handle, "<", $ARGV[0] or die "cannot read $ARGV[0]: $!\n";
+            my $schema = JSON::PP->new->decode(<$handle>);
+            die "the document is not the preflight schema\n"
+                unless defined $schema->{version}
+                && ref $schema->{properties} eq "HASH"
+                && ref $schema->{properties}{ready} eq "HASH"
+                && ref $schema->{properties}{images} eq "HASH"
+                && ref $schema->{properties}{pull_concurrency} eq "HASH";
+            die "the preflight schema is not the version its schema_version names\n"
+                unless defined $schema->{properties}{schema_version}{const}
+                && $schema->{properties}{schema_version}{const} == $schema->{version};
+            print "the CLI printed its preflight schema inside the container\n";
+          ' "$RUNNER_TEMP/preflight-schema.json"
+      - name: Validate every preflight document
+        run: |
+          for fixture in t/fixtures/preflight*.json
+          do
+            perl -Ilib bin/action-run validate preflight "$fixture"
+            echo "the CLI validated ${fixture##*/} inside the container"
+          done
       - name: Print the cache contract
         run: |
           perl -Ilib bin/action-run schema cache > "$RUNNER_TEMP/cache-schema.json"
@@ -57,6 +85,7 @@ jobs:
                 && ref $schema->{properties} eq "HASH"
                 && ref $schema->{properties}{generated_at} eq "HASH"
                 && ref $schema->{properties}{images} eq "HASH"
+                && ref $schema->{properties}{images}{items}{properties}{age} eq "HASH"
                 && ref $schema->{properties}{totals} eq "HASH";
             die "the cache schema is not the version its schema_version names\n"
                 unless defined $schema->{properties}{schema_version}{const}

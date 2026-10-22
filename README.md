@@ -88,9 +88,13 @@ value removes the ones the run itself pulled when it finishes.  The kept
 images are recorded by [App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache), which is what
 `action-run cache` lists and `action-run cache --prune` removes; the record
 lives in the user's cache directory, and `ACTION_RUN_CACHE_FILE` moves it.
-`action-run cache --json` prints the same record as a versioned document,
-with a `generated_at` clock its image ages are measured from, held to a schema
-that `action-run schema cache` prints.
+The text listing carries an `AGE` column, and `action-run cache --json` prints
+the same record as a versioned document with a `generated_at` clock and an
+explicit `age` for each image, held to a schema that
+`action-run schema cache` prints.  `--older-than` filters the listing, and
+with `--prune` removes only the images that old: a number and a unit such as
+`30s`, `12h`, `7d`, `3mo` or `1y`, with the unit optionally spelled out.
+Images with no recorded last use are left out of the filter and the prune.
 `log_dir` says where the per-job logs of a parallel run are kept; it
 defaults to `ACTION_RUN_LOG_DIR`, then to `action-run/logs` under that same
 cache directory.  `action-run logs` reads that directory, with the sizes and
@@ -210,6 +214,16 @@ finds it there as soon as that file is listed.  That doubles the running time;
 set `SPACE_PATH=0` to skip it, or run just that check with
 `prove -l t/space-path.t`.
 
+The archive test copies the files `MANIFEST` ships, makes that copy a CRLF
+checkout, builds a distribution with `make dist` and audits the unpacked
+tarball.  The audit compares the files it finds with the names `MANIFEST`
+lists, so a missing or extra file fails as well as a line ending that changed.
+It then rebuilds the archive with one source file normalised to LF and checks
+that the audit rejects it, so the passing case is not the only one exercised.
+A `tar` or `gzip` step that normalises line endings is caught without waiting
+for the CRLF CI job.  The test skips when `make`, `tar` or `gzip` is not
+available.
+
 The repository ships a pre-commit hook in `.githooks/` that runs the schema
 checks and the live-knob check against the files a commit stages, so a version
 bump applied to the schema or to the documents but not to both, or a live
@@ -258,11 +272,12 @@ container prints, and the status it exits with, are what the run sees.
 
 The self test runs two workflows the distribution ships: the one above, which
 proves the command surface, and `t/lib/self_test_cli.yml`, which runs
-`action-run schema` and `action-run validate` inside a Perl image for the
-check document and every cache and logs fixture, including the empty,
-unreachable and prune examples, so the tool is exercised where it is being
-tested rather than only from the checkout that started it.  The cache and logs
-examples are discovered from `t/fixtures/cache*.json` and
+`action-run schema` and `action-run validate` inside a Perl image for every
+check and preflight document and every cache and logs fixture, including the
+unready, unreachable, uncounted, empty and prune examples, so the tool is
+exercised where it is being tested rather than only from the checkout that
+started it.  All four sets are discovered from `t/fixtures/check*.json`,
+`t/fixtures/preflight*.json`, `t/fixtures/cache*.json` and
 `t/fixtures/logs*.json` rather than listed by name, so a new one is validated
 without editing the workflow.  That image gets
 the tool's dependencies only when it does not have them, so the fake run

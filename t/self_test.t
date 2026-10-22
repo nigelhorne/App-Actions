@@ -25,9 +25,8 @@ my $workflow = File::Spec->catfile($root, 't', 'lib', 'self_test.yml');
 my $cli_workflow = File::Spec->catfile($root, 't', 'lib', 'self_test_cli.yml');
 my $script   = File::Spec->catfile($root, 'bin', 'action-run');
 
-# The cache and logs examples are discovered rather than listed here, so a
-# fixture added to the distribution is asserted without another hand-maintained
-# list.
+# Every example is discovered rather than listed here, so a fixture added to
+# the distribution is asserted without another hand-maintained list.
 my $fixtures = File::Spec->catdir($root, 't', 'fixtures');
 
 sub fixture_names {
@@ -37,15 +36,22 @@ sub fixture_names {
         bsd_glob(File::Spec->catfile($directory, $pattern));
 }
 
-my @cache_fixtures = fixture_names($fixtures, 'cache*.json');
-my @logs_fixtures  = fixture_names($fixtures, 'logs*.json');
+my @check_fixtures     = fixture_names($fixtures, 'check*.json');
+my @preflight_fixtures = fixture_names($fixtures, 'preflight*.json');
+my @cache_fixtures     = fixture_names($fixtures, 'cache*.json');
+my @logs_fixtures      = fixture_names($fixtures, 'logs*.json');
 
-BAIL_OUT("cannot find any cache fixtures in '$fixtures'; the self test would "
-        . 'have nothing to validate')
-    unless @cache_fixtures;
-BAIL_OUT("cannot find any logs fixtures in '$fixtures'; the self test would "
-        . 'have nothing to validate')
-    unless @logs_fixtures;
+for my $set (
+    [ check     => \@check_fixtures ],
+    [ preflight => \@preflight_fixtures ],
+    [ cache     => \@cache_fixtures ],
+    [ logs      => \@logs_fixtures ],
+) {
+    my ($kind, $found) = @$set;
+    BAIL_OUT("cannot find any $kind fixtures in '$fixtures'; the self test "
+            . 'would have nothing to validate')
+        unless @$found;
+}
 
 # Every run in this file goes through the command, which records the images it
 # kept; that record belongs in a temporary file, not the real cache.
@@ -212,8 +218,8 @@ SKIP: {
 
 # The second shipped workflow runs the tool itself inside a Perl image:
 # "action-run schema" and "action-run validate" are exercised from inside the
-# container for the check document and every cache and logs fixture, through
-# the command a user runs.
+# container for every check, preflight, cache and logs fixture, through the
+# command a user runs.
 my ($cli_stdout, $cli_stderr, $cli_exit) = run_workflow_file($docker, $cli_workflow);
 
 diag "stdout:\n$cli_stdout" if $cli_exit != 0;
@@ -228,16 +234,35 @@ like($cli_stdout, qr/^Workflow succeeded$/m,
     'the second workflow reports success');
 
 SKIP: {
-    skip 'the fake daemon cannot execute step scripts on this host',
-        5 + scalar @cache_fixtures + scalar @logs_fixtures
+    my $assertions = 5
+        + scalar @check_fixtures
+        + scalar @preflight_fixtures
+        + scalar @cache_fixtures
+        + scalar @logs_fixtures;
+
+    skip 'the fake daemon cannot execute step scripts on this host', $assertions
         unless $live || $^O ne 'MSWin32';
 
     like($cli_stdout, qr/^the dependencies the tool needs are available$/m,
         'the image was ready for the tool to run');
     like($cli_stdout, qr/^the CLI printed its check schema inside the container$/m,
-        "the tool's own command printed a schema from inside the container");
-    like($cli_stdout, qr/^the CLI validated a document inside the container$/m,
-        "the tool's own command validated a document from inside the container");
+        "the tool's own command printed the check schema from inside the container");
+    for my $fixture (@check_fixtures) {
+        like(
+            $cli_stdout,
+            qr/^\Qthe CLI validated $fixture inside the container\E$/m,
+            "the tool's own command validated $fixture from inside the container",
+        );
+    }
+    like($cli_stdout, qr/^the CLI printed its preflight schema inside the container$/m,
+        "the tool's own command printed the preflight schema from inside the container");
+    for my $fixture (@preflight_fixtures) {
+        like(
+            $cli_stdout,
+            qr/^\Qthe CLI validated $fixture inside the container\E$/m,
+            "the tool's own command validated $fixture from inside the container",
+        );
+    }
     like($cli_stdout, qr/^the CLI printed its cache schema inside the container$/m,
         "the tool's own command printed the cache schema from inside the container");
     for my $fixture (@cache_fixtures) {

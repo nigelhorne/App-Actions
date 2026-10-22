@@ -384,11 +384,12 @@ container prints, and the status it exits with, are what the run sees.
 
 The self test runs two workflows the distribution ships: the one above, which
 proves the command surface, and F<t/lib/self_test_cli.yml>, which runs
-C<action-run schema> and C<action-run validate> inside a Perl image for the
-check document and every cache and logs fixture, including the empty,
-unreachable and prune examples, so the tool is exercised where it is being
-tested rather than only from the checkout that started it.  The cache and logs
-examples are discovered from F<t/fixtures/cache*.json> and
+C<action-run schema> and C<action-run validate> inside a Perl image for every
+check and preflight document and every cache and logs fixture, including the
+unready, unreachable, uncounted, empty and prune examples, so the tool is
+exercised where it is being tested rather than only from the checkout that
+started it.  All four sets are discovered from F<t/fixtures/check*.json>,
+F<t/fixtures/preflight*.json>, F<t/fixtures/cache*.json> and
 F<t/fixtures/logs*.json> rather than listed by name, so a new one is validated
 without editing the workflow.  That image gets
 the tool's dependencies only when it does not have them, so the fake run

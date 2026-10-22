@@ -433,25 +433,91 @@ sub schema_gaps {
     return @gaps;
 }
 
-# The examples that document each schema.  One example cannot carry every
-# shape a document can take, so each schema has a set: a healthy report, one
-# that found a problem, one from a host where Docker could not be reached -
-# the nulls for what could not be discovered - and one whose probe ran but
-# could not count the project's entries.  The last also shows the skipped
-# images a preflight reports when the environment is not ready, and the entry
-# it could not name.
-my %shipped_examples = (
-    check     => [qw(check.json check-unready.json check-unreachable.json check-uncounted.json)],
-    preflight => [qw(preflight.json preflight-unready.json preflight-unreachable.json
-                    preflight-not-ready.json)],
-    cache     => [qw(cache.json cache-empty.json cache-unreachable.json cache-prune.json)],
-    logs      => [qw(logs.json logs-empty.json logs-prune.json logs-prune-failed.json)],
+# The fixtures directory is the list of examples: each document says which
+# command printed it by what it carries - the preflight adds the pull
+# concurrency, the cache names its record - rather than by how its file
+# happens to be named.  The coverage walk below groups the files by that
+# answer, so a new fixture is read without editing a list here.  Discovery is
+# a sub rather than inline code so a test can point it at a copy of the
+# directory with one more file in it.
+sub discover_examples {
+    my ($directory) = @_;
+
+    opendir my $handle, $directory
+        or die "Unable to read '$directory': $!";
+    my @names = sort grep { /\.json\z/ } readdir $handle;
+    closedir $handle;
+
+    my (%examples, @problems);
+    for my $name (@names) {
+        my $example = load_json(File::Spec->catfile($directory, $name));
+
+        my $document = exists $example->{cache_file}
+            ? 'cache'
+            : exists $example->{logs_directory}
+                ? 'logs'
+                : exists $example->{pull_concurrency}
+                    && ref $example->{images} eq 'ARRAY'
+                    ? 'preflight'
+                    : 'check';
+        push @{ $examples{$document} }, $name;
+
+        my $shipped  = $shipped_schema{$document};
+        my $declared = $example->{schema_version};
+
+        next if defined $declared && $declared eq $shipped->{version};
+
+        push @problems, sprintf(
+            '%s declares schema version %s, but %s ships %s',
+            $name,
+            defined $declared ? $declared : 'nothing',
+            $document eq 'preflight' ? 'App::Actions::Runner'
+                : $document eq 'cache' ? 'App::Actions::Cache'
+                : $document eq 'logs' ? 'App::Actions::Logs'
+                : 'App::Actions::Check',
+            $shipped->{version},
+        );
+    }
+
+    return (\@names, \%examples, \@problems);
+}
+
+my ($fixture_files, $shipped_examples, $version_problems)
+    = discover_examples($fixtures);
+
+ok(scalar @$fixture_files, 'the fixtures directory holds the checked-in examples');
+
+is_deeply(
+    $version_problems,
+    [],
+    'every checked-in example declares the schema version it is written for',
 );
-for my $document (sort keys %shipped_examples) {
+diag "$_\n" for @$version_problems;
+
+# A schema with no checked-in example promises a document nobody has shown
+# the code can produce, so each of the four commands needs at least one.
+my @without_examples = grep { !@{ $shipped_examples->{$_} || [] } }
+    sort keys %shipped_schema;
+
+is_deeply(
+    \@without_examples,
+    [],
+    'every schema has at least one checked-in example',
+);
+diag "add a fixture for the '$_' schema\n" for @without_examples;
+
+# One example cannot carry every shape a document can take, so each schema
+# has a set: a healthy report, one that found a problem, one from a host where
+# Docker could not be reached - the nulls for what could not be discovered -
+# and one whose probe ran but could not count the project's entries.  The
+# last also shows the skipped images a preflight reports when the environment
+# is not ready, and the entry it could not name.  Which files are in the set
+# came from the walk above, not from a list maintained here.
+for my $document (sort keys %shipped_schema) {
     my $schema = $shipped_schema{$document};
     my %coverage = (keys => {}, alternatives => {});
 
-    for my $name (@{ $shipped_examples{$document} }) {
+    for my $name (@{ $shipped_examples->{$document} || [] }) {
         my $example = load_json(File::Spec->catfile($fixtures, $name));
 
         is_deeply(
@@ -469,82 +535,39 @@ for my $document (sort keys %shipped_examples) {
     diag "$document schema, unexercised: $_\n" for @gaps;
 }
 
-# A version bump is applied by hand to the schema, the module that prints it
-# and every checked-in document, and the copy that gets forgotten is exactly
-# the one that was not on somebody's list.  The assertions above only see the
-# files named in %shipped_examples, so the directory itself is walked here:
-# every document has to declare the version the module that prints it ships.
-# That is what fails on a half-applied bump, with the file and both numbers
-# named, instead of a CI job reporting the key at fault in a document nobody
-# was editing.
-my @fixture_files = do {
-    opendir my $directory, $fixtures or die "Unable to read '$fixtures': $!";
-    my @names = sort grep { /\.json\z/ } readdir $directory;
-    closedir $directory;
-    @names;
-};
+# The checked-in examples prove the walk reads what it already knows about,
+# but not that a new fixture is discovered without editing a list.  Use a copy
+# of the fixtures directory so the temporary file cannot leak into the tree,
+# and run the same discovery over it with one extra document.
+{
+    my $copy = tempdir(CLEANUP => 1);
+    copy_tree($root, $copy, File::Spec->catdir('t', 'fixtures'));
+    my $copied = File::Spec->catdir($copy, 't', 'fixtures');
 
-ok(scalar @fixture_files, 'the fixtures directory holds the checked-in examples');
+    my $temporary = 'zz-temporary-check.json';
+    write_file(
+        File::Spec->catfile($copied, $temporary),
+        JSON::PP->new->canonical->pretty->encode($check_example),
+    );
 
-my %document_of;
-my @version_problems;
+    my ($names, $examples, $problems) = discover_examples($copied);
 
-for my $name (@fixture_files) {
-    my $example = load_json(File::Spec->catfile($fixtures, $name));
-
-    # A document says which command printed it by what it carries - the
-    # preflight adds the pull concurrency, the cache names its record - rather
-    # than by how its file happens to be named.
-    my $document = exists $example->{cache_file}
-        ? 'cache'
-        : exists $example->{logs_directory}
-            ? 'logs'
-            : exists $example->{pull_concurrency}
-                && ref $example->{images} eq 'ARRAY'
-                ? 'preflight'
-                : 'check';
-    $document_of{$name} = $document;
-
-    my $shipped  = $shipped_schema{$document};
-    my $declared = $example->{schema_version};
-
-    next if defined $declared && $declared eq $shipped->{version};
-
-    push @version_problems, sprintf(
-        '%s declares schema version %s, but %s ships %s',
-        $name,
-        defined $declared ? $declared : 'nothing',
-        $document eq 'preflight' ? 'App::Actions::Runner'
-            : $document eq 'cache' ? 'App::Actions::Cache'
-            : $document eq 'logs' ? 'App::Actions::Logs'
-            : 'App::Actions::Check',
-        $shipped->{version},
+    is_deeply(
+        $names,
+        [ sort(@$fixture_files, $temporary) ],
+        'the coverage walk finds a fixture dropped into a copied fixtures directory',
+    );
+    is_deeply(
+        $examples->{check},
+        [ sort(@{ $shipped_examples->{check} }, $temporary) ],
+        'the dropped fixture is grouped with the document it carries',
+    );
+    is_deeply(
+        $problems,
+        [],
+        'the dropped fixture carries the schema version the command ships',
     );
 }
-
-is_deeply(
-    \@version_problems,
-    [],
-    'every checked-in example declares the schema version it is written for',
-);
-diag "$_\n" for @version_problems;
-
-# An example nobody listed is one the walk above never reads, so its keys,
-# enum values and null variants would go unchecked while it looked covered.
-my @unlisted;
-for my $name (@fixture_files) {
-    my $listed = grep { $_ eq $name }
-        @{ $shipped_examples{ $document_of{$name} } || [] };
-
-    push @unlisted, $name unless $listed;
-}
-
-is_deeply(
-    \@unlisted,
-    [],
-    'every checked-in example is one the coverage walk reads',
-);
-diag "add '$_' to \%shipped_examples\n" for @unlisted;
 
 # Now the documents the commands actually print, against the same schemas.
 my $project = tempdir(CLEANUP => 1);
