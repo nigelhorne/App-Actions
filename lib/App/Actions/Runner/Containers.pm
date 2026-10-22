@@ -11,7 +11,7 @@ use Text::ParseWords qw(shellwords);
 use App::Actions::Access;
 use App::Actions::Error;
 use App::Actions::I18N qw(i18n throw validate_args);
-use App::Actions::Runner::Support qw(env_args resolve_env);
+use App::Actions::Runner::Support qw(default_logger env_args resolve_env);
 
 our $VERSION = '0.002.0';
 
@@ -115,6 +115,11 @@ Creates the container manager for one run.
 
 =item * C<quiet>, C<explain>, C<keep> - optional flags.
 
+=item * C<logger> - optional; a L<Log::Abstraction> object (default:
+L<App::Actions::Runner::Support/default_logger>, standard error).  A
+service's C<credentials>, which are not supported, are logged at the
+C<warn> level unless C<quiet> is set.
+
 =back
 
 =head3 RETURNS
@@ -149,6 +154,7 @@ None.
 		quiet       => { type => 'boolean', optional => 1 },
 		explain     => { type => 'boolean', optional => 1 },
 		keep        => { type => 'boolean', optional => 1 },
+		logger      => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	}
 
 =head4 OUTPUT
@@ -179,9 +185,11 @@ sub new {
 		quiet => { type => 'boolean', optional => 1 },
 		explain => { type => 'boolean', optional => 1 },
 		keep => { type => 'boolean', optional => 1 },
+		# Where warnings and errors go; standard error when none is given.
+		logger => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	});
 
-	return bless { %{$params}, containers => [], networks => [], counter => 0 }, $class;
+	return bless { %{$params}, logger => $params->{logger} || default_logger(), containers => [], networks => [], counter => 0 }, $class;
 }
 
 =head2 name
@@ -379,7 +387,7 @@ sub start_services {
 			$image,
 		);
 
-		print STDERR $self->i18n('runner.service.credentials', { id => $id }), "\n"
+		$self->{logger}->warn($self->i18n('runner.service.credentials', { id => $id }))
 			if defined $service->{credentials} && !$self->{quiet};
 
 		$self->_explain(

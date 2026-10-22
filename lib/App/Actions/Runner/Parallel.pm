@@ -14,7 +14,7 @@ use Time::HiRes ();
 
 use App::Actions::Access;
 use App::Actions::I18N qw(i18n throw validate_args);
-use App::Actions::Runner::Support qw(chomp_error);
+use App::Actions::Runner::Support qw(chomp_error default_logger);
 
 our $VERSION = '0.002.0';
 
@@ -96,6 +96,11 @@ pulled).
 
 =item * C<quiet> - optional; show nothing of the jobs' logs.
 
+=item * C<logger> - optional; a L<Log::Abstraction> object (default:
+L<App::Actions::Runner::Support/default_logger>, standard error).  A job
+that dies in its child process is logged there at the C<error> level, so
+with the default logger it lands in that job's log file.
+
 =back
 
 =head3 RETURNS
@@ -120,6 +125,7 @@ See the L</SYNOPSIS>.
 		run_job   => { type => 'coderef' },
 		on_result => { type => 'coderef', optional => 1 },
 		quiet     => { type => 'boolean', optional => 1 },
+		logger    => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	}
 
 =head4 OUTPUT
@@ -146,9 +152,11 @@ sub new {
 		run_job => { type => 'coderef' },
 		on_result => { type => 'coderef', optional => 1 },
 		quiet => { type => 'boolean', optional => 1 },
+		# Where warnings and errors go; standard error when none is given.
+		logger => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	});
 
-	return bless { on_result => sub { }, %{$params}, slots => 0, logs => [] }, $class;
+	return bless { on_result => sub { }, %{$params}, logger => $params->{logger} || default_logger(), slots => 0, logs => [] }, $class;
 }
 
 =head2 run
@@ -450,7 +458,7 @@ sub _run_job {
 	};
 	if (!$ok) {
 		my $error = chomp_error($@ || $self->i18n('runner.parallel.did_not_run', { name => $entry->{plan}{display_name} }));
-		print STDERR $self->i18n('runner.error', { error => $error }), "\n";
+		$self->{logger}->error($self->i18n('runner.error', { error => $error }));
 	}
 
 	STDOUT->flush;

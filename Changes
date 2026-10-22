@@ -18,6 +18,20 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  Config::Abstraction files (base/local in CONFIG_DIR or ~/.conf) and
 	  App__Actions__* environment variables, both of which win over the
 	  arguments and the command line and are not validated.
+	- Warnings and errors from a run (a failed step, a job that could not
+	  run, a container or log that could not be kept) now go through a
+	  Log::Abstraction logger, at the error or warn level.  By default it
+	  prints them to standard error as before.  App::Actions->new takes a
+	  logger argument: a Log::Abstraction object, an array to collect the
+	  messages in, a hash of Log::Abstraction options, or 'NULL' to turn
+	  them off.  A logger in an App__Actions (or UNIVERSAL) configuration
+	  section replaces the default; the argument replaces both.  Progress
+	  lines, command echoes and the summary stay on standard output.
+	- Log::Abstraction 0.41 is now required directly.  It sets
+	  Sub::Private's mode for its own package only, so t/error.t's TODO now
+	  applies only to an older Log::Abstraction.
+	- The tests set CONFIG_DIR to an empty directory, so a developer's own
+	  ~/.conf files (such as a UNIVERSAL logger) cannot change what they see.
 
 0.001.0	Thu Oct 22 12:40:02 PM EDT 2026
 	- First release

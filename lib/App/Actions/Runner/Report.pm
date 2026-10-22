@@ -14,7 +14,7 @@ use Sub::Private ();
 
 use App::Actions::Access;
 use App::Actions::I18N qw(i18n validate_args);
-use App::Actions::Runner::Support qw(chomp_error redact);
+use App::Actions::Runner::Support qw(chomp_error default_logger redact);
 
 our $VERSION = '0.002.0';
 
@@ -76,6 +76,10 @@ C<action-run logs> lists them).
 
 =item * C<quiet> - optional; print nothing.
 
+=item * C<logger> - optional; a L<Log::Abstraction> object (default:
+L<App::Actions::Runner::Support/default_logger>, standard error).  Logs
+the jobs' logs that could not be kept, at the C<warn> level.
+
 =back
 
 =head3 RETURNS
@@ -97,6 +101,7 @@ None.
 	{
 		docker => { type => 'object' },
 		quiet  => { type => 'boolean', optional => 1 },
+		logger => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	}
 
 =head4 OUTPUT
@@ -120,9 +125,11 @@ sub new {
 	my $params = validate_args(__PACKAGE__ . '::new', \@_, {
 		docker => { type => 'object' },
 		quiet => { type => 'boolean', optional => 1 },
+		# Where warnings and errors go; standard error when none is given.
+		logger => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	});
 
-	return bless { %{$params}, entries => [], failed => 0, kept_dir => undef, kept_logs => [] }, $class;
+	return bless { %{$params}, logger => $params->{logger} || default_logger(), entries => [], failed => 0, kept_dir => undef, kept_logs => [] }, $class;
 }
 
 =head2 record
@@ -407,7 +414,7 @@ sub keep_logs {
 		$self->{kept_dir} = $directory;
 		$self->{kept_logs} = [ grep { $_->{kept} } @present ];
 	} else {
-		warn $self->i18n('runner.logs.keep_failed', { error => chomp_error($@) }), "\n";
+		$self->{logger}->warn($self->i18n('runner.logs.keep_failed', { error => chomp_error($@) }));
 	}
 
 	return $self;

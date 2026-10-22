@@ -6,13 +6,16 @@ use utf8;
 use autodie qw(:all);
 
 use Cwd qw(abs_path);
+use Log::Abstraction ();
 use Readonly;
+use Scalar::Util qw(blessed);
 
 use App::Actions::Cache;
 use App::Actions::Check;
 use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Logs;
 use App::Actions::Runner;
+use App::Actions::Runner::Support qw(default_logger null_logger);
 use App::Actions::Workflow;
 
 use Object::Configure;
@@ -48,6 +51,9 @@ Readonly::Scalar my $WORKFLOW_IN_REPOSITORY => qr{^(.*)/\.github/workflows/[^/]+
 # The options list_jobs forces: listing never starts anything or prints
 # anything but the list.
 Readonly::Hash my %LIST_OPTIONS => (dry_run => 1, quiet => 1);
+
+# Object::Configure's word for "no logging".
+Readonly::Scalar my $NO_LOGGER => 'NULL';
 
 =head1 NAME
 
@@ -111,6 +117,14 @@ Set an option for every run on this computer, without changing the code
 	  keep_images: 0
 
 	# or, for one command:  App__Actions__keep_images=0 action-run ci.yml .
+
+Collect the warnings and errors instead of printing them, or turn them off:
+
+	my @messages;
+	my $exit = App::Actions->new(workflow_file => 'ci.yml', logger => \@messages)->run;
+	print "$_->{level}: $_->{message}\n" for @messages;
+
+	App::Actions->new(workflow_file => 'ci.yml', logger => 'NULL')->run;
 
 =head1 DESCRIPTION
 
@@ -212,6 +226,12 @@ C<keep_images>, C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>,
 C<pull_concurrency>, C<parallel>, C<log_dir>, C<cache_file>, C<docker>, and
 C<docker_bin>.  Any other key is an error.
 
+=item * C<logger> - where warnings and errors go: a L<Log::Abstraction>
+object, an array reference to collect them in, a hash reference of
+L<Log::Abstraction> options (for example C<{ file =E<gt> $path }>), or the
+string C<'NULL'> to throw them away.  By default they are printed to standard
+error.
+
 =back
 
 C<parallel> says how many jobs of one matrix may run at the same time; it is
@@ -301,11 +321,29 @@ can be set this way; C<App__Actions__env__NAME> does not add to C<env>.  There
 is no argument for naming a configuration file: C<config_file> is refused as
 an unknown option.
 
+B<Warnings and errors.>  What a run reports as a problem - a step that
+failed, a job that could not run, a container that could not be removed -
+goes to a L<Log::Abstraction> logger, at the C<error> or C<warn> level.  The
+progress lines, the C<[dry-run]> and Docker command echoes and the job
+summary are the run's output, not diagnostics, and stay on standard output.
+The default logger prints each message to standard error as a plain line, as
+earlier versions did.  A C<logger> in the configuration replaces it: in the
+C<App__Actions> section, or in a C<UNIVERSAL> section of F<universal.yaml>,
+which L<Object::Configure> applies to every class that uses it.  A C<logger>
+argument replaces both.
+
+	# ~/.conf/local.yaml: keep this module's messages in a file
+	---
+	App__Actions:
+	  logger:
+	    file: /var/log/action-run.log
+	    level: warning
+
 =head3 RETURNS
 
 An C<App::Actions> object.  Besides the options it holds C<logger>, a
-L<Log::Abstraction> object that L<Object::Configure> always adds, and any
-other top-level keys found in the configuration files.  Only the options
+L<Log::Abstraction> object (a silent one for C<'NULL'>), and any other
+top-level keys found in the configuration files.  Only the options
 listed above are passed on to L<App::Actions::Runner>, so the other keys
 have no effect.
 
@@ -353,6 +391,7 @@ above, if there are any, and the C<App__Actions__*> environment variables.
 		no_pull          => { type => 'string', optional => 1 },
 		strict_actions   => { type => 'string', optional => 1 },
 		skip_check       => { type => 'string', optional => 1 },
+		logger           => { type => [qw(object arrayref hashref string)], optional => 1 },
 	}
 
 =head4 OUTPUT
@@ -385,8 +424,11 @@ The messages of L<App::Actions::Workflow/load> apply to the workflow file.
 =head3 PSEUDOCODE
 
 	validate the arguments, refusing unknown options
+	make the logger argument into a logger, or use the default (standard error)
 	merge in the App__Actions section of the configuration files, then the
 	    App__Actions__* environment variables (both win; neither is validated)
+	put back the logger made from the argument, or make the configured one
+	    into a logger ('NULL' is a silent one)
 	refuse a missing workflow_file, then one that does not exist
 	take project_dir as given, or the repository root that holds .github/workflows
 	refuse a project directory that does not exist
@@ -402,9 +444,24 @@ sub new {
 		workflow_file => { type => 'string', optional => 1 },
 		project_dir => { type => 'string', optional => 1 },
 		%OPTION_RULES,
+		# Anything Object::Configure turns into a logger: a Log::Abstraction
+		# object, an array to collect the messages in, a hash of
+		# Log::Abstraction options, or 'NULL' for none.
+		logger => { type => [qw(object arrayref hashref string)], optional => 1 },
 	});
 
+	# Warnings and errors go through a Log::Abstraction logger.  The default
+	# prints them to standard error as plain lines; a logger in the
+	# configuration (an App__Actions or UNIVERSAL section) replaces it, and a
+	# logger argument replaces both.  Object::Configure would let the
+	# configuration replace the argument too (it protects only an array), so
+	# the argument is made into a logger here and put back afterwards.
+	my $given_logger = defined $params->{logger} ? _logger($params->{logger}) : undef;
+	$params->{logger} = $given_logger || default_logger();
+
 	$params = Object::Configure::configure($class, $params);
+
+	$params->{logger} = $given_logger || _logger($params->{logger});
 
 	$class->throw('actions.workflow_file_required') unless defined $params->{workflow_file};
 
@@ -758,6 +815,35 @@ sub _runner {
 	);
 }
 
+# _logger
+# Purpose:     Make a Log::Abstraction logger from any of the forms new()
+#              accepts for one.
+# Entry:       $spec - a Log::Abstraction object, an array reference to
+#              collect the messages in, a hash reference of Log::Abstraction
+#              options, 'NULL' for none, or another string, which
+#              Log::Abstraction takes as the name of a logger.
+# Exit status: Returns a Log::Abstraction object; 'NULL' gives a silent one,
+#              because the runner always calls its logger.
+# Side effects: None; Log::Abstraction croaks on options it does not know.
+sub _logger {
+	my ($spec) = @_;
+
+	my $logger;
+	if (blessed $spec) {
+		$logger = $spec;
+	} elsif (ref $spec eq 'ARRAY') {
+		$logger = Log::Abstraction->new(array => $spec);
+	} elsif (ref $spec eq 'HASH') {
+		$logger = Log::Abstraction->new($spec);
+	} elsif ($spec eq $NO_LOGGER) {
+		$logger = null_logger();
+	} else {
+		$logger = Log::Abstraction->new(logger => $spec);
+	}
+
+	return $logger;
+}
+
 # _overrides
 # Purpose:     Validate the run options a method was given as overrides.
 # Entry:       $self - the object; $routine - the method's name, for the
@@ -955,6 +1041,13 @@ arguments, so they are not checked: C<App__Actions__parallel=banana> is
 accepted.  They also win over the arguments, which is the reverse of what
 most programs do, and a caller cannot choose a configuration file.
 
+=item * Not everything a run prints goes through the logger.  The progress
+lines, the command echoes and the summary are output and stay on standard
+output.  L<App::Actions::I18N> warns about a missing catalogue entry with
+C<carp>, because it has no object to hold a logger.  A pulling child of
+L<App::Actions::Process> prints straight to the log file it was given, since
+it is a separate process whose output is already captured.
+
 =back
 
 =head1 COMMON PITFALLS
@@ -1005,6 +1098,13 @@ environment variables (C<env | grep App__Actions>).
 
 =item * B<Values from those places are not checked.>  A misspelt or
 nonsensical value there is not reported as an argument would be.
+
+=item * B<A UNIVERSAL logger takes the messages off the terminal.>
+L<Object::Configure> applies a C<UNIVERSAL> section of F<universal.yaml> to
+every class that uses it, this one included.  If that section has a
+C<logger> that writes to a file or to syslog, a failed step is reported
+there and not on standard error.  Give this module its own C<logger> in an
+C<App__Actions> section, or pass C<logger>, to choose where its messages go.
 
 =back
 
@@ -1078,7 +1178,14 @@ rule are the conditions that are always true when the routine returns.
 	│ actions!.workflow = Workflow.Load(abs(workflowFile?))
 	│ actions!.project_dir = root
 	│ actions!.options = settings
+	│ let logged == (logger? ≠ ⊥ ⇒ logger?)
+	│             ∧ (logger? = ⊥ ∧ logger ∈ dom configured ⇒ configured(logger))
+	│             ∧ (logger? = ⊥ ∧ logger ∉ dom configured ⇒ stderrLogger)
+	│     where configured == fileConfig(App__Actions) ⊕ envConfig(App__Actions__)
+	│     -- fileConfig includes the UNIVERSAL section of universal.yaml
 	│ actions!.logger ∈ LogAbstraction
+	│ logged = NULL ⇒ actions!.logger = silentLogger
+	│ logged ≠ NULL ⇒ actions!.logger = toLogger(logged)
 	└───────────────────────────────────────────────────
 
 	The workflowFile? and projectDir? above are the values in settings, so a

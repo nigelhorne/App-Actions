@@ -14,6 +14,7 @@ requires 'Getopt::Long';
 requires 'IO::Handle';
 requires 'IPC::System::Simple';
 requires 'JSON::PP';
+requires 'Log::Abstraction', '0.41';
 requires 'Object::Configure';
 requires 'POSIX';
 requires 'Params::Get', '0.17';

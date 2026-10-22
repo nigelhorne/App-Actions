@@ -27,7 +27,8 @@ use App::Actions::Runner::Parallel;
 use App::Actions::Runner::Report;
 use App::Actions::Runner::Steps;
 use App::Actions::Runner::Support qw(
-	boolean_value chomp_error has_status_function redact resolve_env status_flags trim_error write_container_file
+	boolean_value chomp_error default_logger has_status_function redact resolve_env status_flags trim_error
+	write_container_file
 );
 use App::Actions::Schema;
 use App::Actions::Util ();
@@ -201,6 +202,9 @@ Readonly::Hash my %OPTION_RULES => (
 	env => { type => 'hashref', optional => 1 },
 	secrets => { type => 'hashref', optional => 1 },
 	docker => { type => 'object', optional => 1 },
+	# Where warnings and errors go: a Log::Abstraction logger, or anything
+	# with its methods.  Without one they are printed to standard error.
+	logger => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	map({ $_ => { type => 'string', optional => 1 } } qw(
 		image perl_image platform user log_dir cache_file docker_bin pull_concurrency parallel
 		dry_run explain verbose quiet keep keep_images pull no_pull strict_actions skip_check
@@ -397,6 +401,13 @@ C<cache_file>, C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>,
 C<pull_concurrency>, C<parallel>, C<docker>, C<docker_bin>.  They are
 described in L<App::Actions/new>.
 
+=item * C<logger> - a L<Log::Abstraction> object (anything with C<warn>,
+C<error> and C<notice> methods) that receives the run's warnings and errors.
+Unlike L<App::Actions/new>, this takes only an object.  It defaults to
+L<App::Actions::Runner::Support/default_logger>, which prints them to
+standard error.  It is handed on to the parts of the runner, so every part
+logs to the same place.
+
 =back
 
 =head3 RETURNS
@@ -457,8 +468,10 @@ Reads C<ACTION_RUN_PULL_CONCURRENCY> when C<pull_concurrency> is not given.
 	require the workflow and an existing project directory
 	work out the pull concurrency and the parallelism
 	build the Docker object unless one was given
+	use the default logger (standard error) unless one was given
 	refuse --pull with --no-pull
-	build the image preparer, the container manager and the reporter
+	build the image preparer, the container manager and the reporter,
+	    each with the logger
 
 =cut
 
@@ -485,6 +498,7 @@ sub new {
 		perl_image => $params->{perl_image} || 'perl:%s',
 		env => $params->{env} || {},
 		secrets => $params->{secrets} || {},
+		logger => $params->{logger} || default_logger(),
 		# An explain run starts nothing, so it is a dry run whose output is
 		# the containers rather than the commands that would start them.
 		dry_run => ($params->{dry_run} || $params->{explain}) ? 1 : 0,
@@ -756,7 +770,7 @@ sub run {
 		# Whatever the run printed belongs before the error, even when the
 		# two are written through different buffers.
 		STDOUT->flush;
-		print STDERR $self->i18n('runner.error', { error => $error }), "\n" unless $self->{quiet};
+		$self->{logger}->error($self->i18n('runner.error', { error => $error })) unless $self->{quiet};
 		$exit_code = 2;
 	}
 
@@ -961,13 +975,13 @@ sub _build_parts {
 
 	$self->{images} = App::Actions::Runner::Images->new(
 		(map { $_ => $self->{$_} } qw(docker expression workflow project_dir image perl_image
-			dry_run verbose quiet pull no_pull pull_concurrency)),
+			dry_run verbose quiet pull no_pull pull_concurrency logger)),
 		context => sub { $weak->_preflight_context(@_) },
 	);
 	$self->{containers} = App::Actions::Runner::Containers->new(
-		map { $_ => $self->{$_} } qw(docker expression project_dir run_id platform user quiet explain keep),
+		map { $_ => $self->{$_} } qw(docker expression project_dir run_id platform user quiet explain keep logger),
 	);
-	$self->{report} = App::Actions::Runner::Report->new(docker => $self->{docker}, quiet => $self->{quiet});
+	$self->{report} = App::Actions::Runner::Report->new(docker => $self->{docker}, quiet => $self->{quiet}, logger => $self->{logger});
 
 	return $self;
 }
@@ -1505,6 +1519,7 @@ sub _parallel {
 		capacity => $self->{parallel},
 		temp_path => $self->{temp_path},
 		quiet => $self->{quiet},
+		logger => $self->{logger},
 		# In the child: its own runner directory and base environment, and
 		# the images it pulled, so the parent can remove them if it must.
 		run_job => sub {
@@ -1654,7 +1669,7 @@ sub _run_instance {
 
 		$result = App::Actions::Runner::Steps->new(
 			(map { $_ => $self->{$_} } qw(expression docker images containers workflow project_dir temp_path
-				user share_files quiet verbose dry_run strict_actions)),
+				user share_files quiet verbose dry_run strict_actions logger)),
 			job => $job,
 			container => $container,
 			network => $network,
@@ -1816,14 +1831,14 @@ sub _say {
 }
 
 # _complain
-# Purpose:     Print a warning from the catalogue unless the run is quiet.
+# Purpose:     Log a warning from the catalogue unless the run is quiet.
 # Entry:       $key; $args.
 # Exit status: Returns nothing.
-# Side effects: Prints to standard error.
+# Side effects: Sends the message to the logger (by default, standard error).
 sub _complain {
 	my ($self, $key, $args) = @_;
 
-	print STDERR $self->i18n($key, $args), "\n" unless $self->{quiet};
+	$self->{logger}->warn($self->i18n($key, $args)) unless $self->{quiet};
 
 	return;
 }
@@ -1961,6 +1976,8 @@ rule are the conditions that are always true when the routine returns.
 	│ r!.parallel = (if options?(parallel) ∈ ℕ₁ then options?(parallel) else 1)
 	│ r!.dryRun = options?(dry_run) ∨ options?(explain)
 	│ r!.keepImages = (if options?(keep_images) = ⊥ then true else options?(keep_images))
+	│ r!.logger = (if options?(logger) = ⊥ then stderrLogger else options?(logger))
+	│ ∀ part : {images, containers, steps, parallel, report} • part.logger = r!.logger
 	└───────────────────────────────────────────────────
 
 =head2 option_rules

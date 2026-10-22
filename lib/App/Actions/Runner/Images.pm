@@ -11,7 +11,7 @@ use App::Actions::Access;
 use App::Actions::Action;
 use App::Actions::Cache;
 use App::Actions::I18N qw(i18n throw validate_args);
-use App::Actions::Runner::Support qw(action_inputs local_action_dir trim_error);
+use App::Actions::Runner::Support qw(action_inputs chomp_error default_logger local_action_dir trim_error);
 
 our $VERSION = '0.002.0';
 
@@ -111,6 +111,11 @@ flags.
 
 =item * C<pull_concurrency> - optional; how many pulls run at once (default 4).
 
+=item * C<logger> - optional; a L<Log::Abstraction> object (default:
+L<App::Actions::Runner::Support/default_logger>, standard error).  With
+C<verbose>, a failure to update the image cache is logged at the C<warn>
+level; the run goes on without it.
+
 =back
 
 =head3 RETURNS
@@ -150,6 +155,7 @@ None.
 		pull             => { type => 'boolean', optional => 1 },
 		no_pull          => { type => 'boolean', optional => 1 },
 		pull_concurrency => { type => 'integer', min => 1, optional => 1 },
+		logger           => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	}
 
 =head4 OUTPUT
@@ -184,10 +190,13 @@ sub new {
 		pull => { type => 'boolean', optional => 1 },
 		no_pull => { type => 'boolean', optional => 1 },
 		pull_concurrency => { type => 'integer', min => 1, optional => 1 },
+		# Where warnings and errors go; standard error when none is given.
+		logger => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	});
 
 	return bless {
 		%{$params},
+		logger => $params->{logger} || default_logger(),
 		pull_concurrency => $params->{pull_concurrency} || 4,
 		# Images this run downloaded that were not there before, which a
 		# run told not to keep its images removes again.
@@ -825,7 +834,7 @@ sub remember {
 	return $self if !@images || $self->{dry_run};
 
 	my $recorded = eval { App::Actions::Cache->new(file => $cache_file)->remember(@images); 1 };
-	warn $self->i18n('runner.image.cache_failed', { error => $@ }), "\n"
+	$self->{logger}->warn($self->i18n('runner.image.cache_failed', { error => chomp_error($@) }))
 		if !$recorded && $self->{verbose};
 
 	return $self;

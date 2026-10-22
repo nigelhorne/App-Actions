@@ -13,7 +13,7 @@ use App::Actions::Action;
 use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Util ();
 use App::Actions::Runner::Support qw(
-	action_inputs boolean_value chomp_error env_args has_status_function
+	action_inputs boolean_value chomp_error default_logger env_args has_status_function
 	local_action_dir redact resolve_env status_flags write_container_file
 );
 
@@ -151,6 +151,14 @@ C<path>, C<has_bash>, C<has_node>.
 =item * C<quiet>, C<verbose>, C<dry_run>, C<strict_actions> - optional flags;
 C<user> - optional; the container user.
 
+=item * C<logger> - optional; a L<Log::Abstraction> object (default:
+L<App::Actions::Runner::Support/default_logger>, standard error).  A failed
+step and a post step that exited with an error are logged at the C<error>
+level.  A condition, environment or C<continue-on-error> value that could
+not be evaluated, an C<actions/checkout> input that is ignored, and a post
+step that could not be run are logged at the C<warn> level.  Nothing is
+logged with C<quiet>.
+
 =back
 
 =head3 RETURNS
@@ -188,6 +196,7 @@ See the L</SYNOPSIS>.
 		verbose        => { type => 'boolean', optional => 1 },
 		dry_run        => { type => 'boolean', optional => 1 },
 		strict_actions => { type => 'boolean', optional => 1 },
+		logger         => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	}
 
 =head4 OUTPUT
@@ -228,6 +237,8 @@ sub new {
 		verbose => { type => 'boolean', optional => 1 },
 		dry_run => { type => 'boolean', optional => 1 },
 		strict_actions => { type => 'boolean', optional => 1 },
+		# Where warnings and errors go; standard error when none is given.
+		logger => { type => 'object', can => [qw(warn error notice)], optional => 1 },
 	});
 
 	my $counter = 0;
@@ -236,6 +247,7 @@ sub new {
 
 	return bless {
 		%{$params},
+		logger => $params->{logger} || default_logger(),
 		base_path => $facts->{path},
 		has_bash => $facts->{has_bash} ? 1 : 0,
 		has_node => $facts->{has_node} ? 1 : 0,
@@ -428,7 +440,7 @@ sub _conclude {
 	} elsif ($outcome eq 'failure') {
 		$self->{failed} = 1;
 		my $message = $result->{error} || $self->i18n('runner.step.failed_default');
-		print STDERR $self->i18n('runner.step.failure', { message => $message }), "\n" unless $self->{quiet};
+		$self->{logger}->error($self->i18n('runner.step.failure', { message => $message })) unless $self->{quiet};
 	}
 
 	# What the step exported is the job's from now on, and a path it added
@@ -513,7 +525,7 @@ sub _run_post_actions {
 		if (!defined $rc) {
 			$self->_complain('runner.post.failed', { uses => $post->{uses}, error => chomp_error($@) });
 		} elsif ($rc != 0) {
-			print STDERR $self->i18n('runner.post.exited', { uses => $post->{uses}, status => $rc }), "\n"
+			$self->{logger}->error($self->i18n('runner.post.exited', { uses => $post->{uses}, status => $rc }))
 				unless $self->{quiet};
 		}
 		next if defined $rc && $rc == 0;
@@ -1159,14 +1171,14 @@ sub _say {
 }
 
 # _complain
-# Purpose:     Print a warning from the catalogue unless the run is quiet.
+# Purpose:     Log a warning from the catalogue unless the run is quiet.
 # Entry:       $key; $args - optional.
 # Exit status: Returns nothing.
-# Side effects: Prints to standard error.
+# Side effects: Sends the message to the logger (by default, standard error).
 sub _complain {
 	my ($self, $key, $args) = @_;
 
-	print STDERR $self->i18n($key, $args), "\n" unless $self->{quiet};
+	$self->{logger}->warn($self->i18n($key, $args)) unless $self->{quiet};
 
 	return;
 }
