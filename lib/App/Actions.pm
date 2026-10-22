@@ -19,7 +19,7 @@ BEGIN { $Sub::Private::config{mode} = 'enforce' }
 use Sub::Private;
 use Sub::Protected;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # The options a run is configured with.  new() accepts them, run(),
 # preflight() and list_jobs() accept them again as overrides, and every one is
@@ -81,7 +81,7 @@ App::Actions - run GitHub Actions workflows locally with Docker
 		project_dir   => "$ENV{HOME}/src/njh/CGI-Info",
 	);
 
-	exit $actions->run;
+	exit $actions->run();
 
 =head1 DESCRIPTION
 

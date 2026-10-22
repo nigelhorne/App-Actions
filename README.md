@@ -12,7 +12,7 @@ App::Actions - run GitHub Actions workflows locally with Docker
             project_dir   => "$ENV{HOME}/src/njh/CGI-Info",
     );
 
-    exit $actions->run;
+    exit $actions->run();
 ```
 
 ## Description
