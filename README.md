@@ -57,6 +57,18 @@ Run the jobs of a matrix four at a time, and keep their logs:
     # logs: see "action-run logs"
 ```
 
+Set an option for every run on this computer, without changing the code
+(see ["new"](#new) for where the file may live; the environment wins over it):
+
+```
+    # ~/.conf/local.yaml
+    ---
+    App__Actions:
+      keep_images: 0
+
+    # or, for one command:  App__Actions__keep_images=0 action-run ci.yml .
+```
+
 ## Description
 
 **In short:** this module runs a GitHub Actions workflow on your own
@@ -200,13 +212,49 @@ it works on Windows too, where the operating system cannot start a shebang
 script directly.  `docker` may instead be an object with the
 [App::Actions::Docker](https://metacpan.org/pod/App%3A%3AActions%3A%3ADocker) interface, which is how the tests run without one.
 
+**Configuration files and environment variables.**  After the arguments are
+checked, [Object::Configure](https://metacpan.org/pod/Object%3A%3AConfigure) adds settings from two more places.  Both can
+set any of the options above, and **both win over the arguments**:
+
+- 1. Configuration files.  [Config::Abstraction](https://metacpan.org/pod/Config%3A%3AAbstraction) looks for files named
+`base.yaml` and then `local.yaml` (or `.json`, `.xml`, `.ini` and so
+on) in the directory `CONFIG_DIR` names or, when it is not set, in
+`~/.conf`, `~/config`, `~/conf` and `conf`.  The settings for this
+module go in a section called `App__Actions`:
+
+    ```
+        # ~/.conf/local.yaml
+        ---
+        App__Actions:
+          parallel: 2
+          keep_images: 0
+    ```
+
+- 2. Environment variables named `App__Actions__` and then the option,
+which win over everything else:
+
+    ```
+        App__Actions__parallel=2 App__Actions__quiet=1 action-run ci.yml .
+    ```
+
+So the order, from weakest to strongest, is: the arguments, then the
+configuration files, then the environment variables.  Only top-level options
+can be set this way; `App__Actions__env__NAME` does not add to `env`.  There
+is no argument for naming a configuration file: `config_file` is refused as
+an unknown option.
+
 #### Returns
 
-An `App::Actions` object.
+An `App::Actions` object.  Besides the options it holds `logger`, a
+[Log::Abstraction](https://metacpan.org/pod/Log%3A%3AAbstraction) object that [Object::Configure](https://metacpan.org/pod/Object%3A%3AConfigure) always adds, and any
+other top-level keys found in the configuration files.  Only the options
+listed above are passed on to [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner), so the other keys
+have no effect.
 
 #### Side Effects
 
-Reads and parses the workflow file.
+Reads and parses the workflow file.  Reads the configuration files described
+above, if there are any, and the `App__Actions__*` environment variables.
 
 #### Example
 
@@ -274,6 +322,11 @@ Reads and parses the workflow file.
     | exist                             |                              |                               |
     | Invalid arguments to              | An unknown option, or one of | Use the documented options    |
     | App::Actions::new: REASON         | the wrong type               |                               |
+    | Object::Configure: config_path    | A configuration file or      | Remove the ".." from that     |
+    | contains path traversal           | variable names a path with   | setting                       |
+    | sequences: PATH                   | ".." in it                   |                               |
+    | Warning: Can't load configuration | A configuration file has a   | Fix the file; the run goes on |
+    | from FILE: DETAIL (a warning)     | syntax error                 | without it                    |
     +-----------------------------------+------------------------------+-------------------------------+
 ```
 
@@ -283,6 +336,8 @@ The messages of ["load" in App::Actions::Workflow](https://metacpan.org/pod/App%
 
 ```
     validate the arguments, refusing unknown options
+    merge in the App__Actions section of the configuration files, then the
+        App__Actions__* environment variables (both win; neither is validated)
     refuse a missing workflow_file, then one that does not exist
     take project_dir as given, or the repository root that holds .github/workflows
     refuse a project directory that does not exist
@@ -700,6 +755,11 @@ told so.
 - The Check, Docker, Expression, Process and command-line messages
 have not been moved into the catalogue yet; see
 ["LIMITATIONS" in App::Actions::I18N](https://metacpan.org/pod/App%3A%3AActions%3A%3AI18N#LIMITATIONS).
+- Settings from configuration files and `App__Actions__*` environment
+variables are merged in by [Object::Configure](https://metacpan.org/pod/Object%3A%3AConfigure) after ["new"](#new) has checked its
+arguments, so they are not checked: `App__Actions__parallel=banana` is
+accepted.  They also win over the arguments, which is the reverse of what
+most programs do, and a caller cannot choose a configuration file.
 
 ## Common Pitfalls
 
@@ -728,6 +788,14 @@ computer, and a warning says so.
 of your computer into its containers, as it can on GitHub's own runners.
 - **Parallel jobs write to log files, not the terminal.**  With
 `parallel` above 1, read the output with `action-run logs`.
+- **A configuration file or environment variable beats an argument.**
+If `~/.conf/local.yaml` has an `App__Actions` section with `parallel: 8`,
+then `parallel => 2` (and `action-run --parallel=2`) still runs eight
+jobs at a time.  When an option seems to be ignored, look for an
+`App__Actions` section in those files and for `App__Actions__*`
+environment variables (`env | grep App__Actions`).
+- **Values from those places are not checked.**  A misspelt or
+nonsensical value there is not reported as an argument would be.
 
 ## Encoding
 
@@ -739,11 +807,15 @@ bytes (UTF-8 for text from the workflow).  What the containers print is
 passed through to your terminal unchanged.  Messages from this module are
 in English unless `ACTION_RUN_LANG` chooses French (`fr`), German
 (`de`) or Chinese (`zh`); those are character strings, so the terminal
-should use UTF-8.
+should use UTF-8.  Settings in configuration files and `App__Actions__*`
+environment variables are used as [Config::Abstraction](https://metacpan.org/pod/Config%3A%3AAbstraction) reads them; keep
+option values there in ASCII.
 
 ## See Also
 
-- [Configure an Object at Runtime](https://metacpan.org/pod/Object%3A%3AConfigure)
+- [Configure an Object at Runtime](https://metacpan.org/pod/Object%3A%3AConfigure), which ["new"](#new)
+uses to read configuration files and environment variables
+- [Config::Abstraction](https://metacpan.org/pod/Config%3A%3AAbstraction), which finds and reads those files
 - [Test Dashboard](https://nigelhorne.github.io/App-Actions/coverage/)
 
 ## Author
@@ -775,6 +847,9 @@ rule are the conditions that are always true when the routine returns.
     │ actions!      : Actions
     ├───────────────────────────────────────────────────
     │ dom options? ⊆ RUNNER_OPTIONS
+    │ let settings == (args? ⊕ fileConfig(App__Actions)) ⊕ envConfig(App__Actions__)
+    │     where args? == options? ∪ {workflow_file ↦ workflowFile?, project_dir ↦ projectDir?}
+    │     -- dom fileConfig and dom envConfig are not checked against RUNNER_OPTIONS
     │ workflowFile? = ⊥ ⇒ raises WorkflowFileRequired
     │ abs(workflowFile?) ∉ regularFiles ⇒ raises WorkflowFileMissing
     │ projectDir? = ⊥ ∧ abs(workflowFile?) ∉ (PATH ⁀ "/.github/workflows/" ⁀ NAME)
@@ -784,8 +859,12 @@ rule are the conditions that are always true when the routine returns.
     │ root ∉ directories ⇒ raises ProjectDirMissing
     │ actions!.workflow = Workflow.Load(abs(workflowFile?))
     │ actions!.project_dir = root
-    │ actions!.options = options?
+    │ actions!.options = settings
+    │ actions!.logger ∈ LogAbstraction
     └───────────────────────────────────────────────────
+
+    The workflowFile? and projectDir? above are the values in settings, so a
+    configuration file or environment variable can replace them too.
 ```
 
 ### Workflow, Workflow\_File, Project\_Dir
@@ -866,7 +945,9 @@ and its parts):
 
 ```
      new(%options)
-          |   options checked; workflow loaded (errors are thrown here)
+          |   options checked; then App__Actions settings from configuration
+          |   files and App__Actions__* environment variables merged over
+          |   them (not checked); workflow loaded (errors are thrown here)
           v
     +-------------+
     |   READY     |<------------------------------------------------------+

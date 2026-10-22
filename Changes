@@ -13,6 +13,11 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  The CI coverage job runs the suite under it, which made the
 	  40,000-comparison tokenizer case (linear, but about five times
 	  slower there) fail its two-second limit.
+	- Documented the configuration that Object::Configure adds to
+	  App::Actions->new and action-run: an App__Actions section in the
+	  Config::Abstraction files (base/local in CONFIG_DIR or ~/.conf) and
+	  App__Actions__* environment variables, both of which win over the
+	  arguments and the command line and are not validated.
 
 0.001.0	Thu Oct 22 12:40:02 PM EDT 2026
 	- First release
