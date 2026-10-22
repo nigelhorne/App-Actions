@@ -155,8 +155,10 @@ sub base_directory {
         }
     } else {
         $base = $ENV{XDG_CACHE_HOME};
+        # Without HOME there is no home directory; catdir(undef, '.cache')
+        # would be /.cache, at the root of the file system.
         $base = File::Spec->catdir($ENV{HOME}, '.cache')
-            if !defined $base || !length $base;
+            if (!defined $base || !length $base) && defined $ENV{HOME} && length $ENV{HOME};
     }
 
     $base = File::Spec->catdir(File::Spec->curdir, '.cache')
@@ -209,9 +211,13 @@ sub load {
             for my $image (keys %{ $decoded->{images} }) {
                 my $entry = $decoded->{images}{$image};
                 next unless ref $entry eq 'HASH';
+                # Only whole numbers are kept: a value someone edited into
+                # the file would otherwise be counted and subtracted, and
+                # make the cache document fail its own schema.
+                my ($pulls, $last_used) = @{$entry}{qw(pulls last_used)};
                 $images->{$image} = {
-                    pulls     => $entry->{pulls} || 0,
-                    last_used => $entry->{last_used},
+                    pulls     => (defined $pulls && !ref $pulls && $pulls =~ /\A\d+\z/) ? $pulls + 0 : 0,
+                    last_used => (defined $last_used && !ref $last_used && $last_used =~ /\A\d+\z/) ? $last_used + 0 : undef,
                 };
             }
         }

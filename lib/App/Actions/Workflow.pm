@@ -6,6 +6,7 @@ use utf8;
 use autodie qw(:all);
 
 use File::Basename qw(basename);
+use Storable qw(dclone);
 use Readonly;
 
 use App::Actions::Expression;
@@ -387,8 +388,10 @@ sub expand_jobs {
 		# resource name stays unique within the job.
 		for my $index (0 .. $#{$combinations}) {
 			my $values = $combinations->[$index];
+			# Each instance is a copy of its own, so a change to one instance's
+			# steps or environment reaches neither the job nor its siblings.
 			push @instances, {
-				%{$job},
+				%{ dclone($job) },
 				base_id => $job->{id},
 				matrix => $values,
 				matrix_index => $index,

@@ -14,6 +14,7 @@ use Fcntl qw(O_CREAT O_EXCL O_WRONLY);
 use Log::Abstraction ();
 
 use App::Actions::Docker::Variable ();
+use App::Actions::Runner::Support::Env;
 use App::Actions::Error;
 use App::Actions::I18N qw(throw);
 use App::Actions::Util ();
@@ -37,16 +38,11 @@ our @EXPORT_OK = qw(
 	write_container_file
 );
 
-# How many times an environment is re-interpolated.  A variable may refer to
-# another (B: ${{ env.A }}), so values are resolved until nothing changes;
-# the cap stops two variables that refer to each other from looping forever.
-Readonly::Scalar my $ENV_PASSES => 10;
-
-# The words a workflow may use for a boolean without writing an expression.
 # A file is created readable by its owner only; the caller widens it when
 # the container runs as another user.
 Readonly::Scalar my $NEW_FILE_MODE => oct('0600');
 
+# The words a workflow may use for a boolean without writing an expression.
 Readonly::Scalar my $TRUE_WORD => qr/\A(?:true|yes|1)\z/i;
 Readonly::Scalar my $FALSE_WORD => qr/\A(?:false|no|0)\z/i;
 
@@ -306,8 +302,10 @@ sub trim_error {
 
 Merges layers of environment variables, later layers winning, and resolves
 the C<${{ }}> expressions in their values.  A value may refer to another
-variable through C<env.*>, so the values are resolved again until nothing
-changes, at most ten times.
+variable through C<env.*>, in any order: when C<B> reads C<env.A>, C<A> is
+worked out first.  Each value's own text is interpolated exactly once, so
+C<${{ }}> text that comes from somewhere else, such as a commit message, is
+never evaluated.  Variables that refer to each other are an error.
 
 =head3 ARGUMENTS
 
@@ -317,8 +315,9 @@ changes, at most ten times.
 
 =item * C<\@layers> - hash references; anything else is skipped.
 
-=item * C<$context> - the expression context; its C<env> is replaced by the
-variables being resolved.
+=item * C<$context> - the expression context.  The expressions see a copy
+whose C<env> is the variables being resolved; the caller's hash is not
+changed.
 
 =back
 
@@ -357,14 +356,23 @@ None.
 	| Unable to evaluate          | A value holds an expression  | Fix the expression in the   |
 	| environment variable 'X': E | that does not parse or run   | workflow's env              |
 	+-----------------------------+------------------------------+-----------------------------+
+	| Environment variable 'X'    | X refers to itself, or to a  | Break the loop: give one of |
+	| refers to itself, directly  | variable that refers back    | the variables a value that  |
+	| or through other variables  | to it                        | does not use the others     |
+	+-----------------------------+------------------------------+-----------------------------+
 
 =head3 PSEUDOCODE
 
 	merge the layers into one hash of strings, later layers winning
-	repeat up to ten times:
-		interpolate every value with the hash itself as env
-		stop when no value changed
-	return the hash
+	for each name, in sorted order:
+		resolve(name)
+	return the resolved values
+
+	resolve(name):
+		if name is resolved, return its value
+		if name is being resolved, fail: a cycle
+		interpolate its text once, with env reading through resolve
+		remember and return the result
 
 =cut
 
@@ -377,24 +385,34 @@ sub resolve_env {
 		$env{$_} = App::Actions::Util::stringify($layer->{$_}) for keys %{$layer};
 	}
 
-	# Resolve until a pass changes nothing, so a chain of references settles
-	# however it is ordered, and a cycle stops at the cap.
-	my $changed = 1;
-	for (my $pass = 1; $changed && $pass <= $ENV_PASSES; $pass++) {
-		my %with_env = (%{$context}, env => { %env });
-		$changed = 0;
-		for my $key (keys %env) {
-			my $value;
-			eval { $value = $expression->interpolate($env{$key}, \%with_env); 1 }
-				or __PACKAGE__->throw('runner.env_failed', { name => $key, error => chomp_error($@) });
-			next if $value eq $env{$key};
-			$env{$key} = $value;
-			$changed = 1;
-		}
-	}
+	# A value may refer to another (B: ${{ env.A }}).  Each value's own text
+	# is interpolated exactly once, and env.A, when B asks for it, resolves A
+	# first (see App::Actions::Runner::Support::Env).  Interpolating
+	# results again would expand ${{ }} text that came from a context value,
+	# such as a commit message holding ${{ secrets.TOKEN }}, and would let
+	# two variables that refer to each other grow on every pass.
+	my %resolved;
+	my %with_env = %{$context};
+	my $state = tie my %lazy, 'App::Actions::Runner::Support::Env', \%env, \%resolved, sub {
+		return $expression->interpolate($env{ $_[0] }, \%with_env);
+	};
+	$with_env{env} = \%lazy;
 
-	return \%env;
+	# Sorted, so a cycle is reported from the same variable on every run.
+	my $failure;
+	eval { my $value; $value = $lazy{$_} for sort keys %env; 1 } or $failure = $@;
+
+	# The tie and %with_env refer to each other through the closure; untie
+	# breaks that loop, failure or not.  The tie's first failure wins, and
+	# one an evaluator swallowed is still raised.
+	$failure = $state->failure || $failure;
+	undef $state;
+	untie %lazy;
+	die $failure if $failure;
+
+	return { %resolved };
 }
+
 
 =head2 boolean_value
 
@@ -855,10 +873,6 @@ __END__
 times per step by the other parts of the runner, which validate what they
 were given when they are constructed.
 
-=item * L</resolve_env> gives up after ten passes.  A variable that refers to
-itself, or two that refer to each other, keep whatever the tenth pass made of
-them rather than being reported.
-
 =back
 
 =head1 COMMON PITFALLS
@@ -885,8 +899,10 @@ command line; elsewhere they turn into C<NAME=VALUE> text.
 =item * B<L</redact> replaces whole values only.>  A secret that appears
 split or encoded is not hidden.
 
-=item * B<L</resolve_env> stops after ten passes>, so a variable that
-refers to itself keeps a partly filled-in value.
+=item * B<L</resolve_env> refuses a cycle.>  C<A: ${{ env.B }}> with
+C<B: ${{ env.A }}>, or a variable that uses itself, is the error
+C<runner.env_cycle>, not a partly filled-in value.  To add to a variable
+from an outer layer, give the new value another name.
 
 =item * B<L</default_logger> does not filter by level.>  It prints every
 message it is given.  To keep only some levels, or to write them to a file,
@@ -975,7 +991,11 @@ rule are the conditions that are always true when the routine returns.
 	│ env!     : NAME ⇸ seq CHAR
 	├───────────────────────────────────────────────────
 	│ let merged == ⊕/ layers?
-	│ env! = fix(λ e • {n ↦ interpolate(e(n), context? ⊕ {env ↦ e})}, merged, 10)
+	│ let refs == {a, b : dom merged | interpolating merged(a) reads env.b}
+	│ (∃ n : dom merged • (n, n) ∈ refs⁺) ⇒ raise runner.env_cycle
+	│ otherwise env! = μ e • {n : dom merged •
+	│     n ↦ interpolate(merged(n), context? ⊕ {env ↦ e})}
+	│ (each merged(n) is interpolated once; a result is never re-read)
 	└───────────────────────────────────────────────────
 
 =head2 boolean_value

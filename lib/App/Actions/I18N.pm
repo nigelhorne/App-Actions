@@ -937,6 +937,11 @@ language.
 
 =item * C<$positional> - optional; the L<Params::Get> default: a key name
 for a lone positional argument, or an array reference of positional names.
+L<Params::Get> maps an array of names by position only, so arguments that
+outnumber the names and come in pairs whose keys are all in the schema are
+taken as named pairs instead: C<load_yaml_mapping(file =E<gt> $f, kind =E<gt>
+'workflow')> works as well as C<load_yaml_mapping($f, 'workflow')>.  A single
+pair is still positional, since it cannot be told apart from two values.
 
 =back
 
@@ -990,10 +995,32 @@ sub validate_args {
 	# Positional calls ($i18n->message('key', {...})) and named ones are both
 	# accepted; Params::Get turns either into one hash.  An empty argument
 	# list is an empty hash rather than Params::Get's usage error, so the
-	# schema alone decides whether that is allowed.
+	# schema alone decides whether that is allowed.  Params::Get maps an
+	# array of names by position only, so named pairs given to a routine
+	# with positional names are passed as pairs.
+	my $names = (ref $positional eq 'ARRAY' && @{$args} > @{$positional} && _named_pairs($args, $schema))
+		? undef : $positional;
+	my $given = @{$args} ? get_params($names, @{$args}) : {};
+
+	# Params::Get fills the positions a caller left out with undef, which
+	# the validator takes as given; they are removed, so that a required
+	# argument that was left out is reported as missing.
+	if (ref $names eq 'ARRAY') {
+		delete $given->{$_} for grep { !defined $given->{$_} } @{$names}[ scalar(@{$args}) .. $#{$names} ];
+	}
+
+	# For the same reason, an undef given for a required argument would pass;
+	# it is removed so that it is reported as missing.  An optional argument
+	# may still be passed as undef, which means "not given".
+	if (ref $given eq 'HASH') {
+		delete $given->{$_} for grep {
+			!defined $given->{$_} && ref $schema->{$_} eq 'HASH' && !$schema->{$_}{optional}
+		} keys %{$given};
+	}
+
 	my $params = eval {
 		validate_strict({
-			args => @{$args} ? get_params($positional, @{$args}) : {},
+			args => $given,
 			schema => $schema,
 		});
 	};
@@ -1008,6 +1035,21 @@ sub validate_args {
 	# is where the mistake is.
 	local our @CARP_NOT = (scalar caller);
 	croak(shared()->message('actions.invalid_arguments', { routine => $routine, reason => $reason }));
+}
+
+# _named_pairs
+# Purpose:     Say whether a routine's arguments are key => value pairs.
+# Entry:       $args - the arguments; $schema - the routine's schema.
+# Exit status: Returns 1 when there is an even number of arguments and every
+#              key position holds a plain string the schema names, else 0.
+# Side effects: None.
+sub _named_pairs {
+	my ($args, $schema) = @_;
+
+	my @keys = @{$args}[ grep { $_ % 2 == 0 } 0 .. $#{$args} ];
+	my $named = (@{$args} % 2 == 0) && !grep { !defined || ref || !exists $schema->{$_} } @keys;
+
+	return $named ? 1 : 0;
 }
 
 # Every _name routine above may be called only from this package.

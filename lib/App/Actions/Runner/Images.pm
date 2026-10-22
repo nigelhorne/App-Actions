@@ -30,6 +30,9 @@ Readonly::Scalar my $MAX_ACTION_DEPTH => 10;
 # pulls run one after another there.
 Readonly::Scalar my $SERIAL_OS => 'MSWin32';
 
+# The status prepare reports for an image the pull results leave out.
+Readonly::Scalar my $NO_STATUS => -1;
+
 =encoding utf-8
 
 =head1 NAME
@@ -445,7 +448,8 @@ Pulls images, prints progress unless quiet, and remembers what it pulled.
 	| Docker image 'X' is not     | --no-pull was given and the  | Pull it, or drop --no-pull  |
 	| available locally (--no-pull)| image is absent             |                             |
 	| Failed to pull Docker image | The pull exited non-zero     | Check the name, the registry|
-	| 'X' (exit N)                |                              | and the Docker login        |
+	| 'X' (exit N)                | (-1: the Docker object gave  | and the Docker login        |
+	|                             | no status for the image)     |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
 =head3 PSEUDOCODE
@@ -488,7 +492,10 @@ sub prepare {
 	# Every image that did arrive is recorded before the failure is
 	# reported, so the cleanup at the end of the run removes it.
 	for my $record (@pending) {
+		# A Docker object of the caller's that says nothing about an image
+		# has not shown that it arrived; -1 stands for "no exit status".
 		my $rc = $results->{ $record->{image} };
+		$rc = $NO_STATUS unless defined $rc;
 		if ($rc != 0) {
 			$record->{status} = 'failed';
 			$record->{error} = $self->i18n('runner.image.pull_failed', { image => $record->{image}, status => $rc })
@@ -899,8 +906,10 @@ sub _linux_runs_on {
 sub _job_image {
 	my ($self, $job, $runs_on) = @_;
 
-	# container_image croaks for a container mapping without an image; that
-	# is reported when the job runs, so here it just names nothing.
+	# container_image croaks for an image it cannot read (an unclosed
+	# ${{, say); that is reported when the job runs, so here it just names
+	# nothing.  A container mapping without an image is not an error: the
+	# job runs in the runner's image.
 	return eval {
 		$self->{workflow}->container_image($job, $runs_on, $self->{image} || $DEFAULT_IMAGE, $self->{perl_image});
 	};

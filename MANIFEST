@@ -30,6 +30,7 @@ lib/App/Actions/Runner/Parallel.pm
 lib/App/Actions/Runner/Report.pm
 lib/App/Actions/Runner/Steps.pm
 lib/App/Actions/Runner/Support.pm
+lib/App/Actions/Runner/Support/Env.pm
 lib/App/Actions/Schema.pm
 lib/App/Actions/Schema/Invalid.pm
 lib/App/Actions/Util.pm

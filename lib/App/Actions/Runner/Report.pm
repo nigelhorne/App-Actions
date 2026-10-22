@@ -25,6 +25,10 @@ Readonly::Scalar my $NAME_WIDTH => 50;
 Readonly::Scalar my $DIRECTORY_MODE => oct('0700');
 Readonly::Scalar my $FILE_MODE => oct('0600');
 
+# A name keep_logs joins to a path must stay one name: letters, digits, _ . -
+# but never . or .., which are directories.
+Readonly::Scalar my $PLAIN_NAME => qr/\A(?!\.\.?\z)[A-Za-z0-9_.-]+\z/;
+
 =encoding utf-8
 
 =head1 NAME
@@ -344,11 +348,13 @@ run.  Returns the object.
 
 =over 4
 
-=item * C<$logs> - from L<App::Actions::Runner::Parallel/logs>.
+=item * C<$logs> - from L<App::Actions::Runner::Parallel/logs>.  Each
+C<file> must be a plain file name (letters, digits, C<_>, C<.> and C<->,
+not C<.> or C<..>).
 
 =item * C<$root> - where the run's log directories go.
 
-=item * C<$run_id> - the run's identifier.
+=item * C<$run_id> - the run's identifier, also a plain name.
 
 =back
 
@@ -383,6 +389,11 @@ Creates a private directory and copies the logs into it; warns on failure.
 	| the job logs: cannot copy   | made or a log copied         | space and permissions       |
 	| 'X' to 'Y': E               |                              |                             |
 	+-----------------------------+------------------------------+-----------------------------+
+	| action-run: could not keep  | A log's file name, or the    | Use a plain name: letters,  |
+	| the job logs: 'X' is not a  | run's identifier, has a      | digits, _ . and -; the      |
+	| plain file name             | directory in it, or is . or  | parallel runner always does |
+	|                             | ..                           |                             |
+	+-----------------------------+------------------------------+-----------------------------+
 
 =cut
 
@@ -395,6 +406,14 @@ sub keep_logs {
 	my $directory = File::Spec->catdir($root, POSIX::strftime('%Y%m%d-%H%M%S', localtime) . "-$run_id");
 
 	my $kept = eval {
+		# The parallel runner makes these names safe, but this method is
+		# public: a name such as ../x would copy a log out of the private
+		# directory, and so it is refused before anything is made.
+		for my $name ($run_id, map { $_->{file} } @present) {
+			die $self->i18n('runner.logs.bad_name', { name => defined $name ? $name : '' }), "\n"
+				unless defined $name && $name =~ $PLAIN_NAME;
+		}
+
 		# A filesystem that will not take the mode still holds the logs, so
 		# a failed chmod does not cost the copies.
 		no autodie qw(chmod);
@@ -654,6 +673,7 @@ rule are the conditions that are always true when the routine returns.
 	├───────────────────────────────────────────────────
 	│ let present == {l : ran logs? | exists(l.path)}
 	│ present = ∅ ⇒ kept' = kept
+	│ (∃ l : present • l.file ∉ PLAIN) ∨ run_id? ∉ PLAIN ⇒ kept' = kept ∧ warns
 	│ present ≠ ∅ ∧ copied ⇒ kept' = dir ∧ files(dir) = {l.file | l ∈ present}
 	└───────────────────────────────────────────────────
 

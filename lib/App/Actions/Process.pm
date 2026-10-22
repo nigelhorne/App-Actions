@@ -176,10 +176,14 @@ sub _redirect_child {
         next unless defined $file;
 
         my $handle = $stream eq 'stdout' ? \*STDOUT : \*STDERR;
-        open $handle, '>', $file or do {
+        open $handle, $redirect{append} ? '>>' : '>', $file or do {
             print STDERR "Unable to redirect $stream to '$file': $!\n";
             POSIX::_exit(127);
         };
+
+        # The child ends with POSIX::_exit, which flushes nothing, so a
+        # buffered handle would lose the message that says why exec failed.
+        $handle->autoflush(1);
     }
 
     return;
@@ -209,6 +213,19 @@ sub run_parallel {
     my %redirect;
     $redirect{stdout} = $options{stdout} if defined $options{stdout};
     $redirect{stderr} = $options{stderr} if defined $options{stderr};
+
+    # Every program's output goes to the same files.  Each program opening
+    # them afresh would keep only the last one's, so they are emptied once
+    # here and each program adds to them.
+    if (%redirect) {
+        my %seen;
+        for my $file (grep { !$seen{$_}++ } values %redirect) {
+            next if $file eq File::Spec->devnull;
+            open my $handle, '>', $file or croak "Unable to open '$file': $!";
+            close $handle or croak "Unable to open '$file': $!";
+        }
+        $redirect{append} = 1;
+    }
 
     my $run_one = sub {
         my ($command) = @_;
@@ -241,8 +258,11 @@ sub run_parallel {
 
             if ($pid == 0) {
                 _redirect_child(%redirect);
-                # exec PROGRAM LIST, so no command ever reaches a shell.
+                # exec PROGRAM LIST, so no command ever reaches a shell.  Perl's
+                # own "Can't exec" warning is left out, as run() leaves it out:
+                # the line below says the same.
                 my @command = @{ $commands->[$index] };
+                no warnings 'exec';
                 exec { $command[0] } @command or do {
                     print STDERR "Unable to run '$commands->[$index][0]': $!\n";
                     POSIX::_exit(127);
@@ -308,15 +328,19 @@ sub run {
     open my $saved_stderr, '>&', \*STDERR
         or croak "Unable to duplicate STDERR: $!";
 
+    # append adds to the files rather than replacing them, which is how
+    # run_parallel sends several programs to one file.
+    my $mode = $options{append} ? '>>' : '>';
+
     my $error;
-    my $redirected = open STDOUT, '>', $stdout;
+    my $redirected = open STDOUT, $mode, $stdout;
     if ($redirected && $options{merge_stderr}) {
         # The shell's 2>&1: standard error is a duplicate of the handle
         # standard output was just opened to, so the two share one offset and
         # the child's writes arrive in the order it made them.
         $redirected = open STDERR, '>&', \*STDOUT;
     } elsif ($redirected && defined $options{stderr}) {
-        $redirected = open STDERR, '>', $options{stderr};
+        $redirected = open STDERR, $mode, $options{stderr};
     }
     $error = $! unless $redirected;
 
@@ -576,6 +600,9 @@ terminal.
 =item * C<merge_stderr> - optional.  True to send the error output to the
 C<stdout> file too.  It wins over C<stderr>.
 
+=item * C<append> - optional.  True to add to the C<stdout> and C<stderr>
+files rather than replace what is in them.
+
 =back
 
 =head3 RETURNS
@@ -601,6 +628,7 @@ put back afterwards.
         stdout       => { type => 'string', optional => 1 },
         stderr       => { type => 'string', optional => 1 },
         merge_stderr => { type => 'boolean', optional => 1 },
+        append       => { type => 'boolean', optional => 1 },
     }
 
 =head4 OUTPUT
@@ -706,8 +734,9 @@ L</stream>.
 time.  Default 4.
 
 =item * C<stdout>, C<stderr> - optional.  Files for every program's output,
-as for L</run>.  Without them, the output goes to your terminal, mixed
-together.
+as for L</run>.  Each file is emptied once, before the first program starts,
+and then every program adds to it, so it holds the output of them all.
+Without them, the output goes to your terminal, mixed together.
 
 =back
 
@@ -751,6 +780,8 @@ waiting, the programs still running are killed.
     | Message                  | Meaning                          | What to do                   |
     +--------------------------+----------------------------------+------------------------------+
     | No commands given (croak)| \@commands is not an array ref   | pass an array reference      |
+    | Unable to open 'F': ERR  | the stdout or stderr file could  | check the path               |
+    | (croak)                  | not be emptied before the start  |                              |
     | Unable to run 'P': ERR   | (printed by the child) program P | install P or fix its path;   |
     |                          | could not start; status 127      | the status is 127            |
     | Unable to redirect       | (printed by the child) the file  | check the path; status 127   |
@@ -907,13 +938,14 @@ the computer, whose processes and files the routines change.
     │ ΔHost
     │ command? : COMMAND
     │ stdout?, stderr? : optional FILE
-    │ merge? : 𝔹
+    │ merge?, append? : 𝔹
     │ r! : STATUS
     ├───────────────────────────────────────────────────
     │ (s, out, err) = exec(command?)
     │ r! = s
-    │ contents'(stdout? or null) = out ⋈ (if merge? then err else ⟨⟩)
-    │ ¬merge? ∧ stderr? ≠ ⊥ ⇒ contents'(stderr?) = err
+    │ let before(F) == (if append? then contents(F) else ⟨⟩)
+    │ contents'(stdout? or null) = before(stdout?) ⁀ (out ⋈ (if merge? then err else ⟨⟩))
+    │ ¬merge? ∧ stderr? ≠ ⊥ ⇒ contents'(stderr?) = before(stderr?) ⁀ err
     │ STDOUT' = STDOUT ∧ STDERR' = STDERR
     └───────────────────────────────────────────────────
 
@@ -945,6 +977,7 @@ the computer, whose processes and files the routines change.
     │ #r! = #commands?
     │ ∀ i ∈ dom commands? • r!(i) = first(exec(commands?(i)))
     │ at no time do more than min(concurrency?, #commands?) commands run
+    │ ∀ F ∈ {stdout?, stderr?} • contents'(F) = ⋈ { i ∈ dom commands? • output_F(i) }
     │ Windows ∨ concurrency? < 2 ⇒ the commands run one after another
     └───────────────────────────────────────────────────
 

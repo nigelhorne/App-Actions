@@ -386,14 +386,19 @@ sub _watch {
 			Time::HiRes::sleep($POLL_SECONDS);
 			next;
 		}
-		last if $pid < 0;
+		# -1 means there is no child left to wait for, although some are
+		# still listed: the caller set $SIG{CHLD} to IGNORE, say, and the
+		# system reaped them.  They have finished, so they are collected now
+		# rather than left out of the results without a word.
+		my @finished = $pid < 0 ? keys %{$running} : ($pid);
+		for my $done (@finished) {
+			my $entry = delete $running->{$done};
+			next unless $entry;
 
-		my $entry = delete $running->{$pid};
-		next unless $entry;
-
-		$self->_collect($entry);
-		$self->_note_missing($group, $entry);
-		$group->{stopping} = 1 if $entry->{result} && $entry->{result}{result} eq 'failure' && $fail_fast;
+			$self->_collect($entry);
+			$self->_note_missing($group, $entry);
+			$group->{stopping} = 1 if $fail_fast && $entry->{result} && ($entry->{result}{result} || '') eq 'failure';
+		}
 
 		$self->_start_more($group) unless $group->{stopping};
 	}
@@ -440,6 +445,10 @@ sub _child {
 	# parent would have nothing to show while the job works.
 	STDOUT->autoflush(1);
 	STDERR->autoflush(1);
+
+	# A plain print goes to the selected handle, which the caller may have
+	# pointed elsewhere; the job's output belongs in its log.
+	select STDOUT;
 
 	return $self->_run_job($entry);
 }
@@ -488,7 +497,11 @@ sub _run_here {
 	STDOUT->autoflush(1);
 	STDERR->autoflush(1);
 
+	# As in a child, the job's plain prints go to its log whatever handle
+	# the caller had selected; the caller's choice is put back afterwards.
+	my $selected = select STDOUT;
 	$self->_run_job($entry);
+	select $selected;
 
 	{
 		no autodie qw(open);
@@ -627,9 +640,10 @@ sub _log_name {
 	$name =~ s/[^A-Za-z0-9_.-]+/_/g;
 	# Each end separately: as one alternation the second branch rescans every
 	# inner run of separators from each of its positions, which is quadratic.
+	# The end is trimmed after the cut, which can leave a separator last.
 	$name =~ s/\A[_.-]+//;
-	$name =~ s/[_.-]+\z//;
 	$name = substr($name, 0, $LOG_NAME_LENGTH);
+	$name =~ s/[_.-]+\z//;
 
 	return length $name ? "job-$slot-$name.log" : "job-$slot.log";
 }

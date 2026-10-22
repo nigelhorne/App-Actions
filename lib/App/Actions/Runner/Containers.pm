@@ -336,6 +336,9 @@ Starts containers; prints an explanation block per service in an explain run.
 	+-----------------------------+------------------------------+-----------------------------+
 	| Service 'X' must be a       | The service entry is neither | Give it an image            |
 	| mapping / has no image      | a mapping nor an image name  |                             |
+	| Unable to read the container| The options text has a quote | Close the quote, or escape  |
+	| options 'X': a quote is not | that is not closed, so it    | it with a backslash         |
+	| closed                      | cannot be split into words   |                             |
 	| Failed to start service 'X' | docker run failed            | Check the image and options |
 	| (exit N)                    |                              |                             |
 	| Service 'X' did not stay    | It exited after starting     | Read the output quoted      |
@@ -531,6 +534,9 @@ it fails to start or stops at once.
 	| fault: ...; the daemon said:|                              |                             |
 	| Job container 'X' did not   | /bin/sh is missing or exited | Use an image with a shell   |
 	| stay running (exit N); ...  |                              |                             |
+	| Unable to read the container| The options text has a quote | Close the quote, or escape  |
+	| options 'X': a quote is not | that is not closed, so it    | it with a backslash         |
+	| closed                      | cannot be split into words   |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
 =head3 PSEUDOCODE
@@ -904,10 +910,31 @@ sub _user_args {
 sub _options_args {
 	my ($self, $options, $context) = @_;
 
-	return [
-		@{ $self->_platform_args },
-		(defined $options ? shellwords($self->{expression}->interpolate("$options", $context)) : ()),
-	];
+	return [ @{ $self->_platform_args }, @{ $self->_option_words($options, $context) } ];
+}
+
+# _option_words
+# Purpose:     Split a container's `options` into words, as a shell would.
+# Entry:       $options - the workflow's text, or undef; $context.
+# Exit status: Returns an array reference, empty for no options.  Throws
+#              runner.options_invalid when the text cannot be split (an
+#              unclosed quote): shellwords then returns nothing at all,
+#              and every option, --read-only and --user among them, would
+#              be dropped without a word.
+# Side effects: None.
+sub _option_words {
+	my ($self, $options, $context) = @_;
+
+	return [] unless defined $options;
+
+	my $text = $self->{expression}->interpolate("$options", $context);
+	my @words = shellwords($text);
+	# The text is quoted as the workflow wrote it, so a secret the
+	# interpolation filled in is not printed.
+	$self->throw('runner.options_invalid', { options => "$options", location => 0 })
+		if !@words && $text =~ /\S/;
+
+	return \@words;
 }
 
 # _list_args
@@ -951,7 +978,7 @@ sub _service_entrypoint {
 
 	return undef unless defined $service->{options};    ## no critic (ProhibitExplicitReturnUndef)
 
-	my @tokens = shellwords($self->{expression}->interpolate("$service->{options}", $context));
+	my @tokens = @{ $self->_option_words($service->{options}, $context) };
 	my $entrypoint;
 	for my $index (0 .. $#tokens) {
 		# --entrypoint X and --entrypoint=X both say it; the first one wins.
@@ -1104,14 +1131,21 @@ sub _with_output {
 # _hostname
 # Purpose:     A valid hostname for the job container, from the job's id.
 # Entry:       $value - the job id.
-# Exit status: Returns a name of at most 63 safe characters; 'local' if none.
+# Exit status: Returns a name of at most 63 safe characters, with no hyphen
+#              or dot at either end; 'local' if none is left.
 # Side effects: None.
 sub _hostname {
 	my ($value) = @_;
 
 	$value = '' unless defined $value;
 	$value =~ s/[^A-Za-z0-9.-]/-/g;
+
+	# A hostname may not begin or end with a hyphen or a dot, so a job id
+	# such as _build or build_ loses them.  Each end separately, and the
+	# end after the cut, which can leave one last.
+	$value =~ s/\A[.-]+//;
 	$value = substr($value, 0, $NAME_LENGTH);
+	$value =~ s/[.-]+\z//;
 
 	return length $value ? $value : 'local';
 }

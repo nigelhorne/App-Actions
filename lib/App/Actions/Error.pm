@@ -197,8 +197,12 @@ sub new {
 	# App::Actions::I18N::validate_args, because that module throws these
 	# objects and so loads this one first.
 	my $params = eval {
+		# The validator takes a key that holds undef as given; an exception
+		# with no code or no message is a mistake, so undef counts as left out.
+		my $given = get_params(undef, @_);
+		delete @{$given}{ grep { !defined $given->{$_} } keys %{$given} };
 		validate_strict({
-			args => get_params(undef, @_),
+			args => $given,
 			schema => {
 				code => { type => 'string', matches => $CODE },
 				message => { type => 'string' },

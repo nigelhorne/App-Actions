@@ -142,9 +142,15 @@ sub _is_type {
 sub _same {
     my ($one, $other) = @_;
 
-    # Two nulls are the same; a null and a value, or anything structured, are
-    # not; two scalars are compared as strings, as JSON compares them.
+    # Two nulls are the same; two booleans are the same when both are true
+    # or both false (a decoded boolean is an object, so it is not
+    # "structured"); a null and a value, a boolean and anything else, or
+    # anything structured, are not; two scalars are compared as strings, as
+    # JSON compares them.
+    my $booleans = JSON::PP::is_bool($one) + JSON::PP::is_bool($other);
     return (!defined $one && !defined $other) ? 1
+        : $booleans == 2 ? (!$one == !$other ? 1 : 0)
+        : $booleans ? 0
         : (!defined $one || !defined $other || ref $one || ref $other) ? 0
         : $one eq $other ? 1
         : 0;
