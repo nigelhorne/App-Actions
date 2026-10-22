@@ -487,6 +487,10 @@ sub new {
 		# How many jobs of one matrix may run at once.  The library runs
 		# them one at a time unless asked for more.
 		parallel => _job_parallelism($params->{parallel}),
+		# Whether the runner directory has to be open to other users of the
+		# host, because the container runs as someone who is neither root
+		# nor the user running this.
+		share_files => _shares_runner_files($params->{user}),
 		expression => App::Actions::Expression->new,
 		run_id => sprintf('%x%04x', time, $$ & 0xffff),
 		cleaned_up => 0,
@@ -971,6 +975,26 @@ sub _pull_concurrency {
 	return $value + 0;
 }
 
+# _shares_runner_files
+# Purpose:     Whether the runner directory must be readable and writable by
+#              every user of the host.  Without --user the container runs as
+#              its image's user, as before; root can use a private directory
+#              anyway, and so can the user running this, because a bind mount
+#              keeps the host's numeric owner.  Anyone else needs it open.
+# Entry:       $user - the --user value: NAME, UID, NAME:GROUP or UID:GID.
+# Exit status: Returns 1 when the directory must be shared, 0 otherwise.
+# Side effects: None.
+sub _shares_runner_files {
+	my ($user) = @_;
+
+	my ($who) = (defined $user && length $user) ? split(/:/, $user, 2) : ();
+
+	return !(defined $who && length $who) ? 0
+		: ($who eq 'root' || $who eq '0') ? 0
+		: ($who =~ /\A[0-9]+\z/ && $who == $<) ? 0
+		: 1;
+}
+
 # _job_parallelism
 # Purpose:     How many jobs of one matrix may run at once.
 # Entry:       $value - the option, or undef.
@@ -1224,8 +1248,12 @@ sub _prepare_temp {
 	my ($self, $root) = @_;
 
 	# The directory holds scripts and environment files, which may contain
-	# secrets.  It stays private unless the container runs as another user.
-	my $mode = defined $self->{user} ? oct('0777') : oct('0700');
+	# secrets.  It stays private unless the container runs as another user,
+	# who must then be able to write into it.  Such a directory is sticky, so
+	# nobody can remove or replace a file of the run's, and every file in it
+	# is created exclusively (see write_container_file), so a name someone
+	# planted in advance stops the run instead of redirecting a write.
+	my $mode = $self->{share_files} ? oct('1777') : oct('0700');
 
 	if (defined $root && length $root) {
 		# A job running beside another gets its own directory under the
@@ -1244,6 +1272,11 @@ sub _prepare_temp {
 		make_path("$self->{temp_path}/$directory");
 		chmod $mode, "$self->{temp_path}/$directory";
 	}
+
+	# Said once, by the process that made the directory, not by each
+	# parallel job in its own corner of it.
+	$self->_complain('runner.shared_files', { user => $self->{user}, dir => $self->{temp_path} })
+		if $self->{share_files} && !(defined $root && length $root);
 
 	$self->_write_shim("$self->{temp_path}/bin/sudo", $SUDO_SHIM, $self->i18n('runner.what.sudo_shim'));
 	for my $name (qw(apt apt-get)) {
@@ -1341,7 +1374,7 @@ sub _build_base_env {
 	write_container_file($event_path, JSON::PP->new->canonical->encode($self->{event}), 'event.json');
 	{
 		no autodie qw(chmod);
-		chmod(defined $self->{user} ? oct('0666') : oct('0600'), $event_path);
+		chmod($self->{share_files} ? oct('0644') : oct('0600'), $event_path);
 	}
 
 	$self->{base_env} = {
@@ -1680,7 +1713,7 @@ sub _run_instance {
 
 		$result = App::Actions::Runner::Steps->new(
 			(map { $_ => $self->{$_} } qw(expression docker images containers workflow project_dir temp_path
-				user quiet verbose dry_run strict_actions)),
+				user share_files quiet verbose dry_run strict_actions)),
 			job => $job,
 			container => $container,
 			network => $network,
@@ -1890,6 +1923,23 @@ L<App::Actions> does for every call.
 =item * The run's state is still shared between the planner and its parts
 through the option values they are built with; a part is not given the whole
 runner, but a change of option after construction is not seen by the parts.
+
+=item * A workflow is trusted as GitHub trusts it.  Its C<container.volumes>
+and C<container.options> can mount any host path the Docker daemon can
+reach, and its steps run with the daemon's privileges.  Run only workflows
+from repositories you trust.
+
+=item * With C<user> set to anyone but yourself or root, the runner
+directory is made writable by every user of the host (sticky, so nobody can
+replace another's files), and the step scripts in it, secrets included, are
+readable by them; a warning says so.  With rootless Docker, a C<user> that
+is your own uid inside the container maps to another uid on the host, and
+the job may then be unable to write its files.
+
+=item * Taint mode (C<-T>) is not supported.  F<action-run> runs with its
+user's own privileges, so taint checks would protect nothing that user
+could not already do; the environment, directory listings and C<PATH>
+lookups it relies on would all fail them.
 
 =back
 

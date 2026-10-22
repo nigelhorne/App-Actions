@@ -1021,8 +1021,10 @@ sub _list_args {
 sub _has_command {
 	my ($self, $container, $command) = @_;
 
+	# The name is the script's first argument rather than part of its text,
+	# so no value of it can be read as shell syntax.
 	my (undef, $rc) = $self->{docker}->capture_silent(
-		'exec', $container, 'sh', '-c', "command -v $command >/dev/null 2>&1",
+		'exec', $container, 'sh', '-c', 'command -v "$1" >/dev/null 2>&1', 'sh', $command,
 	);
 
 	return $rc == 0 ? 1 : 0;

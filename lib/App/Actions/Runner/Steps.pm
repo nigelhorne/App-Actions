@@ -4,7 +4,6 @@ use strict;
 use warnings;
 use autodie qw(:all);
 
-use File::Spec;
 use Readonly;
 use Sub::Private ();
 use Text::ParseWords qw(shellwords);
@@ -15,7 +14,7 @@ use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Util ();
 use App::Actions::Runner::Support qw(
 	action_inputs boolean_value chomp_error env_args has_status_function
-	local_action_path redact resolve_env status_flags write_container_file
+	local_action_dir redact resolve_env status_flags write_container_file
 );
 
 our $VERSION = '0.01';
@@ -226,6 +225,7 @@ sub new {
 		job_env => { type => 'hashref' },
 		context => { type => 'hashref' },
 		user => { type => 'string', optional => 1 },
+		share_files => { type => 'boolean', optional => 1 },
 		quiet => { type => 'boolean', optional => 1 },
 		verbose => { type => 'boolean', optional => 1 },
 		dry_run => { type => 'boolean', optional => 1 },
@@ -664,8 +664,8 @@ sub _run_docker_action {
 sub _run_local_action {
 	my ($self, $step, $step_number, $uses, $env, $context, $status) = @_;
 
-	my $relative = local_action_path($uses);
-	my $host_dir = File::Spec->catdir($self->{project_dir}, split m{/}, $relative);
+	# Resolved on the host and checked to be inside the project, links and all.
+	my ($relative, $host_dir) = @{ local_action_dir($self->{project_dir}, $uses) }{qw(relative dir)};
 	$self->throw('runner.local_action.missing', { uses => $uses, dir => $host_dir }) unless -d $host_dir;
 
 	# A metadata error is already an exception with a code of its own, and
@@ -1016,12 +1016,9 @@ sub _prepare_step_files {
 		$host{$kind} = "$self->{temp_path}/$file";
 		$vars{ $STEP_FILE{$kind}{variable} } = "$RUNNER_DIR/$file";
 
-		my $handle;
-		my $created = do {
-			no autodie qw(open close);
-			open($handle, '>', $host{$kind}) && close($handle);
-		};
-		$self->throw('runner.step_file_failed', { file => $host{$kind}, error => "$!" }) unless $created;
+		# Created exclusively, as every file of the run is: see
+		# App::Actions::Runner::Support::write_container_file.
+		write_container_file($host{$kind}, '', $self->i18n('runner.what.step_file', { file => $host{$kind} }));
 		$self->_chmod_private($host{$kind});
 	}
 
@@ -1156,7 +1153,7 @@ sub _chmod_private {
 	my ($self, $path) = @_;
 
 	no autodie qw(chmod);
-	chmod(defined $self->{user} ? oct('0666') : oct('0600'), $path);
+	chmod($self->{share_files} ? oct('0666') : oct('0600'), $path);
 
 	return;
 }

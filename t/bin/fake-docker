@@ -20,9 +20,28 @@ if (!defined $state_dir || !length $state_dir) {
 
 make_path($state_dir);
 
+# FAKE_DOCKER_LOG records each command with every "-e NAME" written out as
+# NAME=VALUE, the value docker would read from the client's environment: what
+# the container is given.  FAKE_DOCKER_ARGV_LOG records the arguments exactly
+# as they arrived, which is what any user of the host can see in ps, so a
+# test can show that a secret never appears there.
 my $log_file = $ENV{FAKE_DOCKER_LOG};
 if (defined $log_file && length $log_file) {
+    my @resolved = @ARGV;
+    for my $index (1 .. $#resolved) {
+        next unless $resolved[$index - 1] eq '-e' || $resolved[$index - 1] eq '--env';
+        next unless $resolved[$index] =~ /\A[A-Za-z_][A-Za-z0-9_]*\z/ && exists $ENV{ $resolved[$index] };
+        $resolved[$index] .= "=$ENV{ $resolved[$index] }";
+    }
     open my $log, '>>', $log_file or die "fake-docker: cannot open log: $!";
+    binmode $log;
+    print {$log} join("\t", @resolved), "\n";
+    close $log;
+}
+
+my $argv_log_file = $ENV{FAKE_DOCKER_ARGV_LOG};
+if (defined $argv_log_file && length $argv_log_file) {
+    open my $log, '>>', $argv_log_file or die "fake-docker: cannot open log: $!";
     binmode $log;
     print {$log} join("\t", @ARGV), "\n";
     close $log;
@@ -310,15 +329,15 @@ if ($command eq 'exec') {
         close $marker;
     }
 
-    if ($ENV{FAKE_NO_BASH} && $args[-1] =~ /command -v bash/) {
+    if ($ENV{FAKE_NO_BASH} && _probes_for(\@args, 'bash')) {
         exit 1;
     }
 
-    if ($ENV{FAKE_NO_NODE} && $args[-1] =~ /command -v node/) {
+    if ($ENV{FAKE_NO_NODE} && _probes_for(\@args, 'node')) {
         exit 1;
     }
 
-    if ($ENV{FAKE_NO_SUDO} && $args[-1] =~ /command -v sudo/) {
+    if ($ENV{FAKE_NO_SUDO} && _probes_for(\@args, 'sudo')) {
         exit 1;
     }
 
@@ -679,6 +698,14 @@ sub _option_value {
     return undef;
 }
 
+# Whether a docker exec asks the container if it has a command: the probe
+# is sh -c 'command -v "$1" ...' sh NAME.
+sub _probes_for {
+    my ($args, $name) = @_;
+
+    return @$args >= 3 && $args->[-3] =~ /\Acommand -v / && $args->[-1] eq $name;
+}
+
 sub _environment {
     my ($args) = @_;
     my %environment;
@@ -687,7 +714,13 @@ sub _environment {
         my $value = $args->[$index + 1];
         next unless defined $value;
         my ($key, $val) = split /=/, $value, 2;
-        $environment{$key} = defined $val ? $val : '';
+        # "-e NAME" takes the value from the client's own environment, as
+        # docker does, and passes nothing when the client has none.
+        if (!defined $val) {
+            next unless exists $ENV{$key};
+            $val = $ENV{$key};
+        }
+        $environment{$key} = $val;
     }
     return \%environment;
 }

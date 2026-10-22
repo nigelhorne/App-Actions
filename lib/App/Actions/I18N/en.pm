@@ -137,7 +137,6 @@ my %MESSAGES = (
 	'runner.write_failed' => 'Unable to write %(what)s: %(error)s',
 	'runner.file_write_failed' => "Unable to write '%(file)s': %(error)s",
 	'runner.file_read_failed' => "Unable to read '%(file)s': %(error)s",
-	'runner.step_file_failed' => "Unable to create step file '%(file)s': %(error)s",
 	'runner.network_failed' => "Failed to create Docker network '%(name)s' (exit %(status)s)",
 	'runner.input_required' => "Action '%(uses)s' requires the input '%(name)s'",
 	'runner.local_action_empty' => "Local action '%(uses)s' does not name a directory inside the project",
@@ -191,6 +190,8 @@ my %MESSAGES = (
 	'runner.what.service' => "Service '%(id)s'",
 	'runner.what.job_container' => "Job container '%(name)s'",
 	'runner.what.step_script' => "the step script '%(file)s'",
+	'runner.what.step_file' => "the step file '%(file)s'",
+	'runner.shared_files' => "action-run: the job runs as '%(user)s', so its runner directory %(dir)s is open to every user of this host, and the step scripts in it hold the workflow's secrets; run the job as your own user or as root to keep it private",
 	'runner.what.sudo_shim' => 'the sudo shim',
 	'runner.what.apt_shim' => 'the %(name)s shim',
 

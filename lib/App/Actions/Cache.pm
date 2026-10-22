@@ -6,6 +6,7 @@ use Carp qw(croak);
 use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use File::Spec;
+use File::Temp ();
 use JSON::PP ();
 
 use App::Actions::I18N qw(i18n);
@@ -235,12 +236,15 @@ sub save {
     my $dir = dirname($path);
     make_path($dir) unless -d $dir;
 
-    my $temp = File::Spec->catfile(
-        $dir, sprintf('.cache-%d-%d.tmp', $$, int(rand(1_000_000))),
-    );
-
-    open my $handle, '>', $temp
-        or croak "cannot write '$temp': $!";
+    # The new contents go to a file File::Temp creates exclusively, with a
+    # name nobody can predict, and replace the old by rename.  A name made of
+    # the PID and rand() can be guessed, and open '>' follows a symbolic link
+    # someone placed there, so in a shared directory (ACTION_RUN_CACHE_FILE
+    # can point anywhere) the write would land in whatever file it named.
+    my $handle = eval {
+        File::Temp->new(TEMPLATE => '.cache-XXXXXXXXXX', DIR => $dir, SUFFIX => '.tmp', UNLINK => 0);
+    } or croak "cannot write a new cache file in '$dir': " . (length $@ ? $@ =~ s/\s+\z//r : 'unknown error');
+    my $temp = $handle->filename;
     binmode $handle;
     print {$handle} JSON::PP->new->canonical->pretty->encode($data);
     close $handle or croak "cannot write '$temp': $!";

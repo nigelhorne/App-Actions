@@ -108,7 +108,6 @@ my %MESSAGES = (
 	'runner.write_failed' => '无法写入%(what)s：%(error)s',
 	'runner.file_write_failed' => "无法写入 '%(file)s'：%(error)s",
 	'runner.file_read_failed' => "无法读取 '%(file)s'：%(error)s",
-	'runner.step_file_failed' => "无法创建步骤文件 '%(file)s'：%(error)s",
 	'runner.network_failed' => "无法创建 Docker 网络 '%(name)s'（退出码 %(status)s）",
 	'runner.input_required' => "操作 '%(uses)s' 需要输入 '%(name)s'",
 	'runner.local_action_empty' => "本地操作 '%(uses)s' 未指向项目中的目录",
@@ -162,6 +161,8 @@ my %MESSAGES = (
 	'runner.what.service' => "服务 '%(id)s'",
 	'runner.what.job_container' => "作业容器 '%(name)s'",
 	'runner.what.step_script' => "步骤脚本 '%(file)s'",
+	'runner.what.step_file' => "步骤文件 '%(file)s'",
+	'runner.shared_files' => "action-run: 作业以 '%(user)s' 身份运行，因此其运行器目录 %(dir)s 对本机所有用户开放，而其中的步骤脚本包含工作流的机密；请以您自己的用户或 root 身份运行作业以保持其私密",
 	'runner.what.sudo_shim' => 'sudo 替身',
 	'runner.what.apt_shim' => '%(name)s 替身',
 

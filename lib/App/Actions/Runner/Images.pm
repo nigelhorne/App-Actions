@@ -4,7 +4,6 @@ use strict;
 use warnings;
 use autodie qw(:all);
 
-use File::Spec;
 use Readonly;
 use Sub::Private ();
 
@@ -12,7 +11,7 @@ use App::Actions::Access;
 use App::Actions::Action;
 use App::Actions::Cache;
 use App::Actions::I18N qw(i18n throw validate_args);
-use App::Actions::Runner::Support qw(action_inputs local_action_path trim_error);
+use App::Actions::Runner::Support qw(action_inputs local_action_dir trim_error);
 
 our $VERSION = '0.01';
 
@@ -1150,10 +1149,10 @@ sub _collect_action_images {
 
 	# An action may use itself, directly or through another one; and one that
 	# cannot be read is the run's error to report, not the preflight's.
-	my $relative = eval { local_action_path($action) };
-	return if !defined $relative || $ancestors->{$relative};
+	my $location = eval { local_action_dir($self->{project_dir}, $action) };
+	return if !$location || $ancestors->{ $location->{relative} };
 
-	my $host_dir = File::Spec->catdir($self->{project_dir}, split m{/}, $relative);
+	my ($relative, $host_dir) = @{$location}{qw(relative dir)};
 	my $loaded = -d $host_dir ? eval { App::Actions::Action->load_from_dir($host_dir) } : undef;
 	return unless $loaded && $loaded->is_composite;
 

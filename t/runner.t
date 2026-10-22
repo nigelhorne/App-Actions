@@ -80,6 +80,19 @@ sub actions_options {
         grep { !/\Afake_/ && $_ ne 'json' && $_ ne 'files' } keys %options;
 }
 
+# The contents of a file, or '' when there is none.
+sub slurp_if_present {
+    my ($path) = @_;
+
+    return '' unless -f $path;
+    open my $handle, '<', $path or die "cannot read $path: $!";
+    local $/;
+    my $text = <$handle>;
+    close $handle;
+
+    return defined $text ? $text : '';
+}
+
 sub run_workflow {
     my ($yaml, %options) = @_;
 
@@ -107,6 +120,7 @@ sub run_workflow {
 
     local $ENV{FAKE_DOCKER_STATE} = $state;
     local $ENV{FAKE_DOCKER_LOG}   = $log;
+    local $ENV{FAKE_DOCKER_ARGV_LOG} = "$log.argv";
     local $ENV{FAKE_NO_BASH}      = $options{fake_no_bash} ? 1 : 0;
     local $ENV{FAKE_NO_SUDO}      = $options{fake_no_sudo} ? 1 : 0;
     local $ENV{FAKE_NO_NODE}      = $options{fake_no_node} ? 1 : 0;
@@ -141,20 +155,14 @@ sub run_workflow {
     $stdout = useful_text($stdout);
     $stderr = useful_text($stderr);
 
-    my $log_text = '';
-    if (-f $log) {
-        open my $log_handle, '<', $log or die $!;
-        local $/;
-        $log_text = <$log_handle>;
-        close $log_handle;
-        $log_text = '' unless defined $log_text;
-    }
+    my ($log_text, $argv_text) = map { slurp_if_present($_) } ($log, "$log.argv");
 
     return {
         stdout   => $stdout,
         stderr   => $stderr,
         exit     => $exit,
         log      => $log_text,
+        argv_log => $argv_text,
         project  => $project,
         state    => $state,
     };
@@ -1328,6 +1336,30 @@ is($redacted->{exit}, 0, 'secret dry-run succeeds');
 like($redacted->{stdout}, qr/\*\*\*/, 'secret values are redacted in dry-run scripts');
 unlike($redacted->{stdout}, qr/super-secret-value/, 'secret values do not appear in output');
 unlike($redacted->{stderr}, qr/super-secret-value/, 'secret values do not appear in error output');
+
+# A process's arguments can be read by every user of the host, so the job's
+# variables reach docker through its environment instead: the container is
+# given the secret, and no docker command line carries it.
+my $hidden = run_workflow(<<'YAML', secrets => { TOKEN => 'super-secret-value' });
+name: Hidden
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      JOB_TOKEN: ${{ secrets.TOKEN }}
+    steps:
+      - run: echo checking
+        env:
+          STEP_TOKEN: ${{ secrets.TOKEN }}
+YAML
+
+is($hidden->{exit}, 0, 'a run whose variables carry a secret succeeds');
+like($hidden->{log}, qr/\t-e\tSTEP_TOKEN=super-secret-value\t/, 'the step is given the secret');
+like($hidden->{log}, qr/^run\t.*\t-e\tJOB_TOKEN=super-secret-value\t/m, 'and so is the job container');
+like($hidden->{argv_log}, qr/\t-e\tSTEP_TOKEN\t/, 'the docker command names the variable');
+unlike($hidden->{argv_log}, qr/super-secret-value/, 'but no docker command line carries its value');
+like($hidden->{argv_log}, qr/\t-e\tGITHUB_WORKSPACE\t/, 'nor the value of any other job variable');
 
 my $composite_action = <<'YAML';
 name: Greet

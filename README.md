@@ -706,23 +706,29 @@ parent's handles with the child.
 
 Design weaknesses that remain:
 
-- [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner) is a single 4,000-line class that plans the
-run, talks to Docker, interprets steps, runs parallel jobs and writes logs.
-Its private methods share state through one hash, so none of those concerns
-can be tested or replaced alone.  It should be split, at least into a
-planner (what to run), an executor (how to run one step) and a reporter.
-- Errors are mostly strings.  Only schema drift has an exception class;
-callers such as `bin/action-run` tell other failures apart by matching
-their text, which a translation would break.  The catalogue keys are the
-natural basis for an exception class carrying a stable code.
-- Options are validated twice: their types here and their values in
-the runner.  The runner's checks are the ones with the specific messages,
-so the two cannot simply be merged without moving those messages.
+- [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner) plans the run and hands the work to five
+parts (images, containers, steps, parallel jobs and the report), each in its
+own module under `App/Actions/Runner/`.  The parts are built from copies of
+the runner's options rather than given the runner, so they can be tested
+alone, but a change to an option after construction is not seen by them, and
+the planner is still the largest of them.
+- Errors raised through the catalogue are [App::Actions::Error](https://metacpan.org/pod/App%3A%3AActions%3A%3AError)
+objects carrying the message key as a stable code, and `bin/action-run`
+asks for the code rather than matching the text.  The errors of
+[App::Actions::Check](https://metacpan.org/pod/App%3A%3AActions%3A%3ACheck), [App::Actions::Docker](https://metacpan.org/pod/App%3A%3AActions%3A%3ADocker), [App::Actions::Expression](https://metacpan.org/pod/App%3A%3AActions%3A%3AExpression),
+[App::Actions::Process](https://metacpan.org/pod/App%3A%3AActions%3A%3AProcess), [App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache) and [App::Actions::Logs](https://metacpan.org/pod/App%3A%3AActions%3A%3ALogs) are
+still strings.
+- The option rules are one table, the runner's (see
+["option\_rules" in App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner#option_rules)), but the options are still checked
+twice: here, where the caller passes them, and in the runner, which is a
+public class and so checks its own arguments.  The cost is a second pass
+over a dozen keys per call.
 - Unknown options are now an error.  A caller that passed an option
 this module never forwarded (and which therefore had no effect) will now be
 told so.
-- The Runner, Check, Docker and command-line messages have not been
-moved into the catalogue yet; see ["LIMITATIONS" in App::Actions::I18N](https://metacpan.org/pod/App%3A%3AActions%3A%3AI18N#LIMITATIONS).
+- The Check, Docker, Expression, Process and command-line messages
+have not been moved into the catalogue yet; see
+["LIMITATIONS" in App::Actions::I18N](https://metacpan.org/pod/App%3A%3AActions%3A%3AI18N#LIMITATIONS).
 
 ## Author
 

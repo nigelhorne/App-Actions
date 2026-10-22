@@ -8,6 +8,10 @@ use Exporter qw(import);
 use File::Spec;
 use Readonly;
 
+use Cwd qw(abs_path);
+use Fcntl qw(O_CREAT O_EXCL O_WRONLY);
+
+use App::Actions::Docker ();
 use App::Actions::Error;
 use App::Actions::I18N qw(throw);
 use App::Actions::Util ();
@@ -20,6 +24,7 @@ our @EXPORT_OK = qw(
 	chomp_error
 	env_args
 	has_status_function
+	local_action_dir
 	local_action_path
 	redact
 	resolve_env
@@ -34,6 +39,10 @@ our @EXPORT_OK = qw(
 Readonly::Scalar my $ENV_PASSES => 10;
 
 # The words a workflow may use for a boolean without writing an expression.
+# A file is created readable by its owner only; the caller widens it when
+# the container runs as another user.
+Readonly::Scalar my $NEW_FILE_MODE => oct('0600');
+
 Readonly::Scalar my $TRUE_WORD => qr/\A(?:true|yes|1)\z/i;
 Readonly::Scalar my $FALSE_WORD => qr/\A(?:false|no|0)\z/i;
 
@@ -487,13 +496,20 @@ Creates or replaces the file.
 sub write_container_file {
 	my ($path, $contents, $description) = @_;
 
-	# Checked by hand rather than by autodie, whose message would name the
-	# builtin; the catalogue's names the file the run was writing, which is
-	# the part a user can act on.
+	# The file is created afresh and exclusively (O_EXCL), never opened for
+	# writing as it stands: open '>' follows a symbolic link, so a link
+	# planted at a predictable name such as scripts/step-1.sh would have the
+	# run write a script, secrets and all, wherever it pointed.  A file this
+	# run wrote before is removed first; one someone else planted cannot be
+	# removed from the sticky directory a shared run uses, and then the
+	# create fails rather than writing through it.  Checked by hand rather
+	# than by autodie, whose message would name the builtin; the catalogue's
+	# names the file the run was writing, which is the part a user can act on.
 	my $handle;
 	my $written = do {
-		no autodie qw(open binmode close);
-		open($handle, '>', $path)
+		no autodie qw(unlink sysopen binmode close);
+		unlink $path;
+		sysopen($handle, $path, O_WRONLY | O_CREAT | O_EXCL, $NEW_FILE_MODE)
 			&& binmode($handle)
 			&& print({$handle} $contents)
 			&& close($handle);
@@ -564,6 +580,86 @@ sub local_action_path {
 		if $relative =~ m{(?:\A|/)\.\.(?:/|\z)};
 
 	return $relative;
+}
+
+=head2 local_action_dir
+
+	my $location = local_action_dir($project_dir, './.github/actions/test');
+	print "$location->{dir}\n";
+
+Resolves a C<./path/to/action> reference, as L</local_action_path> does, to
+the directory on the host, and checks that the directory really is inside the
+project.  The textual check refuses C<..>; this one also refuses a symbolic
+link in the repository that leads out of it, which would otherwise have the
+host read an F<action.yml> from anywhere the link pointed.  A directory that
+does not exist is returned as it would be, for the caller to report.
+
+=head3 EXAMPLE
+
+	my $location = local_action_dir('/src/app', './.github/actions/build/');
+	# { relative => '.github/actions/build', dir => '/src/app/.github/actions/build' }
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{
+		project_dir => { type => 'string', min => 1 },
+		uses        => { type => 'string' },
+	}
+
+=head4 OUTPUT
+
+	{
+		type => 'hashref',
+		schema => {
+			relative => { type => 'string', min => 1 },
+			dir      => { type => 'string', min => 1 },
+		},
+	}
+
+=head3 MESSAGES
+
+	+-----------------------------+------------------------------+-----------------------------+
+	| Message                     | Meaning                      | Resolution                  |
+	+-----------------------------+------------------------------+-----------------------------+
+	| Local action 'X' must not   | The path contains "..", or   | Keep the action inside the  |
+	| escape the project directory| a link in it leads outside   | repository, as a directory  |
+	+-----------------------------+------------------------------+-----------------------------+
+
+And the messages of L</local_action_path>.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ LocalActionDir ──────────────────────────────────
+	│ projectDir?, uses? : seq CHAR
+	│ loc!               : LOCATION
+	├───────────────────────────────────────────────────
+	│ loc!.relative = localActionPath(uses?)
+	│ loc!.dir = projectDir? ⁀ "/" ⁀ loc!.relative
+	│ isDirectory(loc!.dir) ⇒ realpath(loc!.dir) ∈ subtree(realpath(projectDir?))
+	└───────────────────────────────────────────────────
+
+=cut
+
+sub local_action_dir {
+	my ($project_dir, $uses) = @_;
+
+	my $relative = local_action_path($uses);
+	my $dir = File::Spec->catdir($project_dir, split m{/}, $relative);
+
+	# Only a directory that exists can lead anywhere; one that does not is
+	# the caller's to report as missing.
+	if (-d $dir) {
+		my ($real, $root) = map { abs_path($_) } ($dir, $project_dir);
+		my $inside = (defined $real && defined $root) ? File::Spec->abs2rel($real, $root) : undef;
+		__PACKAGE__->throw('runner.local_action_escapes', { uses => $uses })
+			unless defined $inside
+				&& !File::Spec->file_name_is_absolute($inside)
+				&& $inside !~ m{\A\.\.(?:[/\\]|\z)};
+	}
+
+	return { relative => $relative, dir => $dir };
 }
 
 =head2 action_inputs
@@ -711,12 +807,17 @@ sub redact {
 
 	push @args, @{ env_args(\%env) };
 
-Turns an environment into C<docker> arguments: C<-e NAME=VALUE> for each
-variable, sorted by name so the command line is the same on every run.
+Turns an environment into C<docker> arguments: C<-e> and an
+L<App::Actions::Docker::Variable|App::Actions::Docker/App::Actions::Docker::Variable>
+for each variable, sorted by name so the command line is the same on every
+run.  Each variable reads as C<NAME=VALUE>; L<App::Actions::Docker> passes its
+value to the client through the environment, so it never appears among the
+client's arguments, which every user of the host can read.
 
 =head3 EXAMPLE
 
-	env_args({ B => 2, A => 1 });    # ['-e', 'A=1', '-e', 'B=2']
+	my $args = env_args({ B => 2, A => 1 });
+	print join(' ', @{$args}), "\n";    # -e A=1 -e B=2
 
 =head3 API SPECIFICATION
 
@@ -746,7 +847,10 @@ None.
 sub env_args {
 	my ($env) = @_;
 
-	return [ map { ('-e', "$_=$env->{$_}") } sort keys %{$env} ];
+	# Each variable is an object that reads as NAME=VALUE, so that
+	# App::Actions::Docker can give its value to the client through the
+	# environment rather than on a command line every user can read.
+	return [ map { ('-e', App::Actions::Docker::Variable->new($_, $env->{$_})) } sort keys %{$env} ];
 }
 
 1;

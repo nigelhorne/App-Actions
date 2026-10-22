@@ -148,7 +148,6 @@ my %MESSAGES = (
 	'runner.write_failed' => '%(what)s kann nicht geschrieben werden: %(error)s',
 	'runner.file_write_failed' => "'%(file)s' kann nicht geschrieben werden: %(error)s",
 	'runner.file_read_failed' => "'%(file)s' kann nicht gelesen werden: %(error)s",
-	'runner.step_file_failed' => "Die Schrittdatei '%(file)s' kann nicht angelegt werden: %(error)s",
 	'runner.network_failed' => "Das Docker-Netzwerk '%(name)s' konnte nicht angelegt werden (Status %(status)s)",
 	'runner.input_required' => "Die Action '%(uses)s' erfordert die Eingabe '%(name)s'",
 	'runner.local_action_empty' => "Die lokale Action '%(uses)s' bezeichnet kein Verzeichnis im Projekt",
@@ -202,6 +201,8 @@ my %MESSAGES = (
 	'runner.what.service' => "Dienst '%(id)s'",
 	'runner.what.job_container' => "Job-Container '%(name)s'",
 	'runner.what.step_script' => "das Schrittskript '%(file)s'",
+	'runner.what.step_file' => "die Schrittdatei '%(file)s'",
+	'runner.shared_files' => "action-run: Der Job läuft als '%(user)s', daher ist sein Runner-Verzeichnis %(dir)s für alle Benutzer dieses Rechners offen, und die Schrittskripte darin enthalten die Secrets des Workflows; führen Sie den Job als Ihr eigener Benutzer oder als root aus, um es privat zu halten",
 	'runner.what.sudo_shim' => 'der sudo-Ersatz',
 	'runner.what.apt_shim' => 'der %(name)s-Ersatz',
 

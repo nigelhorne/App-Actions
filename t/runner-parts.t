@@ -90,7 +90,10 @@ subtest 'container files and docker arguments' => sub {
 	throws_ok { write_container_file("$temp/no/such/dir/x", 'x', 'the test file') }
 		qr/^Unable to write the test file:/, 'a file that cannot be written says which one';
 
-	is_deeply(env_args({ B => 2, A => 1 }), [ '-e', 'A=1', '-e', 'B=2' ], 'variables become sorted -e arguments');
+	my $args = env_args({ B => 2, A => 1 });
+	is_deeply([ map { "$_" } @{$args} ], [ '-e', 'A=1', '-e', 'B=2' ], 'variables become sorted -e arguments');
+	isa_ok($args->[1], 'App::Actions::Docker::Variable', 'each variable');
+	is_deeply([ $args->[1]->name, $args->[1]->value ], [ 'A', '1' ], 'which knows its name and value apart');
 	is(redact(Local::Docker->new, 'token is hunter2'), 'token is ***', 'secrets are masked through Docker');
 	is(redact(bless({}, 'Local::Plain'), 'as is'), 'as is', 'an object that cannot redact leaves the text alone');
 };

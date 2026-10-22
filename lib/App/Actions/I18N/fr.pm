@@ -148,7 +148,6 @@ my %MESSAGES = (
 	'runner.write_failed' => "Impossible d'écrire %(what)s : %(error)s",
 	'runner.file_write_failed' => "Impossible d'écrire '%(file)s' : %(error)s",
 	'runner.file_read_failed' => "Impossible de lire '%(file)s' : %(error)s",
-	'runner.step_file_failed' => "Impossible de créer le fichier d'étape '%(file)s' : %(error)s",
 	'runner.network_failed' => "Échec de la création du réseau Docker '%(name)s' (code %(status)s)",
 	'runner.input_required' => "L'action '%(uses)s' exige l'entrée '%(name)s'",
 	'runner.local_action_empty' => "L'action locale '%(uses)s' ne désigne aucun répertoire du projet",
@@ -202,6 +201,8 @@ my %MESSAGES = (
 	'runner.what.service' => "Le service '%(id)s'",
 	'runner.what.job_container' => "Le conteneur de job '%(name)s'",
 	'runner.what.step_script' => "le script d'étape '%(file)s'",
+	'runner.what.step_file' => "le fichier d'étape '%(file)s'",
+	'runner.shared_files' => "action-run: le job s'exécute en tant que '%(user)s', donc son répertoire de runner %(dir)s est ouvert à tous les utilisateurs de cette machine, et les scripts d'étape qu'il contient renferment les secrets du workflow ; exécutez le job sous votre propre utilisateur ou en root pour le garder privé",
 	'runner.what.sudo_shim' => 'le substitut de sudo',
 	'runner.what.apt_shim' => 'le substitut de %(name)s',
 

@@ -129,6 +129,20 @@ sub _spawn_args {
     return $^O eq 'MSWin32' ? ($args[0], map { quote_win32($_) } @args[1 .. $#args]) : @args;
 }
 
+# Start $command and wait for it.  A list of one element is handed to the
+# shell by system() when it contains a shell metacharacter, so the program
+# is named separately (system PROGRAM LIST), which never uses a shell:
+# whatever the arguments hold, they are arguments.  Windows keeps the plain
+# list, because there the arguments are already quoted into one command line
+# by _spawn_args and Perl starts the program itself.
+sub _system {
+    my ($command) = @_;
+
+    my @args = _spawn_args($command);
+
+    return $^O eq 'MSWin32' ? system(@args) : system { $args[0] } @args;
+}
+
 # Run $command with both streams discarded.
 sub run_quiet {
     my ($command) = @_;
@@ -146,7 +160,7 @@ sub stream {
     STDOUT->flush;
     STDERR->flush;
 
-    system(_spawn_args($command));
+    _system($command);
 
     return exit_code($?);
 }
@@ -227,7 +241,9 @@ sub run_parallel {
 
             if ($pid == 0) {
                 _redirect_child(%redirect);
-                exec(@{ $commands->[$index] }) or do {
+                # exec PROGRAM LIST, so no command ever reaches a shell.
+                my @command = @{ $commands->[$index] };
+                exec { $command[0] } @command or do {
                     print STDERR "Unable to run '$commands->[$index][0]': $!\n";
                     POSIX::_exit(127);
                 };
@@ -312,7 +328,7 @@ sub run {
             my $warning = shift;
             warn $warning unless $warning =~ /^Can't exec /;
         };
-        system(_spawn_args($command));
+        _system($command);
         $status = $?;
     }
 

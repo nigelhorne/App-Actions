@@ -5,8 +5,26 @@ use warnings;
 use Carp qw(croak);
 
 use File::Spec;
+use Scalar::Util qw(blessed);
 
 use App::Actions::Process;
+
+# The variables the docker client reads for itself.  A job variable with one
+# of these names stays on the command line: set in the client's environment
+# it would change where the client connects, what it trusts or where it
+# finds programs.
+my $CLIENT_VARIABLE = qr/
+	\A (?:
+		DOCKER_\w* | BUILDKIT_\w* | COMPOSE_\w*
+		| PATH | PATHEXT | HOME | USERPROFILE | APPDATA | LOCALAPPDATA
+		| TMPDIR | TMP | TEMP | XDG_\w+
+		| (?: HTTPS? | NO | ALL | FTP ) _PROXY
+		| SSL_CERT_(?: FILE | DIR )
+	) \z
+/xi;
+
+# A name a process environment can carry on every platform.
+my $VARIABLE_NAME = qr/\A[A-Za-z_][A-Za-z0-9_]*\z/;
 
 our $VERSION = '0.01';
 
@@ -337,7 +355,7 @@ sub run {
     my ($self, @args) = @_;
 
     return $self->_announce(@args)
-        ? App::Actions::Process::stream([ $self->_command(@args) ])
+        ? $self->_spawn(\&App::Actions::Process::stream, @args)
         : 0;
 }
 
@@ -345,8 +363,62 @@ sub run_silent {
     my ($self, @args) = @_;
 
     return $self->_announce(@args)
-        ? App::Actions::Process::run_quiet([ $self->_command(@args) ])
+        ? $self->_spawn(\&App::Actions::Process::run_quiet, @args)
         : 0;
+}
+
+# _spawn
+# Purpose:     Start the docker client with the job's variables kept off its
+#              command line.  Every user of the host can read a process's
+#              arguments (ps, /proc/PID/cmdline), so "-e TOKEN=value" there
+#              publishes the value; the client's environment is readable only
+#              by its own user.  docker reads "-e NAME" from that environment.
+# Entry:       $starter - the App::Actions::Process function to run it with;
+#              @args - the docker arguments.
+# Exit status: Returns what $starter returns.
+# Side effects: Sets the hidden variables in %ENV for the duration of the call.
+sub _spawn {
+    my ($self, $starter, @args) = @_;
+
+    my ($command, $hidden) = $self->_hide_variables(@args);
+    local @ENV{ keys %{$hidden} } = values %{$hidden};
+
+    return $starter->([ $self->_command(@{$command}) ]);
+}
+
+# _hide_variables
+# Purpose:     Turn each job variable (an App::Actions::Docker::Variable, as
+#              App::Actions::Runner::Support::env_args makes them) into
+#              "NAME" plus an environment entry, and every other argument into
+#              the string it is.  Only those objects are touched, so a "-e"
+#              meant for the program in the container is left alone.
+# Entry:       @args.
+# Exit status: Returns (\@arguments, \%environment).
+# Side effects: None.
+sub _hide_variables {
+    my (undef, @args) = @_;
+
+    # On Windows names differ only in case are one variable, so a name that
+    # clashes with another in the same command stays on the command line.
+    my %seen;
+    $seen{ lc $_->name }++ for grep { blessed($_) && $_->isa('App::Actions::Docker::Variable') } @args;
+
+    my (@command, %hidden);
+    for my $arg (@args) {
+        if (!(blessed($arg) && $arg->isa('App::Actions::Docker::Variable'))) {
+            push @command, $arg;
+            next;
+        }
+
+        my ($name, $value) = ($arg->name, $arg->value);
+        my $hideable = $name =~ $VARIABLE_NAME && $name !~ $CLIENT_VARIABLE
+            && $seen{ lc $name } == 1 && index($value, "\0") < 0;
+
+        push @command, $hideable ? $name : "$name=$value";
+        $hidden{$name} = $value if $hideable;
+    }
+
+    return (\@command, \%hidden);
 }
 
 # _announce
@@ -393,8 +465,11 @@ sub _capture {
 
     return ('', 0) unless $self->_announce(@args);
 
+    my ($command, $hidden) = $self->_hide_variables(@args);
+    local @ENV{ keys %{$hidden} } = values %{$hidden};
+
     return App::Actions::Process::capture(
-        [ $self->_command(@args) ],
+        [ $self->_command(@{$command}) ],
         quiet_stderr => $quiet_stderr,
         merge_stderr => $merge_stderr,
     );
@@ -444,6 +519,22 @@ sub _quote {
         : "'" . ($copy =~ s/'/'\\''/gr) . "'";
 }
 
+# A job variable on its way to docker: "-e" followed by one of these.  It
+# reads as NAME=VALUE wherever it is printed or compared, and lets the client
+# be given the value through its environment rather than its arguments.
+package App::Actions::Docker::Variable;
+
+use overload '""' => sub { "$_[0]{name}=$_[0]{value}" }, fallback => 1;
+
+sub new {
+    my ($class, $name, $value) = @_;
+
+    return bless { name => $name, value => defined $value ? $value : '' }, $class;
+}
+
+sub name  { return $_[0]->{name} }
+sub value { return $_[0]->{value} }
+
 1;
 
 __END__
@@ -468,6 +559,40 @@ The Docker command may be a wrapper script rather than the C<docker> binary.
 If the wrapper is a Perl script (it starts with a C<perl> shebang), it is run
 with the current Perl interpreter.  That also makes such wrappers usable on
 Windows, where the operating system cannot start a shebang script directly.
+
+=head2 Job variables
+
+Every user of the host can read a process's arguments (with C<ps>, or from
+F</proc/PID/cmdline>), so a C<-e TOKEN=value> on the docker client's command
+line would publish the value.  A job variable is therefore passed as an
+L</App::Actions::Docker::Variable> object after C<-e>.  When the command runs,
+the object becomes a bare C<-e NAME>, and the value is put in the client's
+environment, which only its own user can read, for the duration of that one
+command.  The client reads C<-e NAME> from its environment.
+
+A variable stays on the command line as C<NAME=VALUE> when hiding it would
+change what the command does:
+
+=over 4
+
+=item * the name is not one an environment can carry (letters, digits and
+C<_>, not starting with a digit);
+
+=item * the name is one the docker client reads for itself, such as
+C<DOCKER_HOST>, C<PATH>, C<HOME>, C<TMPDIR>, C<HTTPS_PROXY> or
+C<SSL_CERT_FILE>: set in the client's environment it would change where the
+client connects, what it trusts or where it finds programs;
+
+=item * another variable in the same command has the same name in a
+different case, which Windows would treat as one variable;
+
+=item * the value contains a NUL character, which no environment can hold.
+
+=back
+
+Arguments that are plain strings, including a C<-e NAME=VALUE> meant for the
+program inside the container, are passed exactly as given.  What is printed in
+verbose and dry-run modes is the C<NAME=VALUE> form, with secrets redacted.
 
 =head1 METHODS
 
@@ -537,6 +662,33 @@ attempts, which is what a running check alone cannot see.
 Returns the last C<$lines> (default 10) lines the container printed, with its
 standard error merged in, for quoting in an error message.  Unlike
 C<container_logs>, nothing is written to the caller's streams.
+
+=head1 App::Actions::Docker::Variable
+
+    my $variable = App::Actions::Docker::Variable->new('TOKEN', $value);
+    $docker->run('run', '--rm', '-e', $variable, 'alpine', 'env');
+
+A job variable on its way to docker.  C<new($name, $value)> makes one (an
+undefined value becomes the empty string), C<name> and C<value> return its
+parts, and it stringifies, and so compares, as C<NAME=VALUE>.  See
+L</Job variables>.
+
+=head1 LIMITATIONS
+
+=over 4
+
+=item * Variables kept on the command line, as listed under
+L</Job variables>, can be read there by other users of the host.
+
+=item * Only job variables are hidden.  A secret in a docker action's
+C<args>, or in a C<-e NAME=VALUE> written in a workflow's container
+C<options>, is an ordinary argument and stays visible.
+
+=item * The daemon keeps each container's environment, and anyone who can
+reach it (members of the C<docker> group, for example) can read it with
+C<docker inspect>.
+
+=back
 
 =head1 AUTHOR
 
