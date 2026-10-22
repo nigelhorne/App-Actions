@@ -13,6 +13,7 @@ lib/App/Actions/Action.pm
 lib/App/Actions/Cache.pm
 lib/App/Actions/Check.pm
 lib/App/Actions/Docker.pm
+lib/App/Actions/Docker/Variable.pm
 lib/App/Actions/Error.pm
 lib/App/Actions/Expression.pm
 lib/App/Actions/I18N.pm
@@ -30,6 +31,7 @@ lib/App/Actions/Runner/Report.pm
 lib/App/Actions/Runner/Steps.pm
 lib/App/Actions/Runner/Support.pm
 lib/App/Actions/Schema.pm
+lib/App/Actions/Schema/Invalid.pm
 lib/App/Actions/Util.pm
 lib/App/Actions/Workflow.pm
 LICENSE

@@ -38,15 +38,35 @@ App::Actions::Access - list the private routines of a package for Sub::Private
 		Sub::Private->import(@{ App::Actions::Access->private_names(__PACKAGE__, '_runner') });
 	}
 
+See which routines would be made private:
+
+	use App::Actions::Access;
+	use App::Actions::Runner;
+
+	my $names = App::Actions::Access->private_names('App::Actions::Runner');
+	print join("\n", @{$names}), "\n";
+
+Leave some names out:
+
+	my $names = App::Actions::Access->private_names(__PACKAGE__, '_runner', '_docker');
+
 =head1 DESCRIPTION
 
-L<Sub::Private> has two modes, and the mode is a single process-wide
-setting.  Setting it to C<enforce> once, as a module normally would, also
-switches every module loaded afterwards that relies on the default mode.
-This distribution therefore never changes the setting for good: each module
-sets it with C<local> for the one call that names its private routines, and
-uses this module to list them, so a routine added later is protected without
-anyone having to remember to list it.
+In Perl, a routine whose name starts with C<_> is private by convention
+only: any code can still call it.  L<Sub::Private> makes the rule real.  In
+C<enforce> mode, a call to a private routine from outside its own package
+dies.
+
+There is a catch.  L<Sub::Private>'s mode is one setting for the whole
+program.  If one module set it to C<enforce> for good, every module loaded
+after it would be switched too, even modules that did not ask for it.
+
+So this distribution never changes the setting for good.  Each module, at
+the end of its file, sets the mode with C<local> for just one call to
+L<Sub::Private>, and gives that call the list of its private routines.  This
+module makes that list.  Because the list is made from the code, a private
+routine added later is protected automatically; nobody has to remember to
+add it to a list.
 
 =head1 METHODS
 
@@ -100,19 +120,6 @@ None.
 	+---------------------------+------------------------------+-----------------------------+
 	| A package name is required| No package, or not a name    | Pass __PACKAGE__            |
 	+---------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ PrivateNames ────────────────────────────────────
-	│ package? : PACKAGE
-	│ except?  : ℙ NAME
-	│ names!   : seq NAME
-	├───────────────────────────────────────────────────
-	│ ran names! = { n : dom stash(package?) |
-	│     n matches /^_\w/ ∧ defined(code(package?, n)) ∧
-	│     owner(code(package?, n)) = package? } ∖ except?
-	│ names! is sorted
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -170,13 +177,109 @@ calls it instead.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Call it at the end of the file.>  It sees only the routines that
+are already compiled.  Put the C<BEGIN> block after the last C<sub>.
+
+=item * B<Always use C<local> for the mode.>  Write C<local
+$Sub::Private::config{mode} = 'enforce';> inside the C<BEGIN> block.
+Without C<local>, every module loaded later is enforced too.
+
+=item * B<Leave out protected routines.>  A routine that a subclass may
+call must be passed in C<@except> (and given to L<Sub::Protected>), or the
+subclass's calls will die.
+
+=item * B<Names starting with two underscores are not listed.>  C<__foo>
+does not match; only C<_> followed by a letter or digit does.
+
+=item * B<Imported routines are not listed.>  A routine imported from
+another module belongs to that module.
+
+=item * B<Tests run with the checks off.>  Under C<prove>,
+C<HARNESS_ACTIVE> is set and the checks are bypassed.  Run
+C<perl -Ilib t/file.t> (without C<prove>) to test with them on.
+
+=back
+
+=head1 ENCODING
+
+Package and routine names must be ASCII word characters (letters, digits
+and C<_>, separated by C<::>).  A package name with other characters is
+refused with C<A package name is required>.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 private_names
+
+	┌─ PrivateNames ────────────────────────────────────
+	│ package? : PACKAGE
+	│ except?  : ℙ NAME
+	│ names!   : seq NAME
+	├───────────────────────────────────────────────────
+	│ ran names! = { n : dom stash(package?) |
+	│     n matches /\A_[A-Za-z0-9]\w*\z/ ∧ defined(code(package?, n)) ∧
+	│     owner(code(package?, n)) = package? } ∖ except?
+	│ names! is sorted
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The module keeps no state.  This is how one package's private routines
+become protected while the file is loaded:
+
+	 perl loads Package.pm
+	          |
+	          v
+	+--------------------+  each "sub _name { }" is compiled; at this
+	| COMPILING ROUTINES |  point any code may call _name
+	+--------------------+
+	          |
+	          | final BEGIN block runs
+	          v
+	+--------------------+  private_names(__PACKAGE__, @except):
+	| LISTING            |  own routines matching _[A-Za-z0-9]\w*,
+	+--------------------+  minus @except, sorted
+	          |
+	          | local mode = 'enforce'; Sub::Private->import(@names)
+	          v
+	+--------------------+  calls from outside the package die;
+	| ENFORCED           |  calls from inside work;
+	+--------------------+  protected names: Sub::Protected rules
+	          |
+	          | BEGIN block ends: the "local" mode is restored,
+	          v so later packages are not affected
+	+--------------------+
+	| OTHER PACKAGES     |  unchanged
+	| LOAD AS BEFORE     |
+	+--------------------+
+
+	Under a test harness (HARNESS_ACTIVE) the ENFORCED checks are bypassed.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

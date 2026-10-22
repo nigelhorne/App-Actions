@@ -39,7 +39,24 @@ App::Actions::Runner::Report - what a run tells its user at the end
 	$report->record('lint', 'failure')->fail;
 	$report->print_summary;    # === Workflow summary === ... Workflow FAILED
 
+Keep the logs of a parallel run, and say where they went:
+
+	$report->keep_logs($parallel->logs, App::Actions::Logs::default_directory(), $run_id)
+		->print_kept_logs;
+
+Tell the user what a run with C<keep> left behind:
+
+	$report->print_kept_resources($containers->remaining, $temp_path);
+
+Decide the exit status:
+
+	exit($report->failed ? 1 : 0);
+
 =head1 DESCRIPTION
+
+B<In short:> this module writes what a run tells you at the end: one line
+per job, whether the workflow passed, and where the logs are.  It is a part
+of L<App::Actions::Runner>; you rarely use it on its own.
 
 Collects one line per job as the run goes, says at the end whether the
 workflow succeeded, and keeps the logs of the jobs that ran in parallel: they
@@ -95,16 +112,6 @@ None.
 	| ...Report::new: REASON    |                              |                             |
 	+---------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Report ──────────────────────────────────────────
-	│ entries : seq (NAME × RESULT)
-	│ failed  : 𝔹
-	│ kept    : optional DIRECTORY
-	├───────────────────────────────────────────────────
-	│ true
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub new {
@@ -145,15 +152,6 @@ Adds a job's line to the summary.  Returns the object.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Record ──────────────────────────────────────────
-	│ ΔReport
-	│ name?, result? : seq CHAR
-	├───────────────────────────────────────────────────
-	│ entries' = entries ⁀ ⟨(name?, result?)⟩
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub record {
@@ -186,14 +184,6 @@ Marks the workflow as failed.  Returns the object.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Fail ────────────────────────────────────────────
-	│ ΔReport
-	├───────────────────────────────────────────────────
-	│ failed' = true
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub fail {
@@ -225,15 +215,6 @@ Says whether the workflow has failed: 1 or 0.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Failed ──────────────────────────────────────────
-	│ ΞReport
-	│ f! : 𝔹
-	├───────────────────────────────────────────────────
-	│ f! = failed
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -276,16 +257,6 @@ Returns the object.
 	| Workflow FAILED           | A job failed without         | Read the job's output       |
 	|                           | continue-on-error            |                             |
 	+---------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ PrintSummary ────────────────────────────────────
-	│ ΞReport
-	│ out! : seq LINE
-	├───────────────────────────────────────────────────
-	│ quiet ⇒ out! = ⟨⟩
-	│ ¬ quiet ⇒ out! = ⟨header⟩ ⁀ lines(entries) ⁀ ⟨verdict(failed)⟩
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -330,16 +301,6 @@ the object.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ReportImages ────────────────────────────────────
-	│ ΞReport
-	│ records? : seq RECORD
-	│ out!     : seq LINE
-	├───────────────────────────────────────────────────
-	│ #out! = #records? + #{r : ran records? | r.status = deferred ∧ r.error ≠ ⊥}
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -416,17 +377,6 @@ Creates a private directory and copies the logs into it; warns on failure.
 	| 'X' to 'Y': E               |                              |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ KeepLogs ────────────────────────────────────────
-	│ ΔReport
-	│ logs? : seq LOG
-	├───────────────────────────────────────────────────
-	│ let present == {l : ran logs? | exists(l.path)}
-	│ present = ∅ ⇒ kept' = kept
-	│ present ≠ ∅ ∧ copied ⇒ kept' = dir ∧ files(dir) = {l.file | l ∈ present}
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub keep_logs {
@@ -489,14 +439,6 @@ there were none.  Returns the object.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ PrintKeptLogs ───────────────────────────────────
-	│ ΞReport
-	├───────────────────────────────────────────────────
-	│ quiet ∨ kept = ⊥ ⇒ out! = ⟨⟩
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub print_kept_logs {
@@ -544,16 +486,6 @@ Prints nothing when there are none.  Returns the object.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ PrintKeptResources ──────────────────────────────
-	│ ΞReport
-	│ r?    : RESOURCES
-	│ temp? : optional DIRECTORY
-	├───────────────────────────────────────────────────
-	│ r?.containers = ⟨⟩ ∧ r?.networks = ⟨⟩ ∧ temp? = ⊥ ⇒ out! = ⟨⟩
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -603,13 +535,181 @@ the JSON documents.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Recording a failure does not fail the workflow.>  Call L</fail>
+too; L</print_summary> and L</failed> look only at that flag.  A skipped job
+does not fail the workflow.
+
+=item * B<Most methods return the object>, so calls can be chained; but
+L</failed> returns 0 or 1.
+
+=item * B<Kept logs are copies.>  They stay until you run C<action-run logs
+--prune>.
+
+=item * B<C<quiet> hides the summary and the log list>, but not
+L</report_images> output for a text preflight.
+
+=item * B<Result words are not translated.>  C<success>, C<failure> and
+C<skipped> stay in English so scripts can match them.
+
+=back
+
+=head1 ENCODING
+
+Job names in the summary are Perl character strings and may contain any
+Unicode text, including emoji; the name column is counted in characters, so
+wide characters (such as Chinese) can make the columns uneven.  Messages are
+in the language of L<App::Actions::I18N>.  Paths of kept logs are shown as
+bytes.  Log files are copied byte for byte.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ Report ──────────────────────────────────────────
+	│ entries : seq (NAME × RESULT)
+	│ failed  : 𝔹
+	│ kept    : optional DIRECTORY
+	├───────────────────────────────────────────────────
+	│ true
+	└───────────────────────────────────────────────────
+
+=head2 record
+
+	┌─ Record ──────────────────────────────────────────
+	│ ΔReport
+	│ name?, result? : seq CHAR
+	├───────────────────────────────────────────────────
+	│ entries' = entries ⁀ ⟨(name?, result?)⟩
+	└───────────────────────────────────────────────────
+
+=head2 fail
+
+	┌─ Fail ────────────────────────────────────────────
+	│ ΔReport
+	├───────────────────────────────────────────────────
+	│ failed' = true
+	└───────────────────────────────────────────────────
+
+=head2 failed
+
+	┌─ Failed ──────────────────────────────────────────
+	│ ΞReport
+	│ f! : 𝔹
+	├───────────────────────────────────────────────────
+	│ f! = failed
+	└───────────────────────────────────────────────────
+
+=head2 print_summary
+
+	┌─ PrintSummary ────────────────────────────────────
+	│ ΞReport
+	│ out! : seq LINE
+	├───────────────────────────────────────────────────
+	│ quiet ⇒ out! = ⟨⟩
+	│ ¬ quiet ⇒ out! = ⟨header⟩ ⁀ lines(entries) ⁀ ⟨verdict(failed)⟩
+	└───────────────────────────────────────────────────
+
+=head2 report_images
+
+	┌─ ReportImages ────────────────────────────────────
+	│ ΞReport
+	│ records? : seq RECORD
+	│ out!     : seq LINE
+	├───────────────────────────────────────────────────
+	│ #out! = #records? + #{r : ran records? | r.status = deferred ∧ r.error ≠ ⊥}
+	└───────────────────────────────────────────────────
+
+=head2 keep_logs
+
+	┌─ KeepLogs ────────────────────────────────────────
+	│ ΔReport
+	│ logs? : seq LOG
+	├───────────────────────────────────────────────────
+	│ let present == {l : ran logs? | exists(l.path)}
+	│ present = ∅ ⇒ kept' = kept
+	│ present ≠ ∅ ∧ copied ⇒ kept' = dir ∧ files(dir) = {l.file | l ∈ present}
+	└───────────────────────────────────────────────────
+
+=head2 print_kept_logs
+
+	┌─ PrintKeptLogs ───────────────────────────────────
+	│ ΞReport
+	├───────────────────────────────────────────────────
+	│ quiet ∨ kept = ⊥ ⇒ out! = ⟨⟩
+	└───────────────────────────────────────────────────
+
+=head2 print_kept_resources
+
+	┌─ PrintKeptResources ──────────────────────────────
+	│ ΞReport
+	│ r?    : RESOURCES
+	│ temp? : optional DIRECTORY
+	├───────────────────────────────────────────────────
+	│ r?.containers = ⟨⟩ ∧ r?.networks = ⟨⟩ ∧ temp? = ⊥ ⇒ out! = ⟨⟩
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The report collects results while the run goes on, then prints once:
+
+	  new(docker => ..., quiet => ...)
+	        |
+	        v
+	+-------------------+  record($name, 'success' | 'skipped')
+	| COLLECTING        |<---------------------------------------+
+	| (flag: passing)   |                                        |
+	+-------------------+                                        |
+	        |     |  record($name, 'failure')->fail               |
+	        |     v                                               |
+	        |  +-------------------+  more record() calls ------->+
+	        |  | COLLECTING        |
+	        |  | (flag: failed)    |  failed() = 1 from now on
+	        |  +-------------------+
+	        |     |
+	        +--+--+
+	           |  preflight with text output: report_images($records)
+	           |  (one line per image: pulled / present / failed /
+	           |   skipped / deferred)
+	           v
+	+-------------------+  parallel run: keep_logs($logs, $root, $run_id)
+	| RUN FINISHED      |  copies logs to $root/DATE-TIME-RUNID/
+	+-------------------+  (a copy error is only a warning)
+	           |
+	           v
+	+-------------------+  "=== Workflow summary ===", one line per
+	| print_summary     |  job, then "Workflow succeeded" or
+	+-------------------+  "Workflow FAILED" (unless quiet)
+	           |
+	           +--> print_kept_logs: where the logs are (unless quiet)
+	           +--> print_kept_resources: containers, networks and
+	                temporary folder left by a run with keep
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

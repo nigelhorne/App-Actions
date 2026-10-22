@@ -1,21 +1,81 @@
 ## Name
 
-App::Actions - run GitHub Actions workflows locally with Docker
+App::Actions - run GitHub Actions workflows locally
 
 ## Synopsis
+
+Run every job of a workflow (this is what `action-run run` does):
 
 ```perl
     use App::Actions;
 
     my $actions = App::Actions->new(
-            workflow_file => "$ENV{HOME}/src/njh/CGI-Info/.github/workflows/perl-ci.yml",
-            project_dir   => "$ENV{HOME}/src/njh/CGI-Info",
+            workflow_file => "$ENV{HOME}/src/CGI-Info/.github/workflows/perl-ci.yml",
+            project_dir   => "$ENV{HOME}/src/CGI-Info",
     );
 
-    exit $actions->run();
+    exit $actions->run();    # 0 = passed, 1 = a job failed, 2 = could not run
+```
+
+Run one job, with a secret, and show the Docker commands:
+
+```perl
+    my $actions = App::Actions->new(
+            workflow_file => '.github/workflows/ci.yml',
+            jobs          => [ 'test' ],
+            secrets       => { CODECOV_TOKEN => $ENV{CODECOV_TOKEN} },
+            verbose       => 1,
+    );
+    exit $actions->run;
+```
+
+See what would run, without running it:
+
+```perl
+    App::Actions->new(workflow_file => '.github/workflows/ci.yml')->list_jobs;
+    exit App::Actions->new(workflow_file => '.github/workflows/ci.yml', dry_run => 1)->run;
+```
+
+Check Docker and download the images first, for a CI job:
+
+```perl
+    use JSON::PP;
+
+    my $result = App::Actions->new(workflow_file => '.github/workflows/ci.yml')->preflight(json => 1);
+    print JSON::PP->new->canonical->encode($result->{summary}), "\n";
+    exit $result->{exit};
+```
+
+Run the jobs of a matrix four at a time, and keep their logs:
+
+```perl
+    App::Actions->new(workflow_file => '.github/workflows/ci.yml', parallel => 4)->run;
+    # logs: see "action-run logs"
 ```
 
 ## Description
+
+**In short:** this module runs a GitHub Actions workflow on your own
+computer, in Docker containers, so you can test and debug it without
+pushing to GitHub.  Most people use it through the `action-run` command;
+see [action-run](https://metacpan.org/pod/action-run).
+
+How it works, in brief:
+
+- 1. It reads the workflow file ([App::Actions::Workflow](https://metacpan.org/pod/App%3A%3AActions%3A%3AWorkflow)) and expands
+each job's matrix.
+- 2. It checks that Docker works and can see your project (as
+`action-run check` does).
+- 3. It downloads the images the jobs need, several at a time.
+- 4. For each job, it makes a private Docker network, starts the job's
+service containers (for example a database), and starts one long-lived
+container for the job, with your project mounted in it.
+- 5. It runs each step in that container with `docker exec`.  Files and
+installed modules stay between steps, as on GitHub.
+- 6. It removes the job's containers and network, and reports the
+result.
+
+The rest of this section gives the details.
 
 App::Actions runs a GitHub Actions workflow on a local machine using Docker
 containers, allowing troublesome issues to be more easily debugged.
@@ -215,30 +275,6 @@ Reads and parses the workflow file.
 
 The messages of ["load" in App::Actions::Workflow](https://metacpan.org/pod/App%3A%3AActions%3A%3AWorkflow#load) apply to the workflow file.
 
-#### Formal Specification
-
-```
-    ┌─ New ─────────────────────────────────────────────
-    │ ΞFileSystem
-    │ workflowFile? : optional PATH
-    │ projectDir?   : optional PATH
-    │ options?      : OPTION ⇸ VALUE
-    │ actions!      : Actions
-    ├───────────────────────────────────────────────────
-    │ dom options? ⊆ RUNNER_OPTIONS
-    │ workflowFile? = ⊥ ⇒ raises WorkflowFileRequired
-    │ abs(workflowFile?) ∉ regularFiles ⇒ raises WorkflowFileMissing
-    │ projectDir? = ⊥ ∧ abs(workflowFile?) ∉ (PATH ⁀ "/.github/workflows/" ⁀ NAME)
-    │     ⇒ raises ProjectDirRequired
-    │ let root == (projectDir? ≠ ⊥ ⇒ abs(projectDir?))
-    │             ∧ (projectDir? = ⊥ ⇒ repository(abs(workflowFile?)))
-    │ root ∉ directories ⇒ raises ProjectDirMissing
-    │ actions!.workflow = Workflow.Load(abs(workflowFile?))
-    │ actions!.project_dir = root
-    │ actions!.options = options?
-    └───────────────────────────────────────────────────
-```
-
 #### Pseudocode
 
 ```
@@ -283,18 +319,6 @@ None.
 
 ```
     printf "%s from %s\n", $actions->workflow->name, $actions->project_dir;
-```
-
-#### Formal Specification
-
-```
-    ┌─ Accessor ────────────────────────────────────────
-    │ ΞActions
-    │ field? : {workflow, workflow_file, project_dir}
-    │ value! : VALUE
-    ├───────────────────────────────────────────────────
-    │ value! = θActions.field?
-    └───────────────────────────────────────────────────
 ```
 
 ### Run
@@ -351,19 +375,6 @@ The option rules of ["new"](#new), all optional, without `workflow_file` and
 Failures of the run itself are printed by [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner) and
 reported by the exit code rather than raised.
 
-#### Formal Specification
-
-```
-    ┌─ Run ─────────────────────────────────────────────
-    │ ΞActions
-    │ overrides? : OPTION ⇸ VALUE
-    │ exit!      : {0, 1, 2}
-    ├───────────────────────────────────────────────────
-    │ dom overrides? ⊆ RUNNER_OPTIONS
-    │ exit! = Runner.Run(options ⊕ overrides?)
-    └───────────────────────────────────────────────────
-```
-
 ### Preflight
 
 Makes the same checks as a run before its first job, then prepares the
@@ -393,7 +404,7 @@ appears in none of them.  With `json => 1` nothing is
 printed, so the caller's output can be a single document; `ready` is then a
 JSON boolean and the summary is the document `action-run preflight --json`
 prints, already validated against that schema, so a mismatch dies with an
-[App::Actions::Schema::Invalid](https://metacpan.org/pod/App%3A%3AActions%3A%3ASchema#App::Actions::Schema::Invalid)
+[App::Actions::Schema::Invalid](https://metacpan.org/pod/App%3A%3AActions%3A%3ASchema%3A%3AInvalid)
 exception naming the first key at fault rather than being returned; the
 command gives that exit 70.
 
@@ -440,22 +451,6 @@ The option rules of ["new"](#new), all optional, plus
     | --json document does not | schema (an                    | report it                      |
     | match ...                | App::Actions::Schema::Invalid)|                                |
     +--------------------------+-------------------------------+--------------------------------+
-```
-
-#### Formal Specification
-
-```
-    ┌─ Preflight ───────────────────────────────────────
-    │ ΞActions
-    │ overrides? : OPTION ⇸ VALUE
-    │ json?      : optional BOOLEAN
-    │ result!    : Result
-    ├───────────────────────────────────────────────────
-    │ dom overrides? ⊆ RUNNER_OPTIONS
-    │ result! = Runner.Preflight(options ⊕ overrides?, json?)
-    │ result!.exit ∈ {0, 2}
-    │ json? ⇒ valid(result!.summary, PreflightSchema)
-    └───────────────────────────────────────────────────
 ```
 
 ### Json\_Schema
@@ -512,21 +507,6 @@ None.
     +--------------------------+-------------------------------+--------------------------------+
 ```
 
-#### Formal Specification
-
-```
-    DOCUMENT ::= check | preflight | cache | logs
-
-    ┌─ JsonSchema ──────────────────────────────────────
-    │ name?   : optional STRING
-    │ schema! : KEY ⇸ VALUE
-    ├───────────────────────────────────────────────────
-    │ name? ∈ {⊥, ⟨⟩} ⇒ raises DocumentRequired
-    │ name? ∉ DOCUMENT ⇒ raises DocumentUnknown(name?)
-    │ name? ∈ DOCUMENT ⇒ schema! = owner(name?).json_schema
-    └───────────────────────────────────────────────────
-```
-
 ### List\_Jobs
 
 Prints one line per expanded job: its id, a tab, and its display name.
@@ -573,19 +553,6 @@ The option rules of ["new"](#new), all optional.
     | Invalid arguments to     | An unknown or mistyped        | Use the options of new         |
     | App::Actions::list_jobs  | override                      |                                |
     +--------------------------+-------------------------------+--------------------------------+
-```
-
-#### Formal Specification
-
-```
-    ┌─ ListJobs ────────────────────────────────────────
-    │ ΞActions
-    │ overrides? : OPTION ⇸ VALUE
-    │ exit!      : {0}
-    ├───────────────────────────────────────────────────
-    │ output' = output ⁀ ⟨ j : selected(jobs ⊕ overrides?) • j.base_id ⁀ TAB ⁀ j.display_name ⟩
-    │ exit! = 0
-    └───────────────────────────────────────────────────
 ```
 
 ## Testing
@@ -730,14 +697,218 @@ told so.
 have not been moved into the catalogue yet; see
 ["LIMITATIONS" in App::Actions::I18N](https://metacpan.org/pod/App%3A%3AActions%3A%3AI18N#LIMITATIONS).
 
+## Common Pitfalls
+
+- **Docker must be running, and able to see your project.**  Run
+`action-run check` first if a run fails before any job starts.
+- **Only Linux jobs run.**  Jobs with `runs-on: macos-*` or
+`windows-*` are skipped, not failed.
+- **Remote actions are not downloaded.**  `actions/checkout`,
+setup-perl and a few others are treated as no-ops (your project is already
+mounted).  Other remote actions are skipped with a warning; set
+`strict_actions` to make them fail instead.
+- **Secrets must be passed in.**  Nothing is read from GitHub.  Pass
+`secrets => { NAME => value }` (or `--secret` on the command
+line).  Missing secrets are empty, as on GitHub for a fork.
+- **Images are kept.**  The images a run downloads stay, to make the
+next run faster.  Set `keep_images => 0`, or use `action-run cache
+--prune`, to remove them.
+- **`run` returns a status; it does not die for a failed job.**
+Check the number: 0, 1 or 2.
+- **Unknown options are errors.**  A misspelt option name (`job` for
+`jobs`) stops with `Invalid arguments to App::Actions::new`.
+- **Run as yourself or root.**  With `user` set to another user, the
+job's files (secrets included) must be readable by every user of the
+computer, and a warning says so.
+- **Only run workflows you trust.**  A workflow can mount any folder
+of your computer into its containers, as it can on GitHub's own runners.
+- **Parallel jobs write to log files, not the terminal.**  With
+`parallel` above 1, read the output with `action-run logs`.
+
+## Encoding
+
+Workflow and action files are read as UTF-8.  Their names, commands and
+values may contain any Unicode text, including non-ASCII characters and
+emoji.  File and folder names are used as bytes, as your system stores
+them.  Commands, environment variables and secrets are passed to Docker as
+bytes (UTF-8 for text from the workflow).  What the containers print is
+passed through to your terminal unchanged.  Messages from this module are
+in English unless `ACTION_RUN_LANG` chooses French (`fr`), German
+(`de`) or Chinese (`zh`); those are character strings, so the terminal
+should use UTF-8.
+
 ## Author
 
 Nigel Horne, `<njh at nigelhorne.com>`
 
-## Licence and Copyright
+## Formal Specification
+
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in `?` is an input, and a
+name ending in `!` is an output.  `ΞState` means the routine changes
+nothing, and `ΔState` means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+### New
+
+```
+    ┌─ New ─────────────────────────────────────────────
+    │ ΞFileSystem
+    │ workflowFile? : optional PATH
+    │ projectDir?   : optional PATH
+    │ options?      : OPTION ⇸ VALUE
+    │ actions!      : Actions
+    ├───────────────────────────────────────────────────
+    │ dom options? ⊆ RUNNER_OPTIONS
+    │ workflowFile? = ⊥ ⇒ raises WorkflowFileRequired
+    │ abs(workflowFile?) ∉ regularFiles ⇒ raises WorkflowFileMissing
+    │ projectDir? = ⊥ ∧ abs(workflowFile?) ∉ (PATH ⁀ "/.github/workflows/" ⁀ NAME)
+    │     ⇒ raises ProjectDirRequired
+    │ let root == (projectDir? ≠ ⊥ ⇒ abs(projectDir?))
+    │             ∧ (projectDir? = ⊥ ⇒ repository(abs(workflowFile?)))
+    │ root ∉ directories ⇒ raises ProjectDirMissing
+    │ actions!.workflow = Workflow.Load(abs(workflowFile?))
+    │ actions!.project_dir = root
+    │ actions!.options = options?
+    └───────────────────────────────────────────────────
+```
+
+### Workflow, Workflow\_File, Project\_Dir
+
+```
+    ┌─ Accessor ────────────────────────────────────────
+    │ ΞActions
+    │ field? : {workflow, workflow_file, project_dir}
+    │ value! : VALUE
+    ├───────────────────────────────────────────────────
+    │ value! = θActions.field?
+    └───────────────────────────────────────────────────
+```
+
+### Run
+
+```
+    ┌─ Run ─────────────────────────────────────────────
+    │ ΞActions
+    │ overrides? : OPTION ⇸ VALUE
+    │ exit!      : {0, 1, 2}
+    ├───────────────────────────────────────────────────
+    │ dom overrides? ⊆ RUNNER_OPTIONS
+    │ exit! = Runner.Run(options ⊕ overrides?)
+    └───────────────────────────────────────────────────
+```
+
+### Preflight
+
+```
+    ┌─ Preflight ───────────────────────────────────────
+    │ ΞActions
+    │ overrides? : OPTION ⇸ VALUE
+    │ json?      : optional BOOLEAN
+    │ result!    : Result
+    ├───────────────────────────────────────────────────
+    │ dom overrides? ⊆ RUNNER_OPTIONS
+    │ result! = Runner.Preflight(options ⊕ overrides?, json?)
+    │ result!.exit ∈ {0, 2}
+    │ json? ⇒ valid(result!.summary, PreflightSchema)
+    └───────────────────────────────────────────────────
+```
+
+### Json\_Schema
+
+```
+    DOCUMENT ::= check | preflight | cache | logs
+
+    ┌─ JsonSchema ──────────────────────────────────────
+    │ name?   : optional STRING
+    │ schema! : KEY ⇸ VALUE
+    ├───────────────────────────────────────────────────
+    │ name? ∈ {⊥, ⟨⟩} ⇒ raises DocumentRequired
+    │ name? ∉ DOCUMENT ⇒ raises DocumentUnknown(name?)
+    │ name? ∈ DOCUMENT ⇒ schema! = owner(name?).json_schema
+    └───────────────────────────────────────────────────
+```
+
+### List\_Jobs
+
+```
+    ┌─ ListJobs ────────────────────────────────────────
+    │ ΞActions
+    │ overrides? : OPTION ⇸ VALUE
+    │ exit!      : {0}
+    ├───────────────────────────────────────────────────
+    │ output' = output ⁀ ⟨ j : selected(jobs ⊕ overrides?) • j.base_id ⁀ TAB ⁀ j.display_name ⟩
+    │ exit! = 0
+    └───────────────────────────────────────────────────
+```
+
+## State Diagram
+
+An App::Actions object only holds options; each call to ["run"](#run),
+["preflight"](#preflight) or ["list\_jobs"](#list_jobs) builds a new [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner) and goes
+through these states (the full detail of each is in [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner)
+and its parts):
+
+```
+     new(%options)
+          |   options checked; workflow loaded (errors are thrown here)
+          v
+    +-------------+
+    |   READY     |<------------------------------------------------------+
+    +-------------+                                                       |
+       |       |  list_jobs: print "id<TAB>display name" per job; return 0 |
+       |       +-------------------------------------------------------->-+
+       |
+       | run(%overrides) / preflight(%overrides)
+       v
+    +----------------+  daemon unreachable, not Linux containers,
+    | CHECK DOCKER   |  project not mountable -> print report; status 2
+    | (skip_check:   |---------------------------------------------------+
+    |  skipped)      |                                                   |
+    +----------------+                                                   |
+       |                                                                 |
+       v                                                                 |
+    +----------------+  an image cannot be pulled -> status 2            |
+    | PREPARE IMAGES |------------------------------------------------->-+
+    | (pull missing, |                                                   |
+    |  N at a time)  |  preflight stops here: return { exit, summary }   |
+    +----------------+------------------------------------------------->-+
+       |                                                                 |
+       | for each selected job (matrix expanded; non-Linux skipped;      |
+       | up to "parallel" at a time)                                     |
+       v                                                                 |
+    +----------------+  network, services, job container                 |
+    | START JOB      |  (a service that stops -> job fails)              |
+    +----------------+                                                   |
+       |                                                                 |
+       v                                                                 |
+    +----------------+  each step: if: condition -> docker exec;         |
+    | RUN STEPS      |  GITHUB_ENV / PATH / OUTPUT / STATE honoured;     |
+    |                |  a failed step fails the job (later steps run     |
+    |                |  only with if: failure() / always())              |
+    +----------------+                                                   |
+       |                                                                 |
+       v                                                                 |
+    +----------------+  containers and network removed (unless keep);    |
+    | CLEAN UP JOB   |  images kept unless keep_images is false          |
+    +----------------+                                                   |
+       |                                                                 |
+       v                                                                 |
+    +----------------+  status 0 = every job passed, 1 = a job failed    |
+    | REPORT         |------------------------------------------------->-+
+    +----------------+                     returns the status
+```
+
+## License and Copyright
 
 Copyright 2026 Nigel Horne.
 
-Usage is subject to the GPL2 licence terms.
-If you use it,
-please let me know.
+This program is released under the GNU General Public License, version 2.
+See the `LICENSE` file that comes with this distribution.
+If you use it, please let me know.

@@ -144,36 +144,88 @@ App::Actions::I18N - message catalogue and translator for App::Actions
 
 =head1 SYNOPSIS
 
-	use App::Actions::I18N qw(i18n throw);
+Translate one message:
+
+	use App::Actions::I18N;
 
 	my $i18n = App::Actions::I18N->new(language => 'fr');
+	binmode STDOUT, ':encoding(UTF-8)';
 	print $i18n->message('workflow.empty', { file => 'ci.yml' }), "\n";
 
-	# As a method on any object that carries an i18n translator
+Choose the language from a country:
+
+	my $i18n = App::Actions::I18N->new(country => 'DE');    # German
+
+Use the language the user asked for (C<ACTION_RUN_LANG>):
+
+	my $text = App::Actions::I18N->shared->message('logs.removed', { count => 3, size => '2 KB' });
+
+Throw a translated error from your own class:
+
+	package My::Loader;
+	use App::Actions::I18N qw(i18n throw);
+
 	sub load {
 		my ($self, $file) = @_;
 		$self->throw('workflow.file_missing', { file => $file }) unless -f $file;
 		return $self;
 	}
 
+Add a message of your own, with plural forms:
+
+	App::Actions::I18N->add_messages(en => {
+		'demo.files' => { plural => { one => '%(count)d file', other => '%(count)d files' } },
+	});
+	print App::Actions::I18N->new->message('demo.files', { count => 2 });    # 2 files
+
 =head1 DESCRIPTION
 
-Every user-facing message of the refactored modules lives in one catalogue
-here, keyed by a dotted name such as C<workflow.no_jobs>.  A message is
-rendered with named C<sprintf> placeholders (C<%(file)s>, C<%(count)d>), so a
-translation can reorder its arguments.  An entry may also choose between
-grammatical genders and plural forms, using the CLDR plural rules of its
-language.
+This module translates the messages that App::Actions shows to people.
 
-English (C<en>), French (C<fr>), German (C<de>) and Chinese (C<zh>) have
-catalogues.  A key that a language lacks falls back to English, and a key
-that English lacks is returned as itself with a warning, so a missing
-translation degrades the wording rather than the program.
+Every message has a I<key>, a dotted name such as C<workflow.no_jobs>.  For
+each language there is a I<catalogue>: a table from keys to texts.  To show
+a message, you give the key and the values to fill in, and you get the text
+in the chosen language.  The key never changes, so programs can recognise
+an error by its key even when the text is translated (see
+L<App::Actions::Error>).
 
-The language is chosen, in order, by the C<language> argument, the
-C<country> argument (an ISO 3166-1 code such as C<GB> or C<cn>, matched
-without regard to case), C<$App::Actions::I18N::config{language}>, the
-C<ACTION_RUN_LANG> environment variable, and finally English.
+B<Placeholders.>  A text marks the places for values with a name in
+brackets, followed by a C<sprintf> conversion: C<%(file)s> for a string,
+C<%(count)d> for a whole number.  Because the values have names, a
+translation can put them in a different order.  Write C<%%> for a percent
+sign.
+
+B<Plurals and genders.>  An entry can have different texts for different
+numbers ("1 file", "2 files") or genders.  The C<count> value chooses the
+plural form, using the rules of the language (for example, French uses the
+singular for 0 and 1).  The C<gender> value (C<female>, C<male> or
+C<other>) chooses the gendered form.
+
+B<Languages.>  There are catalogues for English (C<en>), French (C<fr>),
+German (C<de>) and Chinese (C<zh>).  If a language does not have a key, the
+English text is used.  If English does not have it either, the key itself is
+shown, with a warning.  So a missing translation makes a message less
+helpful, but never stops the program.
+
+B<Choosing the language.>  The first of these that is set wins:
+
+=over 4
+
+=item 1. the C<language> argument to L</new>;
+
+=item 2. the C<country> argument to L</new> (a two-letter country code such
+as C<GB> or C<cn>; upper or lower case);
+
+=item 3. C<$App::Actions::I18N::config{language}>;
+
+=item 4. the C<ACTION_RUN_LANG> environment variable;
+
+=item 5. English.
+
+=back
+
+The system's own locale (C<LANG>, C<LC_ALL>) is ignored on purpose: see
+L</LIMITATIONS>.
 
 =head1 METHODS
 
@@ -231,27 +283,6 @@ when the requested language has no catalogue.
 	| catalogue; using English | requested language            | catalogue with add_messages    |
 	| Invalid arguments to ... | An argument failed validation | Pass the documented types      |
 	+--------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	LANG ::= en | fr | de | zh
-	COUNTRY == seq CHAR
-
-	┌─ New ────────────────────────────────────────────
-	│ language? : optional seq CHAR
-	│ country?  : optional COUNTRY
-	│ lang!     : LANG
-	├───────────────────────────────────────────────────
-	│ let wanted ==
-	│     if language? ≠ ⊥ then base(language?)
-	│     else if country? ≠ ⊥ ∧ upper(country?) ∈ dom countryLanguage
-	│          then countryLanguage(upper(country?))
-	│     else if config.language ≠ ⊥ then base(config.language)
-	│     else if env(ACTION_RUN_LANG) ≠ ⊥ then base(env(ACTION_RUN_LANG))
-	│     else en
-	│ wanted ∈ dom catalogue ⇒ lang! = wanted
-	│ wanted ∉ dom catalogue ⇒ lang! = en
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -322,16 +353,6 @@ or C<$config{language}> has changed since it was made.
 
 None of its own; see L</new>.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Default ─────────────────────────────────────────
-	│ ΔCache
-	│ t! : Translator
-	├───────────────────────────────────────────────────
-	│ cache ≠ ⊥ ∧ cache.source = currentSource ⇒ t! = cache ∧ cache' = cache
-	│ cache = ⊥ ∨ cache.source ≠ currentSource ⇒ t! = New(∅) ∧ cache' = t!
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub shared {
@@ -369,15 +390,6 @@ Returns the code of the language the translator writes, such as C<en>.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Language ────────────────────────────────────────
-	│ ΞTranslator
-	│ lang! : LANG
-	├───────────────────────────────────────────────────
-	│ lang! = θTranslator.lang
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub language {
@@ -406,15 +418,6 @@ sorted.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Languages ───────────────────────────────────────
-	│ ΞCatalogue
-	│ langs! : seq LANG
-	├───────────────────────────────────────────────────
-	│ ran langs! = dom catalogue ∧ langs! is sorted
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -466,17 +469,6 @@ None.
 	| Invalid arguments to ... | The code is not 2-3 lower-case| Pass a code such as fr         |
 	|                          | letters                       |                                |
 	+--------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ CatalogueKeys ───────────────────────────────────
-	│ ΞCatalogue
-	│ lang? : seq CHAR
-	│ keys! : seq KEY
-	├───────────────────────────────────────────────────
-	│ lang? ∈ dom catalogue ⇒ ran keys! = dom catalogue(lang?) ∧ keys! is sorted
-	│ lang? ∉ dom catalogue ⇒ keys! = ⟨⟩
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -530,17 +522,6 @@ The language code, or C<undef> when the country has no mapped catalogue.
 	| Invalid arguments to ... | The code is not two letters   | Pass an ISO 3166-1 alpha-2 code|
 	+--------------------------+-------------------------------+--------------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ LanguageForCountry ──────────────────────────────
-	│ country? : COUNTRY
-	│ lang!    : optional LANG
-	├───────────────────────────────────────────────────
-	│ #country? = 2
-	│ upper(country?) ∈ dom countryLanguage ⇒ lang! = countryLanguage(upper(country?))
-	│ upper(country?) ∉ dom countryLanguage ⇒ lang! = ⊥
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub language_for_country {
@@ -583,7 +564,7 @@ Warns when the key is in no catalogue, and then returns the key itself.
 
 	my $i18n = App::Actions::I18N->new(language => 'fr');
 	print $i18n->message('logs.removed', { count => 0, size => '0 B' }), "\n";
-	# 0 journal supprimé, 0 B libérés.   (French counts 0 as singular)
+	# the French singular form ("journal", not "journaux"): French counts 0 as one
 
 =head3 API SPECIFICATION
 
@@ -606,24 +587,6 @@ Warns when the key is in no catalogue, and then returns the key itself.
 	| No message is defined    | The key is in no catalogue    | Add the key to the English     |
 	| for 'KEY'                |                               | catalogue                      |
 	+--------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	ENTRY ::= text⟨⟨STRING⟩⟩ | plural⟨⟨CATEGORY ⇸ ENTRY⟩⟩ | gender⟨⟨GENDER ⇸ ENTRY⟩⟩
-
-	┌─ Message ─────────────────────────────────────────
-	│ ΞTranslator
-	│ key?  : KEY
-	│ args? : NAME ⇸ VALUE
-	│ text! : STRING
-	├───────────────────────────────────────────────────
-	│ key? ∈ dom catalogue(lang)
-	│     ⇒ text! = render(select(catalogue(lang)(key?), args?), args?)
-	│ key? ∉ dom catalogue(lang) ∧ key? ∈ dom catalogue(en)
-	│     ⇒ text! = render(select(catalogue(en)(key?), args?), args?)
-	│ key? ∉ dom catalogue(lang) ∪ dom catalogue(en)
-	│     ⇒ text! = key?
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -716,16 +679,6 @@ uses the English plural rule unless it is one of en, fr, de or zh.
 	|                          | not a hash reference          | hash reference                 |
 	+--------------------------+-------------------------------+--------------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ AddMessages ─────────────────────────────────────
-	│ ΔCatalogue
-	│ lang?    : LANG
-	│ entries? : KEY ⇸ ENTRY
-	├───────────────────────────────────────────────────
-	│ catalogue' = catalogue ⊕ {lang? ↦ (catalogue(lang?) ⊕ entries?)}
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub add_messages {
@@ -746,7 +699,7 @@ sub add_messages {
 
 =head1 FUNCTIONS
 
-All three are exported on request.  C<i18n> and C<throw> are on request and are meant to be imported into a class,
+All three are exported on request.  C<i18n> and C<throw> are meant to be imported into a class,
 where they act as methods.  The object's own C<i18n> translator is used when
 it has one (C<< $self->{i18n} >>), and the L</shared> translator when
 it has not, which is also what a class-method call gets.  C<validate_args>
@@ -780,16 +733,6 @@ See L</message>.
 	package My::Class;
 	use App::Actions::I18N qw(i18n);
 	sub greet { my $self = shift; return $self->i18n('workflow.empty', { file => 'x' }) }
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ I18n ────────────────────────────────────────────
-	│ self? : Object
-	│ text! : STRING
-	├───────────────────────────────────────────────────
-	│ self?.i18n ≠ ⊥ ⇒ text! = Message[self?.i18n/θTranslator]
-	│ self?.i18n = ⊥ ⇒ text! = Message[Shared/θTranslator]
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -834,16 +777,6 @@ The message named by the key.
 		$class->throw('workflow.file_missing', { file => $file }) unless -f $file;
 		...
 	}
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Throw ───────────────────────────────────────────
-	│ self? : Object
-	│ key?  : KEY
-	│ args? : NAME ⇸ VALUE
-	├───────────────────────────────────────────────────
-	│ raises Exception(I18n(self?, key?, args?))
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -1049,19 +982,6 @@ None; croaks on invalid arguments.
 	| ROUTINE: REASON          | the wrong type, or unknown    | documents                      |
 	+--------------------------+-------------------------------+--------------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ ValidateArgs ────────────────────────────────────
-	│ routine? : seq CHAR
-	│ args?    : seq VALUE
-	│ schema?  : NAME ⇸ RULE
-	│ params!  : NAME ⇸ VALUE
-	├───────────────────────────────────────────────────
-	│ let p == getParams(positional?, args?)
-	│ satisfies(p, schema?) ⇒ params! = coerce(p, schema?)
-	│ ¬ satisfies(p, schema?) ⇒ raises InvalidArguments(routine?)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub validate_args {
@@ -1138,13 +1058,273 @@ a native speaker.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Set an encoding before you print.>  Messages are character
+strings, and French, German and Chinese texts contain non-ASCII characters.
+Without C<binmode STDOUT, ':encoding(UTF-8)'>, Perl prints a "Wide
+character" warning.
+
+=item * B<C<LANG> does not choose the language.>  Only C<ACTION_RUN_LANG>
+(or the arguments) does.  This keeps error messages in English on CI
+machines unless you ask.
+
+=item * B<Placeholders need a conversion letter.>  Write C<%(file)s>, not
+C<%(file)>: without the letter, the text is printed as it is.
+
+=item * B<A missing value is silent.>  If C<\%args> has no value for a
+placeholder, a string placeholder becomes empty and a number placeholder
+becomes 0.  There is no warning, so check your keys.
+
+=item * B<A number placeholder needs a number.>  C<%(count)d> with C<count
+=E<gt> 'three'> prints 0, and the C<other> plural form is used.
+
+=item * B<C<add_messages> changes every translator in the program>, not just
+one object.  In a test, restore what you changed.
+
+=item * B<L</shared> follows the environment.>  If C<ACTION_RUN_LANG>
+changes while the program runs, the next call to L</shared> returns a new
+translator in the new language.  Do not keep the object if you want that.
+
+=item * B<C<throw> does not return.>  Code after it in the same branch never
+runs.
+
+=item * B<Keys are case sensitive.>  C<Workflow.Empty> is not
+C<workflow.empty>.
+
+=back
+
+=head1 ENCODING
+
+All texts in the catalogues are Perl character strings (the language
+modules use C<use utf8>).  They may contain any Unicode character, including
+accented letters, Chinese characters and emoji.  Values you pass in
+C<\%args> may also contain any Unicode text; they are inserted as they are.
+The result is a character string: encode it when you print it or write it
+to a file.  Keys and placeholder names must be ASCII.  Language codes are
+two or three ASCII letters, country codes two ASCII letters.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	LANG ::= en | fr | de | zh
+	COUNTRY == seq CHAR
+
+	┌─ New ────────────────────────────────────────────
+	│ language? : optional seq CHAR
+	│ country?  : optional COUNTRY
+	│ lang!     : LANG
+	├───────────────────────────────────────────────────
+	│ let wanted ==
+	│     if language? ≠ ⊥ then base(language?)
+	│     else if country? ≠ ⊥ ∧ upper(country?) ∈ dom countryLanguage
+	│          then countryLanguage(upper(country?))
+	│     else if config.language ≠ ⊥ then base(config.language)
+	│     else if env(ACTION_RUN_LANG) ≠ ⊥ then base(env(ACTION_RUN_LANG))
+	│     else en
+	│ wanted ∈ dom catalogue ⇒ lang! = wanted
+	│ wanted ∉ dom catalogue ⇒ lang! = en
+	└───────────────────────────────────────────────────
+
+=head2 shared
+
+	┌─ Default ─────────────────────────────────────────
+	│ ΔCache
+	│ t! : Translator
+	├───────────────────────────────────────────────────
+	│ cache ≠ ⊥ ∧ cache.source = currentSource ⇒ t! = cache ∧ cache' = cache
+	│ cache = ⊥ ∨ cache.source ≠ currentSource ⇒ t! = New(∅) ∧ cache' = t!
+	└───────────────────────────────────────────────────
+
+=head2 language
+
+	┌─ Language ────────────────────────────────────────
+	│ ΞTranslator
+	│ lang! : LANG
+	├───────────────────────────────────────────────────
+	│ lang! = θTranslator.lang
+	└───────────────────────────────────────────────────
+
+=head2 languages
+
+	┌─ Languages ───────────────────────────────────────
+	│ ΞCatalogue
+	│ langs! : seq LANG
+	├───────────────────────────────────────────────────
+	│ ran langs! = dom catalogue ∧ langs! is sorted
+	└───────────────────────────────────────────────────
+
+=head2 catalogue_keys
+
+	┌─ CatalogueKeys ───────────────────────────────────
+	│ ΞCatalogue
+	│ lang? : seq CHAR
+	│ keys! : seq KEY
+	├───────────────────────────────────────────────────
+	│ lang? ∈ dom catalogue ⇒ ran keys! = dom catalogue(lang?) ∧ keys! is sorted
+	│ lang? ∉ dom catalogue ⇒ keys! = ⟨⟩
+	└───────────────────────────────────────────────────
+
+=head2 language_for_country
+
+	┌─ LanguageForCountry ──────────────────────────────
+	│ country? : COUNTRY
+	│ lang!    : optional LANG
+	├───────────────────────────────────────────────────
+	│ #country? = 2
+	│ upper(country?) ∈ dom countryLanguage ⇒ lang! = countryLanguage(upper(country?))
+	│ upper(country?) ∉ dom countryLanguage ⇒ lang! = ⊥
+	└───────────────────────────────────────────────────
+
+=head2 message
+
+	ENTRY ::= text⟨⟨STRING⟩⟩ | plural⟨⟨CATEGORY ⇸ ENTRY⟩⟩ | gender⟨⟨GENDER ⇸ ENTRY⟩⟩
+
+	┌─ Message ─────────────────────────────────────────
+	│ ΞTranslator
+	│ key?  : KEY
+	│ args? : NAME ⇸ VALUE
+	│ text! : STRING
+	├───────────────────────────────────────────────────
+	│ key? ∈ dom catalogue(lang)
+	│     ⇒ text! = render(select(catalogue(lang)(key?), args?), args?)
+	│ key? ∉ dom catalogue(lang) ∧ key? ∈ dom catalogue(en)
+	│     ⇒ text! = render(select(catalogue(en)(key?), args?), args?)
+	│ key? ∉ dom catalogue(lang) ∪ dom catalogue(en)
+	│     ⇒ text! = key?
+	└───────────────────────────────────────────────────
+
+=head2 add_messages
+
+	┌─ AddMessages ─────────────────────────────────────
+	│ ΔCatalogue
+	│ lang?    : LANG
+	│ entries? : KEY ⇸ ENTRY
+	├───────────────────────────────────────────────────
+	│ catalogue' = catalogue ⊕ {lang? ↦ (catalogue(lang?) ⊕ entries?)}
+	└───────────────────────────────────────────────────
+
+=head2 i18n
+
+	┌─ I18n ────────────────────────────────────────────
+	│ self? : Object
+	│ text! : STRING
+	├───────────────────────────────────────────────────
+	│ self?.i18n ≠ ⊥ ⇒ text! = Message[self?.i18n/θTranslator]
+	│ self?.i18n = ⊥ ⇒ text! = Message[Shared/θTranslator]
+	└───────────────────────────────────────────────────
+
+=head2 throw
+
+	┌─ Throw ───────────────────────────────────────────
+	│ self? : Object
+	│ key?  : KEY
+	│ args? : NAME ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ raises Exception(I18n(self?, key?, args?))
+	└───────────────────────────────────────────────────
+
+=head2 validate_args
+
+	┌─ ValidateArgs ────────────────────────────────────
+	│ routine? : seq CHAR
+	│ args?    : seq VALUE
+	│ schema?  : NAME ⇸ RULE
+	│ params!  : NAME ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ let p == getParams(positional?, args?)
+	│ satisfies(p, schema?) ⇒ params! = coerce(p, schema?)
+	│ ¬ satisfies(p, schema?) ⇒ raises InvalidArguments(routine?)
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+A translator object never changes its language after it is made.  The
+catalogue (shared by every translator) and the L</shared> translator do
+change:
+
+	 Choosing a language (new):
+
+	   language arg? --yes--> use it
+	        | no
+	   country arg?  --yes--> language_for_country(country)
+	        | no
+	   $config{language}? --yes--> use it
+	        | no
+	   ACTION_RUN_LANG? --yes--> use it
+	        | no
+	   English
+	        |
+	        v  reduce to the base code (de_DE.UTF-8 -> de)
+	   catalogue for it?  --no--> warn; use English
+	        | yes
+	        v
+	   +-----------------+
+	   |  TRANSLATOR     |  language fixed
+	   +-----------------+
+
+	 Rendering a message (message / i18n / throw):
+
+	   key in the language's catalogue? --no--> key in English? --no--> warn;
+	        | yes                                    | yes             text = the key
+	        v                                        v
+	   entry --------------------------------> entry
+	        |
+	        v
+	   gender form (args.gender) -> plural form (args.count, language rule)
+	        |
+	        v
+	   fill in %(name)s placeholders -> text
+	        |
+	        +-- message / i18n: return the text
+	        +-- throw: die with App::Actions::Error(code = key, message = text,
+	                   location = caller's " at FILE line N.")
+
+	 The shared translator:
+
+	   +-----------+  shared()  +-----------------+  shared() with the same
+	   |   NONE    |----------->|  CACHED (for    |  config{language} and
+	   +-----------+            |  config+ENV)    |<-+ ACTION_RUN_LANG
+	                            +-----------------+--+
+	                                    |
+	                                    | config{language} or ACTION_RUN_LANG
+	                                    | changed, then shared()
+	                                    v
+	                            new translator replaces the cached one
+
+	 The catalogue:
+
+	   +----------------+  add_messages($lang, \%entries)  +----------------+
+	   | BUILT-IN       |--------------------------------->| EXTENDED       |
+	   | (en, fr, de,   |  (new language: created, with    | (for every     |
+	   |  zh)           |   the English plural rule)       |  translator)   |
+	   +----------------+                                  +----------------+
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

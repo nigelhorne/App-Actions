@@ -60,25 +60,69 @@ App::Actions::Error - an exception that carries a stable code
 
 =head1 SYNOPSIS
 
-	use App::Actions::Error;
+Tell one failure from another by its code:
 
-	my $ok = eval { App::Actions::Workflow->load($file); 1 };
-	if (!$ok) {
+	use App::Actions::Error;
+	use App::Actions::Workflow;
+
+	my $workflow = eval { App::Actions::Workflow->load($file) };
+	if (!$workflow) {
 		my $error = App::Actions::Error->caught($@);
 		if ($error && $error->is('workflow.file_missing')) {
-			print "No workflow at $error->args->{file}\n";
+			print 'No workflow at ', $error->args->{file}, "\n";
+		} else {
+			die $@;    # not one we handle: pass it on
 		}
-		print STDERR App::Actions::Error->describe($@), "\n";
 	}
+
+Handle a whole family of failures:
+
+	if (my $error = App::Actions::Error->caught($@)) {
+		exit 3 if $error->is('runner.image.');    # any image problem
+	}
+
+Show any failure to a person, without the file and line number:
+
+	eval { $runner->run; 1 }
+		or print STDERR 'action-run: ', App::Actions::Error->describe($@), "\n";
+
+Code that treats exceptions as strings keeps working:
+
+	eval { App::Actions::Workflow->load('missing.yml') };
+	print "not found\n" if $@ =~ /does not exist/;
 
 =head1 DESCRIPTION
 
-Every message of the catalogue in L<App::Actions::I18N> is thrown as one of
-these.  The C<code> is the catalogue key, which does not change when the
-message is translated or reworded, so a caller can tell failures apart without
-matching text.  The object stringifies to exactly what C<croak> would have
-died with - the rendered message and C<" at FILE line N.\n"> - so code written
-for string exceptions keeps working.
+When something goes wrong, this distribution throws (C<die>s with) an
+C<App::Actions::Error> object.  The object has:
+
+=over 4
+
+=item * a B<code>, such as C<workflow.file_missing>.  The code never
+changes when the message is translated or reworded, so your program can
+check it safely;
+
+=item * a B<message>, such as C<Workflow file 'ci.yml' does not exist>, in
+the user's language;
+
+=item * the B<arguments> used to build the message, such as C<{ file =E<gt>
+'ci.yml' }>;
+
+=item * a B<location>, such as C< at lib/App/Actions.pm line 42.>, the same
+text C<croak> adds.
+
+=back
+
+As a string, the object is exactly the message followed by the location: the
+same text C<croak> would have died with.  So older code that reads C<$@> as
+a string, prints it or matches it with a regular expression sees no
+difference.
+
+You do not usually make these objects yourself.  Code inside the
+distribution calls C<< $self->throw($code, \%args) >> from
+L<App::Actions::I18N>, which looks the code up in the message catalogue,
+translates and fills in the message, and throws the object.  The codes are
+the keys of the catalogue in L<App::Actions::I18N::en>.
 
 =head1 METHODS
 
@@ -144,21 +188,6 @@ None.
 	| App::Actions::Error::new  | missing or has the wrong type| message string              |
 	+---------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ NewError ────────────────────────────────────────
-	│ code?     : KEY
-	│ message?  : seq CHAR
-	│ args?     : optional (NAME ⇸ VALUE)
-	│ location? : optional seq CHAR
-	│ e!        : Error
-	├───────────────────────────────────────────────────
-	│ e!.code = code? ∧ e!.message = message?
-	│ e!.args = (if args? = ⊥ then ∅ else args?)
-	│ e!.location = (if location? = ⊥ then "\n" else location?)
-	│ text(e!) = e!.message ⁀ e!.location
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub new {
@@ -213,15 +242,6 @@ Returns the catalogue key the exception was raised with.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Code ────────────────────────────────────────────
-	│ ΞError
-	│ code! : KEY
-	├───────────────────────────────────────────────────
-	│ code! = θError.code
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub code { return $_[0]->{code} }
@@ -249,15 +269,6 @@ read it.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Message ─────────────────────────────────────────
-	│ ΞError
-	│ message! : seq CHAR
-	├───────────────────────────────────────────────────
-	│ message! = θError.message
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub message { return $_[0]->{message} }
@@ -284,15 +295,6 @@ act on the file, job or image the failure is about.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Args ────────────────────────────────────────────
-	│ ΞError
-	│ args! : NAME ⇸ VALUE
-	├───────────────────────────────────────────────────
-	│ args! = θError.args
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -322,15 +324,6 @@ C<"\n"> for one that names no place in the code.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Location ────────────────────────────────────────
-	│ ΞError
-	│ location! : seq CHAR
-	├───────────────────────────────────────────────────
-	│ location! = θError.location
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub location { return $_[0]->{location} }
@@ -357,15 +350,6 @@ to, and what C<croak> would have died with.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Text ────────────────────────────────────────────
-	│ ΞError
-	│ text! : seq CHAR
-	├───────────────────────────────────────────────────
-	│ text! = θError.message ⁀ θError.location
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -406,17 +390,6 @@ dot (C<workflow.>) for every code that starts with it.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Is ──────────────────────────────────────────────
-	│ ΞError
-	│ code? : seq CHAR
-	│ r!    : 𝔹
-	├───────────────────────────────────────────────────
-	│ last(code?) = '.' ⇒ (r! ⇔ code? prefix θError.code)
-	│ last(code?) ≠ '.' ⇒ (r! ⇔ code? = θError.code)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub is {
@@ -456,17 +429,6 @@ code without first checking what kind of value C<$@> holds.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Caught ──────────────────────────────────────────
-	│ class? : CLASS
-	│ value? : VALUE
-	│ e!     : optional Error
-	├───────────────────────────────────────────────────
-	│ value? ∈ class? ⇒ e! = value?
-	│ value? ∉ class? ⇒ e! = ⊥
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -518,17 +480,6 @@ A string.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Describe ────────────────────────────────────────
-	│ error? : VALUE
-	│ s!     : seq CHAR
-	├───────────────────────────────────────────────────
-	│ error? ∈ Error ⇒ s! = rtrim(error?.message)
-	│ error? = ⊥ ⇒ s! = ⟨⟩
-	│ otherwise s! = rtrim(stripLocation(rtrim(error?)))
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub describe {
@@ -571,13 +522,200 @@ them that are references are shared with the code that threw it.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Do not match the message text.>  It is translated, and its
+wording may change.  Use L</is> with the code.
+
+=item * B<Not every exception is an object.>  Errors from Perl and from
+other modules are strings.  Use L</caught>, which returns C<undef> for them,
+before you call a method on C<$@>.
+
+=item * B<C<is> needs a trailing dot for a family.>  C<is('runner.image')>
+matches only that exact code; C<is('runner.image.')> matches every code
+that starts with C<runner.image.>.
+
+=item * B<C<args> returns a copy of the hash, but not of what is inside
+it.>  If an argument is a reference, changing what it points to changes the
+error too.
+
+=item * B<A method call does not work inside a string.>  C<"$error-E<gt>code">
+prints the whole error followed by C<-E<gt>code>.  Write C<'...' .
+$error-E<gt>code>.
+
+=item * B<The object is always true.>  Even an error with an empty message
+counts as true, so C<if ($@)> works as expected.
+
+=item * B<Keep a copy of C<$@>.>  Any C<eval> you run later (even inside a
+destructor) can reset it.  Write C<my $error = $@;> first.
+
+=back
+
+=head1 ENCODING
+
+The message is a Perl character string.  It may contain any Unicode text,
+including non-ASCII characters and emoji, because it may be a translation
+(for example into Chinese) and may quote a workflow's own text.  Set an
+encoding on the handle before you print it, for example C<binmode STDERR,
+':encoding(UTF-8)'>.  The code is always ASCII: lower-case letters, digits,
+C<_> and dots.  The location is the file name as Perl knows it.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ NewError ────────────────────────────────────────
+	│ code?     : KEY
+	│ message?  : seq CHAR
+	│ args?     : optional (NAME ⇸ VALUE)
+	│ location? : optional seq CHAR
+	│ e!        : Error
+	├───────────────────────────────────────────────────
+	│ e!.code = code? ∧ e!.message = message?
+	│ e!.args = (if args? = ⊥ then ∅ else args?)
+	│ e!.location = (if location? = ⊥ then "\n" else location?)
+	│ text(e!) = e!.message ⁀ e!.location
+	└───────────────────────────────────────────────────
+
+=head2 code
+
+	┌─ Code ────────────────────────────────────────────
+	│ ΞError
+	│ code! : KEY
+	├───────────────────────────────────────────────────
+	│ code! = θError.code
+	└───────────────────────────────────────────────────
+
+=head2 message
+
+	┌─ Message ─────────────────────────────────────────
+	│ ΞError
+	│ message! : seq CHAR
+	├───────────────────────────────────────────────────
+	│ message! = θError.message
+	└───────────────────────────────────────────────────
+
+=head2 args
+
+	┌─ Args ────────────────────────────────────────────
+	│ ΞError
+	│ args! : NAME ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ args! = θError.args
+	└───────────────────────────────────────────────────
+
+=head2 location
+
+	┌─ Location ────────────────────────────────────────
+	│ ΞError
+	│ location! : seq CHAR
+	├───────────────────────────────────────────────────
+	│ location! = θError.location
+	└───────────────────────────────────────────────────
+
+=head2 text
+
+	┌─ Text ────────────────────────────────────────────
+	│ ΞError
+	│ text! : seq CHAR
+	├───────────────────────────────────────────────────
+	│ text! = θError.message ⁀ θError.location
+	└───────────────────────────────────────────────────
+
+=head2 is
+
+	┌─ Is ──────────────────────────────────────────────
+	│ ΞError
+	│ code? : seq CHAR
+	│ r!    : 𝔹
+	├───────────────────────────────────────────────────
+	│ last(code?) = '.' ⇒ (r! ⇔ code? prefix θError.code)
+	│ last(code?) ≠ '.' ⇒ (r! ⇔ code? = θError.code)
+	└───────────────────────────────────────────────────
+
+=head2 caught
+
+	┌─ Caught ──────────────────────────────────────────
+	│ class? : CLASS
+	│ value? : VALUE
+	│ e!     : optional Error
+	├───────────────────────────────────────────────────
+	│ value? ∈ class? ⇒ e! = value?
+	│ value? ∉ class? ⇒ e! = ⊥
+	└───────────────────────────────────────────────────
+
+=head2 describe
+
+	┌─ Describe ────────────────────────────────────────
+	│ error? : VALUE
+	│ s!     : seq CHAR
+	├───────────────────────────────────────────────────
+	│ error? ∈ Error ⇒ s! = rtrim(error?.message)
+	│ error? = ⊥ ⇒ s! = ⟨⟩
+	│ otherwise s! = rtrim(stripLocation(rtrim(error?)))
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+An error object never changes after it is made.  This is its life:
+
+	 $self->throw($code, \%args)              App::Actions::Error->new(...)
+	 (App::Actions::I18N: look up $code,       (rare: a caller that builds
+	  translate, fill in %args, add the         its own)
+	  caller's " at FILE line N.")                    |
+	           |                                      |
+	           +------------------+-------------------+
+	                              v
+	                     +-----------------+
+	                     |    CREATED      |  code, message, args,
+	                     |   (immutable)   |  location fixed
+	                     +-----------------+
+	                              |
+	                              | die
+	                              v
+	                     +-----------------+
+	                     |    THROWN       |  in $@
+	                     +-----------------+
+	                       |      |      |
+	   not caught by any   |      |      | caught as a string ("$@", =~, print):
+	   eval                |      |      | reads as message . location
+	                       v      |      v
+	        program stops;        |   old code works unchanged
+	        STDERR shows the      |
+	        message and location  | App::Actions::Error->caught($@)
+	                              v
+	                     +-----------------+
+	                     |   INSPECTED     |  is($code) / is('family.')
+	                     +-----------------+  code / message / args / location
+	                              |
+	                              | describe($@)
+	                              v
+	                     message without the location, for a person
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

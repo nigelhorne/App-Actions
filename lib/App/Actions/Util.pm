@@ -51,31 +51,65 @@ App::Actions::Util - helpers shared by the App::Actions document readers
 
 =head1 SYNOPSIS
 
-	use App::Actions::Util qw(load_yaml_mapping mapping normalize_step stringify trim);
+Read a workflow file and check that it is a mapping:
 
-	my $data  = load_yaml_mapping($file, 'workflow');
-	my $env   = mapping($data->{env}, ['where.workflow_env']);
-	my $step  = normalize_step($raw_step, ['where.job', { job => 'test' }]);
-	my $text  = stringify(JSON::PP::true);    # 'true'
+	use App::Actions::Util qw(load_yaml_mapping mapping);
+
+	my $data = load_yaml_mapping('.github/workflows/ci.yml', 'workflow');
+	my $env  = mapping($data->{env}, ['where.workflow_env']);
+
+Check one step of a job:
+
+	use App::Actions::Util qw(normalize_step);
+
+	my $step = normalize_step($raw_step, ['where.job', { job => 'test' }]);
+	print $step->{run} // $step->{uses}, "\n";
+
+Turn a YAML value into the text a workflow would see:
+
+	use App::Actions::Util qw(stringify);
+
+	stringify(JSON::PP::true);        # 'true'
+	stringify([1, 2]);                # '[1,2]'
+	stringify(undef);                 # ''
+
+Remove spaces from both ends:
+
+	use App::Actions::Util qw(trim);
+
+	trim("  hello \n");               # 'hello'
 
 =head1 DESCRIPTION
 
-L<App::Actions::Workflow> and L<App::Actions::Action> read two kinds of YAML
-document with the same rules: the file must exist, parse, and hold a
-mapping; C<env> and C<with> must be mappings; a step must say C<run> or
-C<uses>.  Those rules, and the conversion of a YAML value to the string a
-workflow sees, used to be written out once per module and had begun to
-drift.  They live here once.
+Two modules read YAML files: L<App::Actions::Workflow> (workflow files) and
+L<App::Actions::Action> (action files).  They check the files with the same
+rules:
 
-These functions are internal to the distribution.  They are public only
-because more than one package calls them; their interface may change
-between releases.
+=over 4
 
-Where a function can fail it takes a I<place> rather than a sentence: an
-array reference of a catalogue key and its arguments, such as
-C<< ['where.job_env', { job => 'test' }] >>.  The place is only rendered
-when there is an error to report, so the common case costs nothing, and it
-is rendered in the language of the run.
+=item * the file must exist, be valid YAML, and hold a mapping (key: value
+pairs) at the top;
+
+=item * C<env> and C<with> must be mappings;
+
+=item * a step must have C<run> or C<uses>.
+
+=back
+
+This module holds those rules, so both readers apply them in exactly the
+same way.  It also holds L</stringify>, which turns any YAML value into the
+text a workflow sees, and L</trim>.
+
+These functions are for the distribution's own use.  They are public only
+because more than one module calls them.  Their interface may change between
+releases.
+
+B<About places.>  When a check fails, the error must say I<where> the bad
+value was, for example "env of job 'test'".  So the functions that check
+take a I<place>: an array reference holding a message key and its
+arguments, such as C<< ['where.job_env', { job => 'test' }] >>.  The words
+are only made when there is an error, so a check that passes costs nothing.
+They are made in the user's language.  A place may also be a plain string.
 
 =head1 FUNCTIONS
 
@@ -139,24 +173,6 @@ The C<action> kind reports the same conditions as C<No action metadata file
 given>, C<Action metadata file 'F' does not exist>, C<Unable to parse action
 metadata 'F': E>, C<Action metadata 'F' is empty> and C<Action metadata 'F'
 must contain a YAML mapping>.
-
-=head3 FORMAL SPECIFICATION
-
-	KIND ::= workflow | action
-
-	┌─ LoadYamlMapping ─────────────────────────────────
-	│ ΞFileSystem
-	│ file? : optional PATH
-	│ kind? : KIND
-	│ doc!  : KEY ⇸ VALUE
-	├───────────────────────────────────────────────────
-	│ file? = ⊥ ∨ file? = ⟨⟩ ⇒ raises FileRequired(kind?)
-	│ file? ∉ regularFiles ⇒ raises FileMissing(kind?, file?)
-	│ ¬ parses(contents(file?)) ⇒ raises ParseFailed(kind?, file?)
-	│ parse(contents(file?)) = ⊥ ⇒ raises Empty(kind?, file?)
-	│ parse(contents(file?)) ∉ MAPPING ⇒ raises NotMapping(kind?, file?)
-	│ otherwise doc! = parse(contents(file?))
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -241,18 +257,6 @@ None.
 	| PLACE must be a mapping  | The value is a list or scalar | Indent it as KEY: VALUE pairs  |
 	+--------------------------+-------------------------------+--------------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Mapping ─────────────────────────────────────────
-	│ value? : optional VALUE
-	│ place? : KEY × (NAME ⇸ VALUE)
-	│ copy!  : KEY ⇸ VALUE
-	├───────────────────────────────────────────────────
-	│ value? = ⊥ ⇒ copy! = ∅
-	│ value? ∈ MAPPING ⇒ copy! = value? ∧ copy! is a new object
-	│ value? ∉ MAPPING ∪ {⊥} ⇒ raises MappingInvalid(place?)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub mapping {
@@ -322,22 +326,6 @@ None.
 	| A step in PLACE has neither    | The step does nothing          | Add run or uses              |
 	| 'run' nor 'uses'               |                                |                              |
 	+--------------------------------+--------------------------------+------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	STRINGFIELD == {run, uses, shell, working-directory, name, id, if}
-
-	┌─ NormalizeStep ───────────────────────────────────
-	│ step?  : VALUE
-	│ place? : KEY × (NAME ⇸ VALUE)
-	│ step!  : KEY ⇸ VALUE
-	├───────────────────────────────────────────────────
-	│ step? ∉ MAPPING ⇒ raises StepNotMapping(place?)
-	│ ∃ f : STRINGFIELD | f ∈ dom step? ∧ step?(f) ≠ ⊥ • step?(f) ∈ REF
-	│     ⇒ raises FieldNotString(f, place?)
-	│ run ∉ dom step? ∧ uses ∉ dom step? ⇒ raises NoCommand(place?)
-	│ otherwise step! = step? ⊕ {env ↦ Mapping(step?.env), with ↦ Mapping(step?.with)}
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -421,18 +409,6 @@ None.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Stringify ───────────────────────────────────────
-	│ value? : optional VALUE
-	│ text!  : seq CHAR
-	├───────────────────────────────────────────────────
-	│ value? = ⊥ ⇒ text! = ⟨⟩
-	│ value? ∈ BOOLEAN ⇒ (value? ⇒ text! = "true") ∧ (¬ value? ⇒ text! = "false")
-	│ value? ∈ SCALAR \ BOOLEAN ⇒ text! = value?
-	│ value? ∈ REF \ BOOLEAN ⇒ text! = canonicalJSON(value?)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub stringify {
@@ -485,17 +461,6 @@ None; the argument is not modified.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Trim ────────────────────────────────────────────
-	│ text?  : optional seq CHAR
-	│ text!  : seq CHAR
-	├───────────────────────────────────────────────────
-	│ text? = ⊥ ⇒ text! = ⟨⟩
-	│ text? ≠ ⊥ ⇒ text! is the longest infix of text? that neither
-	│             begins nor ends with white space
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -570,13 +535,172 @@ action files are small, and streaming would buy nothing.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<A place is not a sentence.>  Pass C<['where.job', { job =E<gt>
+'test' }]>, not C<"in job test">.  A plain string works, but it is not
+translated.
+
+=item * B<C<mapping> returns a I<shallow> copy.>  Changing a value inside
+it that is itself a reference changes the original too.
+
+=item * B<Booleans need Perl 5.36 or later.>  On older Perls, YAML C<true>
+and C<false> are read as C<1> and C<''>, so L</stringify> writes C<1> and
+the empty string.
+
+=item * B<C<stringify> writes arrays and hashes as JSON>, with keys sorted,
+not as Perl would (C<ARRAY(0x...)>).
+
+=item * B<C<normalize_step> checks the shape only.>  A misspelt key, or a
+C<uses> that names no real action, is not reported here.
+
+=item * B<C<trim> never changes its argument.>  Use the return value:
+C<$text = trim($text)>.
+
+=back
+
+=head1 ENCODING
+
+L</load_yaml_mapping> reads the file as UTF-8, so every string in the
+returned data is a Perl character string.  Any Unicode text is allowed in
+values, including non-ASCII characters and emoji.  Keys are usually ASCII,
+but need not be.  L</stringify> and L</trim> work on characters.  L</trim> always removes
+ASCII white space; whether it also removes a non-ASCII space (such as a
+no-break space) depends on how Perl stores the string, so do not rely on it.
+A file in another encoding (such as Latin-1) is likely to fail to parse.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 load_yaml_mapping
+
+	KIND ::= workflow | action
+
+	┌─ LoadYamlMapping ─────────────────────────────────
+	│ ΞFileSystem
+	│ file? : optional PATH
+	│ kind? : KIND
+	│ doc!  : KEY ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ file? = ⊥ ∨ file? = ⟨⟩ ⇒ raises FileRequired(kind?)
+	│ file? ∉ regularFiles ⇒ raises FileMissing(kind?, file?)
+	│ ¬ parses(contents(file?)) ⇒ raises ParseFailed(kind?, file?)
+	│ parse(contents(file?)) = ⊥ ⇒ raises Empty(kind?, file?)
+	│ parse(contents(file?)) ∉ MAPPING ⇒ raises NotMapping(kind?, file?)
+	│ otherwise doc! = parse(contents(file?))
+	└───────────────────────────────────────────────────
+
+=head2 mapping
+
+	┌─ Mapping ─────────────────────────────────────────
+	│ value? : optional VALUE
+	│ place? : KEY × (NAME ⇸ VALUE)
+	│ copy!  : KEY ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ value? = ⊥ ⇒ copy! = ∅
+	│ value? ∈ MAPPING ⇒ copy! = value? ∧ copy! is a new object
+	│ value? ∉ MAPPING ∪ {⊥} ⇒ raises MappingInvalid(place?)
+	└───────────────────────────────────────────────────
+
+=head2 normalize_step
+
+	STRINGFIELD == {run, uses, shell, working-directory, name, id, if}
+
+	┌─ NormalizeStep ───────────────────────────────────
+	│ step?  : VALUE
+	│ place? : KEY × (NAME ⇸ VALUE)
+	│ step!  : KEY ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ step? ∉ MAPPING ⇒ raises StepNotMapping(place?)
+	│ ∃ f : STRINGFIELD | f ∈ dom step? ∧ step?(f) ≠ ⊥ • step?(f) ∈ REF
+	│     ⇒ raises FieldNotString(f, place?)
+	│ run ∉ dom step? ∧ uses ∉ dom step? ⇒ raises NoCommand(place?)
+	│ otherwise step! = step? ⊕ {env ↦ Mapping(step?.env), with ↦ Mapping(step?.with)}
+	└───────────────────────────────────────────────────
+
+=head2 stringify
+
+	┌─ Stringify ───────────────────────────────────────
+	│ value? : optional VALUE
+	│ text!  : seq CHAR
+	├───────────────────────────────────────────────────
+	│ value? = ⊥ ⇒ text! = ⟨⟩
+	│ value? ∈ BOOLEAN ⇒ (value? ⇒ text! = "true") ∧ (¬ value? ⇒ text! = "false")
+	│ value? ∈ SCALAR \ BOOLEAN ⇒ text! = value?
+	│ value? ∈ REF \ BOOLEAN ⇒ text! = canonicalJSON(value?)
+	└───────────────────────────────────────────────────
+
+=head2 trim
+
+	┌─ Trim ────────────────────────────────────────────
+	│ text?  : optional seq CHAR
+	│ text!  : seq CHAR
+	├───────────────────────────────────────────────────
+	│ text? = ⊥ ⇒ text! = ⟨⟩
+	│ text? ≠ ⊥ ⇒ text! is the longest infix of text? that neither
+	│             begins nor ends with white space
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The functions keep no state.  This is the path a document takes through
+them:
+
+	 load_yaml_mapping($file, $kind)
+	          |
+	          v
+	+---------------------+  no name          -> KIND.file_required
+	| FILE CHECKS         |  not a file       -> KIND.file_missing
+	+---------------------+
+	          |
+	          v
+	+---------------------+  not valid YAML   -> KIND.parse_failed
+	| PARSE (UTF-8, keys  |  empty document   -> KIND.empty
+	| kept in order)      |  not a mapping    -> KIND.not_mapping
+	+---------------------+
+	          |
+	          v
+	+---------------------+  mapping($value, $place) for env, with, ...:
+	| MAPPING (top level) |  undef -> {}; a mapping -> a copy;
+	+---------------------+  anything else -> mapping.invalid at $place
+	          |
+	          | for each step of each job
+	          v
+	+---------------------+  not a mapping            -> step.not_mapping
+	| normalize_step      |  env/with not mappings    -> mapping.invalid
+	+---------------------+  run/uses/... not strings -> step.field_not_string
+	          |              neither run nor uses     -> step.no_command
+	          v
+	+---------------------+
+	| CHECKED STEP (copy) |  values later shown with stringify / trim
+	+---------------------+
+
+	Every arrow to the right throws an App::Actions::Error with that code;
+	its message names the place, in the user's language.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

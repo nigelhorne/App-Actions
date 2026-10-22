@@ -52,17 +52,58 @@ App::Actions::Action - read the metadata of a local GitHub action
 
 =head1 SYNOPSIS
 
+Read an action from its directory, and find out what kind it is:
+
 	use App::Actions::Action;
 
-	my $action = App::Actions::Action->load_from_dir('path/to/action');
+	my $action = App::Actions::Action->load_from_dir('.github/actions/setup');
 	print $action->kind, "\n";    # composite, javascript, docker, ...
+
+List its inputs, and which are required:
+
+	for my $name (sort keys %{ $action->inputs }) {
+		my $input = $action->inputs->{$name};
+		printf "%-10s %s default '%s'\n", $name,
+			$input->{required} ? 'required' : 'optional', $input->{default};
+	}
+
+Read the steps of a composite action:
+
+	if ($action->is_composite) {
+		print $_->{run} // $_->{uses}, "\n" for @{ $action->steps };
+	}
+
+Read a metadata file by its name:
+
+	my $action = App::Actions::Action->load('.github/actions/setup/action.yml');
 
 =head1 DESCRIPTION
 
-Reads C<action.yml> (or C<action.yaml>) and exposes the action's inputs,
-outputs, and C<runs> section.  Composite action steps are normalised by the
-same code as workflow steps (L<App::Actions::Util/normalize_step>), so the
-two cannot drift apart.
+A GitHub I<action> is a reusable piece of a workflow.  A I<local> action is
+one kept in the same repository, used with C<uses: ./path/to/action>.  Its
+directory holds a metadata file, F<action.yml> (or F<action.yaml>), which
+says:
+
+=over 4
+
+=item * its C<name> and C<description>;
+
+=item * its C<inputs> (values the calling step passes with C<with:>) and
+C<outputs>;
+
+=item * how it runs (C<runs:>): as a I<composite> action (a list of steps,
+like a job), as a I<JavaScript> action (a Node.js program), or as a
+I<Docker> action.
+
+=back
+
+This module reads that file, checks its shape, and gives you the parts.  The
+steps of a composite action are checked by the same code as a workflow's
+steps (L<App::Actions::Util/normalize_step>), so the two follow the same
+rules.
+
+It only reads the file.  Running the action is the job of
+L<App::Actions::Runner::Steps>.
 
 =head1 METHODS
 
@@ -114,20 +155,6 @@ Reads the directory and the metadata file.
 	+-----------------------------------+------------------------------+-------------------------------+
 
 The messages of L</load> apply to the file that is found.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ LoadFromDir ─────────────────────────────────────
-	│ ΞFileSystem
-	│ dir?    : optional PATH
-	│ action! : Action
-	├───────────────────────────────────────────────────
-	│ dir? ∈ {⊥, ⟨⟩} ⇒ raises DirRequired
-	│ dir? ∉ directories ⇒ raises DirMissing(dir?)
-	│ let found == ⟨ n : ⟨action.yml, action.yaml⟩ | dir?/n ∈ regularFiles ⟩
-	│ found = ⟨⟩ ⇒ raises NoMetadata(dir?)
-	│ found ≠ ⟨⟩ ⇒ action! = Load(dir?/head found)
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -219,26 +246,6 @@ Reads the file.
 The step messages of L<App::Actions::Util/normalize_step> apply to every
 composite step.
 
-=head3 FORMAL SPECIFICATION
-
-	KIND ::= composite | javascript | docker | other⟨⟨STRING⟩⟩
-
-	┌─ Load ────────────────────────────────────────────
-	│ file?   : PATH
-	│ action! : Action
-	├───────────────────────────────────────────────────
-	│ let doc == LoadYamlMapping(file?, action)
-	│ doc.runs ∉ MAPPING ⇒ raises NoRuns(file?)
-	│ doc.runs.using ∈ {⊥, ⟨⟩} ⇒ raises NoUsing(file?)
-	│ let u == lower(doc.runs.using)
-	│ u = composite ⇒ action!.kind = composite ∧ doc.runs.steps ∈ seq VALUE
-	│ u ∈ node⁀DIGITS ⇒ action!.kind = javascript ∧ doc.runs.main ∈ STRING \ {⟨⟩}
-	│ u = docker ⇒ action!.kind = docker
-	│ otherwise action!.kind = u
-	│ action!.dir = dirname(file?)
-	│ action!.kind ≠ composite ⇒ action!.steps = ⟨⟩
-	└───────────────────────────────────────────────────
-
 =head3 PSEUDOCODE
 
 	read the file as a YAML mapping
@@ -320,16 +327,6 @@ None.
 		printf "%s%s\n", $name, $input->{required} ? ' (required)' : '';
 	}
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Accessor ────────────────────────────────────────
-	│ ΞAction
-	│ field? : {file, dir, name, description, using, kind, inputs, outputs, runs, steps}
-	│ value! : VALUE
-	├───────────────────────────────────────────────────
-	│ value! = θAction.field?
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub file        { return $_[0]->{file} }
@@ -366,16 +363,6 @@ None.
 =head3 EXAMPLE
 
 	my $runner = $action->is_javascript ? 'node' : 'sh';
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ IsKind ──────────────────────────────────────────
-	│ ΞAction
-	│ k?   : {composite, javascript}
-	│ yes! : {0, 1}
-	├───────────────────────────────────────────────────
-	│ yes! = 1 ⇔ kind = k?
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -492,13 +479,166 @@ spellings such as C<on> and C<y> are read as false.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Give the directory to L</load_from_dir>, the file to L</load>.>
+
+=item * B<An input written as a plain value is optional.>  C<who: world>
+means an optional input whose default is C<world>, not a required one.
+
+=item * B<C<required> is true only for C<true>, C<yes> and C<1>> (in any case).  YAML 1.1
+words such as C<on> and C<y> count as false.
+
+=item * B<Defaults are always strings.>  A YAML default of C<true> is the
+string C<true>, and C<3> is C<3>, as GitHub passes them.  A missing default
+is the empty string, not C<undef>.
+
+=item * B<A description may be C<undef>>, but C<name> and the action's own
+C<description> are C<''> when missing.
+
+=item * B<C<kind> may be an unknown word.>  It is C<composite>,
+C<javascript> or C<docker> for those kinds, and otherwise whatever
+C<runs.using> said, in lower case.  Check C<is_composite> and
+C<is_javascript> rather than comparing strings.
+
+=item * B<The returned hashes are the object's own.>  Do not change what
+C<inputs>, C<outputs>, C<runs> or C<steps> return.
+
+=back
+
+=head1 ENCODING
+
+The metadata file is read as UTF-8 (see L<App::Actions::Util/ENCODING>).
+Names, descriptions, defaults and step commands may contain any Unicode
+text, including non-ASCII characters and emoji, and are returned as Perl
+character strings.  Input names should be ASCII, because they become
+environment variable names (C<INPUT_NAME>) when the action runs.  The path
+you pass is used as bytes.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 load_from_dir
+
+	┌─ LoadFromDir ─────────────────────────────────────
+	│ ΞFileSystem
+	│ dir?    : optional PATH
+	│ action! : Action
+	├───────────────────────────────────────────────────
+	│ dir? ∈ {⊥, ⟨⟩} ⇒ raises DirRequired
+	│ dir? ∉ directories ⇒ raises DirMissing(dir?)
+	│ let found == ⟨ n : ⟨action.yml, action.yaml⟩ | dir?/n ∈ regularFiles ⟩
+	│ found = ⟨⟩ ⇒ raises NoMetadata(dir?)
+	│ found ≠ ⟨⟩ ⇒ action! = Load(dir?/head found)
+	└───────────────────────────────────────────────────
+
+=head2 load
+
+	KIND ::= composite | javascript | docker | other⟨⟨STRING⟩⟩
+
+	┌─ Load ────────────────────────────────────────────
+	│ file?   : PATH
+	│ action! : Action
+	├───────────────────────────────────────────────────
+	│ let doc == LoadYamlMapping(file?, action)
+	│ doc.runs ∉ MAPPING ⇒ raises NoRuns(file?)
+	│ doc.runs.using ∈ {⊥, ⟨⟩} ⇒ raises NoUsing(file?)
+	│ let u == lower(doc.runs.using)
+	│ u = composite ⇒ action!.kind = composite ∧ doc.runs.steps ∈ seq VALUE
+	│ u ∈ node⁀DIGITS ⇒ action!.kind = javascript ∧ doc.runs.main ∈ STRING \ {⟨⟩}
+	│ u = docker ⇒ action!.kind = docker
+	│ otherwise action!.kind = u
+	│ action!.dir = dirname(file?)
+	│ action!.kind ≠ composite ⇒ action!.steps = ⟨⟩
+	└───────────────────────────────────────────────────
+
+=head2 file, dir, name, description, using, kind, inputs, outputs, runs, steps
+
+	┌─ Accessor ────────────────────────────────────────
+	│ ΞAction
+	│ field? : {file, dir, name, description, using, kind, inputs, outputs, runs, steps}
+	│ value! : VALUE
+	├───────────────────────────────────────────────────
+	│ value! = θAction.field?
+	└───────────────────────────────────────────────────
+
+=head2 is_composite, is_javascript
+
+	┌─ IsKind ──────────────────────────────────────────
+	│ ΞAction
+	│ k?   : {composite, javascript}
+	│ yes! : {0, 1}
+	├───────────────────────────────────────────────────
+	│ yes! = 1 ⇔ kind = k?
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+An action object never changes after it is made.  Loading goes through
+these steps; each check that fails throws an L<App::Actions::Error> with
+the code shown:
+
+	 load_from_dir($dir)
+	        |
+	        v
+	+------------------+  no $dir -> action.dir_required
+	| FIND METADATA    |  not a directory -> action.dir_missing
+	| action.yml, then |  neither file -> action.no_metadata
+	| action.yaml      |
+	+------------------+
+	        |
+	        v   load($file)
+	+------------------+  missing / bad YAML / empty / not a mapping
+	| READ YAML        |  -> action.file_* , action.parse_failed, ...
+	+------------------+
+	        |
+	        v
+	+------------------+  no runs, or runs.using missing
+	| READ runs.using  |  -> action.no_runs / action.no_using
+	+------------------+
+	        |
+	        +-- composite ----> steps must be a list; each step checked
+	        |                   (normalize_step)       -> action.no_steps
+	        +-- nodeN -------> runs.main must be set  -> action.no_main
+	        |   (javascript)
+	        +-- docker -------> kept as it is
+	        +-- anything else -> kind = that word
+	        |
+	        v
+	+------------------+  inputs/outputs not a mapping, or an entry
+	| READ inputs and  |  that is neither text nor a mapping
+	| outputs          |  -> action.inputs_invalid, action.input_invalid, ...
+	+------------------+
+	        |
+	        v
+	+------------------+
+	|   LOADED         |  read-only: file, dir, name, description, using,
+	|   (immutable)    |  kind, inputs, outputs, runs, steps,
+	+------------------+  is_composite, is_javascript
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

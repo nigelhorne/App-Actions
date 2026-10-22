@@ -52,7 +52,19 @@ App::Actions::Runner::Parallel - run the jobs of one matrix beside each other
 	my $outcomes = $parallel->run(\@plans, $fail_fast);
 	if (!$outcomes) { ... run them one at a time ... }
 
+Count the failures, and say where the logs are:
+
+	my $outcomes = $parallel->run(\@plans, 0) or return;
+	my @failed = grep { $_->{result}{result} eq 'failure' } grep { $_->{started} } @{$outcomes};
+	print scalar(@failed), " jobs failed\n";
+	print "$_->{name}: $_->{path}\n" for @{ $parallel->logs };
+
 =head1 DESCRIPTION
+
+B<In short:> this module runs several jobs of one matrix at the same time,
+each in its own process, and shows their output as it happens with the job
+name in front of every line.  It is a part of L<App::Actions::Runner>; you
+rarely use it on its own.
 
 Each job runs in a child process of its own, with its own runner directory,
 its output written to a log, and its result written to a file the parent
@@ -122,16 +134,6 @@ See the L</SYNOPSIS>.
 	| Invalid arguments to      | An argument is missing or    | Pass the documented         |
 	| ...Parallel::new: REASON  | has the wrong type           | arguments                   |
 	+---------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Parallel ────────────────────────────────────────
-	│ capacity : ℕ₁
-	│ slots    : ℕ          -- jobs started so far, numbering their files
-	│ logs     : seq LOG
-	├───────────────────────────────────────────────────
-	│ #logs = slots
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -209,22 +211,6 @@ not report or the parent is interrupted, and then dies.
 	|                             | before it reported a result  |                             |
 	| action-run: E (in a log)    | The job itself died          | Read the message            |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ RunParallel ─────────────────────────────────────
-	│ ΔParallel
-	│ plans?    : seq PLAN
-	│ failFast? : 𝔹
-	│ out!      : optional seq OUTCOME
-	├───────────────────────────────────────────────────
-	│ #plans? < 2 ∨ cap < 2 ∨ os = MSWin32 ⇒ out! = ⊥
-	│ otherwise #out! = #plans? ∧
-	│     (∀ t : TIME • #{o : ran out! | running(o, t)} ≤ cap) ∧
-	│     (failFast? ∧ (∃ o : ran out! • failed(o)) ⇒ no plan after the
-	│         first failure is started once it is seen)
-	│ where cap = min(capacity, maxParallel(head plans?), #plans?)
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -304,15 +290,6 @@ job the log belongs to once the numbered directory is gone.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Logs ────────────────────────────────────────────
-	│ ΞParallel
-	│ l! : seq LOG
-	├───────────────────────────────────────────────────
-	│ l! = logs
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -691,13 +668,140 @@ started them knew their names.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<C<run> may return C<undef>.>  That is not an error: it means
+"run these one at a time".  Always have a fallback.
+
+=item * B<C<run_job> runs in a child process.>  Changes it makes to
+variables are not seen by the parent.  Return everything the parent needs
+in the result.
+
+=item * B<C<max-parallel> wins.>  The workflow's C<strategy.max-parallel>
+can lower C<capacity>, never raise it.
+
+=item * B<Fail-fast does not stop running jobs.>  It only stops jobs that
+have not started yet.
+
+=item * B<Output lines can be delayed.>  The logs are read 20 times a
+second, and a line is shown only when it is complete.
+
+=item * B<A killed parent leaves containers.>  If the parent process is
+killed with SIGKILL, the children's containers are not removed.  Use
+C<docker ps --filter name=action-run-> to find them.
+
+=back
+
+=head1 ENCODING
+
+Job output is copied from the log files to your terminal as bytes,
+unchanged, so it may contain any characters the job printed.  Windows line
+ends (C<\r\n>) are shown as C<\n>.  Job names in the line prefix are Perl
+character strings and may contain non-ASCII characters and emoji; log file
+names are made from them with unsafe characters replaced, so they are
+ASCII.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ Parallel ────────────────────────────────────────
+	│ capacity : ℕ₁
+	│ slots    : ℕ          -- jobs started so far, numbering their files
+	│ logs     : seq LOG
+	├───────────────────────────────────────────────────
+	│ #logs = slots
+	└───────────────────────────────────────────────────
+
+=head2 run
+
+	┌─ RunParallel ─────────────────────────────────────
+	│ ΔParallel
+	│ plans?    : seq PLAN
+	│ failFast? : 𝔹
+	│ out!      : optional seq OUTCOME
+	├───────────────────────────────────────────────────
+	│ #plans? < 2 ∨ cap < 2 ∨ os = MSWin32 ⇒ out! = ⊥
+	│ otherwise #out! = #plans? ∧
+	│     (∀ t : TIME • #{o : ran out! | running(o, t)} ≤ cap) ∧
+	│     (failFast? ∧ (∃ o : ran out! • failed(o)) ⇒ no plan after the
+	│         first failure is started once it is seen)
+	│ where cap = min(capacity, maxParallel(head plans?), #plans?)
+	└───────────────────────────────────────────────────
+
+=head2 logs
+
+	┌─ Logs ────────────────────────────────────────────
+	│ ΞParallel
+	│ l! : seq LOG
+	├───────────────────────────────────────────────────
+	│ l! = logs
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The parent process goes through these states for one call to L</run>; each
+child goes through the states on the right:
+
+	  run(\@plans, $fail_fast)
+	        |
+	        v
+	  one plan, capacity < 2, or no reliable fork()? --yes--> return undef
+	        | no                                      (caller runs them serially)
+	        v
+	+------------------+                       Child (one per job):
+	| STARTING         |  fork while fewer      +--------------------+
+	|                  |  than capacity run --->| RUNNING            |
+	+------------------+                        | own runner folder; |
+	        |                                   | output -> log file |
+	        v                                   +--------------------+
+	+------------------+                                 |
+	| WATCHING         |  every 1/20 s: new complete     | run_job returns
+	|                  |  log lines printed as           v
+	|                  |  "[job name] line"      +--------------------+
+	+------------------+                         | RESULT WRITTEN     |
+	   |       |      |                          | to a file; exit    |
+	   |       |      |                          +--------------------+
+	   |       |      | a child exits
+	   |       |      v
+	   |       |  +------------------+  result file missing or unreadable:
+	   |       |  | COLLECTING       |  kill the others -> die
+	   |       |  | on_result(...)   |
+	   |       |  +------------------+
+	   |       |      |
+	   |       |      | failure and fail-fast: start no more jobs
+	   |       |      | otherwise: back to STARTING if plans are left
+	   |       |
+	   |       | SIGINT / SIGTERM: kill the children -> die
+	   |
+	   | all children done
+	   v
+	  return [ { plan, started, result }, ... ]   (logs() lists the log files)
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

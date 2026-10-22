@@ -11,7 +11,7 @@ use Readonly;
 use Cwd qw(abs_path);
 use Fcntl qw(O_CREAT O_EXCL O_WRONLY);
 
-use App::Actions::Docker ();
+use App::Actions::Docker::Variable ();
 use App::Actions::Error;
 use App::Actions::I18N qw(throw);
 use App::Actions::Util ();
@@ -63,7 +63,30 @@ App::Actions::Runner::Support - helpers shared by the parts of the runner
 	my $env = resolve_env($expression, [ $workflow_env, $job_env ], $context);
 	my $status = status_flags($failed);
 
+Write a file the container will read, safely:
+
+	use App::Actions::Runner::Support qw(write_container_file);
+
+	write_container_file("$temp/scripts/step-1.sh", "echo hello\n", 'the step script');
+
+Find a local action, refusing one that leads out of the project:
+
+	use App::Actions::Runner::Support qw(local_action_dir);
+
+	my $found = local_action_dir($project_dir, './.github/actions/setup');
+	print "$found->{relative} is in $found->{dir}\n";
+
+Pass a job's variables to Docker without showing their values to other
+users:
+
+	use App::Actions::Runner::Support qw(env_args);
+
+	$docker->container_start(@{ env_args({ TOKEN => $token }) }, 'alpine', 'sleep', '60');
+
 =head1 DESCRIPTION
+
+B<In short:> small helper functions that several parts of the runner
+need.  You rarely use them on your own.
 
 The runner is split into a planner (L<App::Actions::Runner>), an image
 preparer (L<App::Actions::Runner::Images>), a container manager
@@ -103,15 +126,6 @@ or the reverse.  A run is never cancelled.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ StatusFlags ─────────────────────────────────────
-	│ failed? : 𝔹
-	│ s!      : {success, failure, cancelled} → 𝔹
-	├───────────────────────────────────────────────────
-	│ s!(success) = ¬ failed? ∧ s!(failure) = failed? ∧ s!(cancelled) = false
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub status_flags {
@@ -148,15 +162,6 @@ location, if any, is kept: this is for messages that have always shown it.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ChompError ──────────────────────────────────────
-	│ error? : VALUE
-	│ s!     : seq CHAR
-	├───────────────────────────────────────────────────
-	│ s! = rtrim(string(error?))
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -196,16 +201,6 @@ location is useful in a stack trace and noise in a report someone reads.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ TrimError ───────────────────────────────────────
-	│ error? : VALUE
-	│ s!     : optional seq CHAR
-	├───────────────────────────────────────────────────
-	│ error? = ⊥ ∨ string(error?) = ⟨⟩ ⇒ s! = ⊥
-	│ otherwise s! = Describe(error?)
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -272,17 +267,6 @@ None.
 	| Unable to evaluate          | A value holds an expression  | Fix the expression in the   |
 	| environment variable 'X': E | that does not parse or run   | workflow's env              |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ResolveEnv ──────────────────────────────────────
-	│ layers?  : seq (NAME ⇸ VALUE)
-	│ context? : CONTEXT
-	│ env!     : NAME ⇸ seq CHAR
-	├───────────────────────────────────────────────────
-	│ let merged == ⊕/ layers?
-	│ env! = fix(λ e • {n ↦ interpolate(e(n), context? ⊕ {env ↦ e})}, merged, 10)
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -354,19 +338,6 @@ whose result is truthy.
 
 Whatever the expression's evaluation croaks with.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ BooleanValue ────────────────────────────────────
-	│ value? : VALUE
-	│ b!     : 𝔹
-	├───────────────────────────────────────────────────
-	│ value? ∈ REF ⇒ b! = truthy(value?)
-	│ value? = ⊥ ∨ trim(value?) = ⟨⟩ ⇒ b! = false
-	│ trim(value?) ∈ TRUE_WORD ⇒ b! = true
-	│ trim(value?) ∈ FALSE_WORD ⇒ b! = false
-	│ otherwise b! = condition(trim(value?))
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub boolean_value {
@@ -408,15 +379,6 @@ C<cancelled()>.  One that does not is given an implicit C<success()>.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ HasStatusFunction ───────────────────────────────
-	│ condition? : optional seq CHAR
-	│ b!         : 𝔹
-	├───────────────────────────────────────────────────
-	│ b! ⇔ condition? ≠ ⊥ ∧ condition? contains f( for some f ∈ STATUS
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -482,15 +444,6 @@ Creates or replaces the file.
 	|                             | or written                   | directory's space and mode  |
 	+-----------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ WriteContainerFile ──────────────────────────────
-	│ ΔFileSystem
-	│ path?, contents? : seq CHAR
-	├───────────────────────────────────────────────────
-	│ files' = files ⊕ {path? ↦ contents?}
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub write_container_file {
@@ -553,16 +506,6 @@ read from one place whichever finds it first.
 	| Local action 'X' must not   | The path contains ".."       | Keep the action inside the  |
 	| escape the project directory|                              | repository                  |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ LocalActionPath ─────────────────────────────────
-	│ uses? : seq CHAR
-	│ rel!  : seq CHAR
-	├───────────────────────────────────────────────────
-	│ rel! = stripSlashes(stripDotSlash(uses?))
-	│ rel! ≠ ⟨⟩ ∧ ".." ∉ segments(rel!)
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -629,17 +572,6 @@ does not exist is returned as it would be, for the caller to report.
 
 And the messages of L</local_action_path>.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ LocalActionDir ──────────────────────────────────
-	│ projectDir?, uses? : seq CHAR
-	│ loc!               : LOCATION
-	├───────────────────────────────────────────────────
-	│ loc!.relative = localActionPath(uses?)
-	│ loc!.dir = projectDir? ⁀ "/" ⁀ loc!.relative
-	│ isDirectory(loc!.dir) ⇒ realpath(loc!.dir) ∈ subtree(realpath(projectDir?))
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub local_action_dir {
@@ -700,18 +632,6 @@ neither supplies is an error.
 	| Action 'X' requires the     | A required input has no      | Pass it with "with:"        |
 	| input 'Y'                   | default and was not given    |                             |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ActionInputs ────────────────────────────────────
-	│ declared : NAME ⇸ INPUT
-	│ with?    : NAME ⇸ VALUE
-	│ inputs!  : NAME ⇸ seq CHAR
-	├───────────────────────────────────────────────────
-	│ inputs! = {n : dom declared • n ↦ interpolate(default(n))} ⊕
-	│           {n : dom with? • n ↦ interpolate(with?(n))}
-	│ ∀ n : dom declared | required(n) • inputs!(n) ≠ ⟨⟩
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -784,17 +704,6 @@ caller-supplied Docker object need not offer redaction.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Redact ──────────────────────────────────────────
-	│ text? : optional seq CHAR
-	│ s!    : optional seq CHAR
-	├───────────────────────────────────────────────────
-	│ text? = ⊥ ⇒ s! = ⊥
-	│ docker can redact ⇒ s! = docker.redact(text?)
-	│ otherwise s! = text?
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub redact {
@@ -808,7 +717,7 @@ sub redact {
 	push @args, @{ env_args(\%env) };
 
 Turns an environment into C<docker> arguments: C<-e> and an
-L<App::Actions::Docker::Variable|App::Actions::Docker/App::Actions::Docker::Variable>
+L<App::Actions::Docker::Variable>
 for each variable, sorted by name so the command line is the same on every
 run.  Each variable reads as C<NAME=VALUE>; L<App::Actions::Docker> passes its
 value to the client through the environment, so it never appears among the
@@ -832,15 +741,6 @@ client's arguments, which every user of the host can read.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ EnvArgs ─────────────────────────────────────────
-	│ env? : NAME ⇸ seq CHAR
-	│ a!   : seq seq CHAR
-	├───────────────────────────────────────────────────
-	│ a! = ⁀/ ⟨n : sorted(dom env?) • ⟨"-e", n ⁀ "=" ⁀ env?(n)⟩⟩
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -871,13 +771,229 @@ them rather than being reported.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Arguments are not checked.>  These functions trust their callers,
+for speed.  Pass what the documentation says.
+
+=item * B<L</write_container_file> replaces the file.>  It removes the old
+file and creates a new one with mode 0600; it never writes through a
+symbolic link.  If someone else's file is in the way (in a shared folder),
+it fails rather than overwrite it.
+
+=item * B<L</local_action_dir> refuses links out of the project>, with
+C<runner.local_action_escapes>.  A link that stays inside the project is
+allowed.  A path that does not exist is returned as it is, for the caller to
+report.
+
+=item * B<L</env_args> returns objects, not strings.>  Pass them to an
+L<App::Actions::Docker> method so that their values are kept off the
+command line; elsewhere they turn into C<NAME=VALUE> text.
+
+=item * B<L</redact> replaces whole values only.>  A secret that appears
+split or encoded is not hidden.
+
+=item * B<L</resolve_env> stops after ten passes>, so a variable that
+refers to itself keeps a partly filled-in value.
+
+=back
+
+=head1 ENCODING
+
+Environment names and values, step text and secrets are Perl character
+strings and may contain any Unicode text, including non-ASCII characters
+and emoji.  L</write_container_file> writes the bytes it is given: encode
+text (for example as UTF-8) before you pass it.  Paths are used as bytes.
+Action paths (C<./...>) should be ASCII, as on GitHub.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 status_flags
+
+	┌─ StatusFlags ─────────────────────────────────────
+	│ failed? : 𝔹
+	│ s!      : {success, failure, cancelled} → 𝔹
+	├───────────────────────────────────────────────────
+	│ s!(success) = ¬ failed? ∧ s!(failure) = failed? ∧ s!(cancelled) = false
+	└───────────────────────────────────────────────────
+
+=head2 chomp_error
+
+	┌─ ChompError ──────────────────────────────────────
+	│ error? : VALUE
+	│ s!     : seq CHAR
+	├───────────────────────────────────────────────────
+	│ s! = rtrim(string(error?))
+	└───────────────────────────────────────────────────
+
+=head2 trim_error
+
+	┌─ TrimError ───────────────────────────────────────
+	│ error? : VALUE
+	│ s!     : optional seq CHAR
+	├───────────────────────────────────────────────────
+	│ error? = ⊥ ∨ string(error?) = ⟨⟩ ⇒ s! = ⊥
+	│ otherwise s! = Describe(error?)
+	└───────────────────────────────────────────────────
+
+=head2 resolve_env
+
+	┌─ ResolveEnv ──────────────────────────────────────
+	│ layers?  : seq (NAME ⇸ VALUE)
+	│ context? : CONTEXT
+	│ env!     : NAME ⇸ seq CHAR
+	├───────────────────────────────────────────────────
+	│ let merged == ⊕/ layers?
+	│ env! = fix(λ e • {n ↦ interpolate(e(n), context? ⊕ {env ↦ e})}, merged, 10)
+	└───────────────────────────────────────────────────
+
+=head2 boolean_value
+
+	┌─ BooleanValue ────────────────────────────────────
+	│ value? : VALUE
+	│ b!     : 𝔹
+	├───────────────────────────────────────────────────
+	│ value? ∈ REF ⇒ b! = truthy(value?)
+	│ value? = ⊥ ∨ trim(value?) = ⟨⟩ ⇒ b! = false
+	│ trim(value?) ∈ TRUE_WORD ⇒ b! = true
+	│ trim(value?) ∈ FALSE_WORD ⇒ b! = false
+	│ otherwise b! = condition(trim(value?))
+	└───────────────────────────────────────────────────
+
+=head2 has_status_function
+
+	┌─ HasStatusFunction ───────────────────────────────
+	│ condition? : optional seq CHAR
+	│ b!         : 𝔹
+	├───────────────────────────────────────────────────
+	│ b! ⇔ condition? ≠ ⊥ ∧ condition? contains f( for some f ∈ STATUS
+	└───────────────────────────────────────────────────
+
+=head2 write_container_file
+
+	┌─ WriteContainerFile ──────────────────────────────
+	│ ΔFileSystem
+	│ path?, contents? : seq CHAR
+	├───────────────────────────────────────────────────
+	│ files' = files ⊕ {path? ↦ contents?}
+	└───────────────────────────────────────────────────
+
+=head2 local_action_path
+
+	┌─ LocalActionPath ─────────────────────────────────
+	│ uses? : seq CHAR
+	│ rel!  : seq CHAR
+	├───────────────────────────────────────────────────
+	│ rel! = stripSlashes(stripDotSlash(uses?))
+	│ rel! ≠ ⟨⟩ ∧ ".." ∉ segments(rel!)
+	└───────────────────────────────────────────────────
+
+=head2 local_action_dir
+
+	┌─ LocalActionDir ──────────────────────────────────
+	│ projectDir?, uses? : seq CHAR
+	│ loc!               : LOCATION
+	├───────────────────────────────────────────────────
+	│ loc!.relative = localActionPath(uses?)
+	│ loc!.dir = projectDir? ⁀ "/" ⁀ loc!.relative
+	│ isDirectory(loc!.dir) ⇒ realpath(loc!.dir) ∈ subtree(realpath(projectDir?))
+	└───────────────────────────────────────────────────
+
+=head2 action_inputs
+
+	┌─ ActionInputs ────────────────────────────────────
+	│ declared : NAME ⇸ INPUT
+	│ with?    : NAME ⇸ VALUE
+	│ inputs!  : NAME ⇸ seq CHAR
+	├───────────────────────────────────────────────────
+	│ inputs! = {n : dom declared • n ↦ interpolate(default(n))} ⊕
+	│           {n : dom with? • n ↦ interpolate(with?(n))}
+	│ ∀ n : dom declared | required(n) • inputs!(n) ≠ ⟨⟩
+	└───────────────────────────────────────────────────
+
+=head2 redact
+
+	┌─ Redact ──────────────────────────────────────────
+	│ text? : optional seq CHAR
+	│ s!    : optional seq CHAR
+	├───────────────────────────────────────────────────
+	│ text? = ⊥ ⇒ s! = ⊥
+	│ docker can redact ⇒ s! = docker.redact(text?)
+	│ otherwise s! = text?
+	└───────────────────────────────────────────────────
+
+=head2 env_args
+
+	┌─ EnvArgs ─────────────────────────────────────────
+	│ env? : NAME ⇸ seq CHAR
+	│ a!   : seq seq CHAR
+	├───────────────────────────────────────────────────
+	│ a! = ⁀/ ⟨n : sorted(dom env?) • ⟨"-e", n ⁀ "=" ⁀ env?(n)⟩⟩
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The functions keep no state.  The one with a life cycle is
+L</write_container_file>, which takes a file in a runner folder through
+these states:
+
+	  write_container_file($path, $contents, $what)
+	        |
+	        v
+	+------------------+  a file this run wrote before, or a
+	| REMOVE OLD NAME  |  symbolic link: removed (unlink)
+	+------------------+  (in a shared sticky folder, another user's
+	        |              file cannot be removed and stays)
+	        v
+	+------------------+  O_CREAT | O_EXCL: fails if anything
+	| CREATE NEW FILE  |  is still at the name; never follows a link
+	| mode 0600        |----------------------------------------------+
+	+------------------+                                              |
+	        |                                                         |
+	        v                                                         |
+	+------------------+  print fails (disk full, ...)                |
+	| WRITE AND CLOSE  |--------------------------------------------->+
+	+------------------+                                              |
+	        |                                                         v
+	        v                                         +---------------------------+
+	+------------------+                              | throw runner.write_failed |
+	| WRITTEN          |                              | naming $what and the error|
+	+------------------+                              +---------------------------+
+
+	And local_action_dir($project, $uses):
+
+	  "./path" -> relative path -> exists? --no--> returned as it is
+	                                 | yes
+	                                 v
+	                 real path inside the project? --no--> throw
+	                                 | yes                 runner.local_action_escapes
+	                                 v
+	                           { relative, dir }
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

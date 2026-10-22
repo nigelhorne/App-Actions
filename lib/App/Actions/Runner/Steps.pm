@@ -97,7 +97,19 @@ App::Actions::Runner::Steps - run the steps of one job in its container
 	);
 	my $result = $steps->run;    # { result => 'success', env => {...} }
 
+Decide what the job did:
+
+	my $result = $steps->run;
+	if ($result->{result} eq 'failure') {
+		print "job failed\n";
+	}
+	print "TOKEN_SET\n" if exists $result->{env}{TOKEN};    # exported with GITHUB_ENV
+
 =head1 DESCRIPTION
+
+B<In short:> this module runs the steps of one job, one after another, in
+the job's container, and passes values between them as GitHub does.  It is
+a part of L<App::Actions::Runner>; you rarely use it on its own.
 
 Executes a job's steps with C<docker exec> in its long-lived container, so
 filesystem changes persist between steps while each step gets a fresh shell,
@@ -190,20 +202,6 @@ See the L</SYNOPSIS>.
 	| Invalid arguments to      | A collaborator is missing or | Pass the documented objects |
 	| ...Steps::new: REASON     | an option has the wrong type |                             |
 	+---------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Steps ───────────────────────────────────────────
-	│ ctx       : CONTEXT
-	│ jobEnv    : NAME ⇸ seq CHAR
-	│ pathAdds  : seq PATH
-	│ counter   : ℕ
-	│ posts     : seq POST
-	│ depth     : ℕ
-	│ failed    : 𝔹
-	├───────────────────────────────────────────────────
-	│ depth ≤ 10 ∧ ctx.env = jobEnv
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -306,17 +304,6 @@ writes and removes the step files.
 	| Shell 'bash' is not         | The image has no bash        | Use shell: sh, or an image  |
 	| available in the container  |                              | with bash                   |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Run ─────────────────────────────────────────────
-	│ ΔSteps
-	│ result! : {success, failure}
-	├───────────────────────────────────────────────────
-	│ result! = (if failed' then failure else success)
-	│ failed' ⇔ (∃ s : job.steps • outcome(s) = failure ∧ ¬ continueOnError(s))
-	│           ∨ (∃ p : posts • failed(p))
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -1229,13 +1216,144 @@ the next step's: each step starts where its C<working-directory> says.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Each step starts a new shell.>  A C<cd> or an C<export> in one
+step does not reach the next.  Use C<working-directory:>, or write
+C<NAME=value> to C<$GITHUB_ENV>.
+
+=item * B<C<bash> must be in the image for C<shell: bash>.>  A plain Alpine
+image has only C<sh>; the step then fails with C<Shell 'bash' is not
+available>.
+
+=item * B<JavaScript actions need C<node> in the image.>
+
+=item * B<A failed step stops the job's later steps>, except those with
+C<if: failure()> or C<if: always()>, and except when the step has
+C<continue-on-error: true>.
+
+=item * B<Some well-known actions do nothing here.>  C<actions/checkout>
+(your project is already mounted), setup-perl (the image already has Perl),
+cache, artifact and Codecov actions are skipped as successes.
+
+=item * B<Secrets are in the step files.>  The script of each step is
+written to the runner folder; it is private to you unless the job runs as
+another user (see L<App::Actions::Runner/LIMITATIONS>).
+
+=back
+
+=head1 ENCODING
+
+Step commands, environment values, inputs and outputs are Perl character
+strings; they may contain any Unicode text, including non-ASCII characters
+and emoji.  Step scripts and the C<GITHUB_*> files are written as UTF-8,
+with LF line endings, and the files a step writes back (C<GITHUB_ENV>,
+C<GITHUB_OUTPUT>, ...) are read as UTF-8.  What a step prints goes to your
+terminal as bytes, unchanged.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ Steps ───────────────────────────────────────────
+	│ ctx       : CONTEXT
+	│ jobEnv    : NAME ⇸ seq CHAR
+	│ pathAdds  : seq PATH
+	│ counter   : ℕ
+	│ posts     : seq POST
+	│ depth     : ℕ
+	│ failed    : 𝔹
+	├───────────────────────────────────────────────────
+	│ depth ≤ 10 ∧ ctx.env = jobEnv
+	└───────────────────────────────────────────────────
+
+=head2 run
+
+	┌─ Run ─────────────────────────────────────────────
+	│ ΔSteps
+	│ result! : {success, failure}
+	├───────────────────────────────────────────────────
+	│ result! = (if failed' then failure else success)
+	│ failed' ⇔ (∃ s : job.steps • outcome(s) = failure ∧ ¬ continueOnError(s))
+	│           ∨ (∃ p : posts • failed(p))
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+One call to L</run> takes each step through these states:
+
+	  run()
+	    |
+	    v
+	+---------------------+
+	| NEXT STEP           |<-------------------------------------------+
+	+---------------------+                                            |
+	    |  none left -> RUN POSTS                                      |
+	    v                                                              |
+	+---------------------+  if: is false (by default: the job has     |
+	| EVALUATE if:        |  not failed) -> SKIPPED ------------------>+
+	+---------------------+                                            |
+	    |  true                                                        |
+	    v                                                              |
+	+---------------------+  fresh GITHUB_ENV, GITHUB_OUTPUT,          |
+	| PREPARE STEP FILES  |  GITHUB_PATH, GITHUB_STATE,                |
+	| (O_EXCL, mode 0600) |  GITHUB_STEP_SUMMARY files                 |
+	+---------------------+                                            |
+	    |                                                              |
+	    v                                                              |
+	  what kind of step?                                               |
+	    +-- run: ------------> script written; docker exec SHELL script |
+	    +-- docker://IMAGE --> Containers->run_action (own container)   |
+	    +-- ./local composite-> its steps, through this same machine    |
+	    +-- ./local javascript-> pre now; main now; post queued         |
+	    +-- known no-op -----> success without running anything         |
+	    +-- other remote ----> skipped (strict_actions: failure)        |
+	    |                                                              |
+	    v                                                              |
+	+---------------------+  exported env -> later steps;              |
+	| READ BACK FILES     |  PATH additions; outputs ->                |
+	+---------------------+  steps.ID.outputs; summary kept            |
+	    |                                                              |
+	    v                                                              |
+	  status 0? --yes--> SUCCESS ------------------------------------->+
+	    | no                                                           |
+	    v                                                              |
+	  continue-on-error? --yes--> warned; job still succeeding ------->+
+	    | no                                                           |
+	    v                                                              |
+	  JOB FAILING: later steps run only if their if: says so --------->+
+
+	+---------------------+  queued JavaScript post steps,
+	| RUN POSTS           |  last queued first
+	+---------------------+
+	    |
+	    v
+	  return { result => 'success' | 'failure', env => job env }
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

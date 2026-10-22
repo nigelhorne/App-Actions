@@ -3,12 +3,12 @@ use warnings;
 use ExtUtils::MakeMaker;
 
 my $dist = {
-    COMPRESS => 'gzip -9f',
-    SUFFIX   => 'gz',
+	COMPRESS => 'gzip -9f',
+	SUFFIX   => 'gz',
 };
 
 if ($^O eq 'darwin') {
-    $dist->{'TAR'} = 'gtar';
+	$dist->{'TAR'} = 'gtar';
 }
 
 WriteMakefile(
@@ -33,6 +33,7 @@ WriteMakefile(
         'IO::Handle'       => 0,
         'IPC::System::Simple' => 0,
         'JSON::PP'         => 0,
+	'Object::Configure' => 0,
         'Params::Get'      => 0.17,
         'Params::Validate::Strict' => 0.33,
         'Pod::Usage'       => 0,

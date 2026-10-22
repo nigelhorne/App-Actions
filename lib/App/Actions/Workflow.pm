@@ -52,22 +52,63 @@ App::Actions::Workflow - parse and expand a GitHub Actions workflow
 
 =head1 SYNOPSIS
 
+List every job a workflow will run, after the matrix is expanded:
+
 	use App::Actions::Workflow;
 
 	my $workflow = App::Actions::Workflow->load('.github/workflows/perl-ci.yml');
 	for my $job (@{ $workflow->expand_jobs }) {
-		print $job->{display_name}, "\n";
+		print $job->{display_name}, "\n";    # test (perl=5.38), test (perl=5.40), ...
 	}
+
+Find one job and see which image it would run in:
+
+	my $job = $workflow->job_by_id('test');
+	my ($first) = grep { $_->{base_id} eq 'test' } @{ $workflow->expand_jobs };
+	my $runs_on = App::Actions::Workflow->runs_on_text($first->{'runs-on'});
+	my $image = App::Actions::Workflow->container_image($first, $runs_on, 'ubuntu:latest');
+
+Skip jobs that need macOS or Windows:
+
+	for my $job (@{ $workflow->expand_jobs }) {
+		my $runs_on = App::Actions::Workflow->runs_on_text($job->{'runs-on'});
+		next unless App::Actions::Workflow->is_linux_runner($runs_on);
+		...
+	}
+
+Turn a Perl version into an image name:
+
+	App::Actions::Workflow->perl_image_for_version('v5.40');    # perl:5.40
 
 =head1 DESCRIPTION
 
-This module reads a GitHub Actions workflow file and turns it into a set of
-concrete jobs.  Matrix expansion, C<include>/C<exclude> handling, job display
-names, and the choice of a container image are handled here.
+A GitHub Actions I<workflow> is a YAML file, usually in
+F<.github/workflows/>.  It lists I<jobs>; each job has I<steps>.  A job can
+have a I<matrix>: a list of values (for example several Perl versions), and
+GitHub runs one copy of the job for each combination of values.
 
-Every error is a message from L<App::Actions::I18N>, so it is written in the
-language C<ACTION_RUN_LANG> chooses (English by default), and it is reported
-from the line that asked for the workflow rather than from this module.
+This module:
+
+=over 4
+
+=item * reads a workflow file and checks its shape (L</load>);
+
+=item * expands each job's matrix into concrete jobs, applying C<include>
+and C<exclude> as GitHub does, and gives each one a display name such as
+C<test (perl=5.40)> (L</expand_jobs>);
+
+=item * decides which Docker image each job runs in: the job's own
+C<container>, else a Perl image for a setup-perl step, else an Ubuntu image
+that matches C<runs-on> (L</container_image>).
+
+=back
+
+It does not run anything.  L<App::Actions::Runner> does that.
+
+Every error is an L<App::Actions::Error> with a stable code (such as
+C<workflow.no_jobs>) and a message in the language C<ACTION_RUN_LANG>
+chooses (English by default).  The error points at the line of I<your> code
+that called this module.
 
 =head1 METHODS
 
@@ -134,22 +175,6 @@ Reads the file.
 
 The step messages of L<App::Actions::Util/normalize_step> apply to every
 step.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Load ────────────────────────────────────────────
-	│ file? : PATH
-	│ wf!   : Workflow
-	├───────────────────────────────────────────────────
-	│ let doc == LoadYamlMapping(file?, workflow)
-	│ doc.jobs ∉ MAPPING ⇒ raises NoJobs(file?)
-	│ ∀ id : dom doc.jobs •
-	│     doc.jobs(id) ∈ MAPPING ∧ doc.jobs(id).steps ∈ seq VALUE
-	│ wf!.file = file?
-	│ wf!.name = (doc.name ≠ ⊥ ⇒ doc.name) ∧ (doc.name = ⊥ ⇒ basename(file?))
-	│ #wf!.jobs = #(dom doc.jobs)
-	│ ∀ j : ran wf!.jobs • j.needs ∈ seq STRING
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -218,16 +243,6 @@ None.
 
 	print $_->{id}, "\n" for @{ $workflow->jobs };
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Accessor ────────────────────────────────────────
-	│ ΞWorkflow
-	│ field? : {file, name, env, defaults, jobs, raw}
-	│ value! : VALUE
-	├───────────────────────────────────────────────────
-	│ value! = θWorkflow.field?
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub file     { return $_[0]->{file} }
@@ -280,17 +295,6 @@ None.
 	| Invalid arguments to ... | The id is missing or a        | Pass the job's key             |
 	|                          | reference                     |                                |
 	+--------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ JobById ─────────────────────────────────────────
-	│ ΞWorkflow
-	│ id?  : STRING
-	│ job! : optional Job
-	├───────────────────────────────────────────────────
-	│ (∃ j : ran jobs • j.id = id?) ⇒ job! = first {j : ran jobs | j.id = id?}
-	│ (∄ j : ran jobs • j.id = id?) ⇒ job! = ⊥
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -358,30 +362,6 @@ None.
 	| Each matrix include entry must | An include item is not a      | Write each as KEY: VALUE       |
 	| be a mapping                   | mapping                       |                                |
 	+--------------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	COMBINATION == KEY ⇸ VALUE
-
-	┌─ ExpandJobs ──────────────────────────────────────
-	│ ΞWorkflow
-	│ out! : seq Instance
-	├───────────────────────────────────────────────────
-	│ out! = ⁀/ ⟨ j : jobs • ⟨ i : 1 .. #C(j) • instance(j, C(j)(i), i-1, #C(j)) ⟩ ⟩
-	│   where C(j) = ExpandMatrix(j.strategy.matrix)
-	│ ∀ o : ran out! • 0 ≤ o.matrix_index < o.matrix_total
-	└───────────────────────────────────────────────────
-
-	┌─ ExpandMatrix ────────────────────────────────────
-	│ m?  : optional (KEY ⇸ VALUE)
-	│ cs! : seq COMBINATION
-	├───────────────────────────────────────────────────
-	│ m? = ⊥ ⇒ cs! = ⟨∅⟩
-	│ let K == dom m? \ {include, exclude}
-	│ K = ∅ ⇒ cs! = m?.include (or ⟨∅⟩ when that is empty)
-	│ K ≠ ∅ ⇒ cs! = (product(K) ▷ ¬excluded) ⊕ includes
-	│ ∀ k : K • #m?(k) ≥ 1
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -471,19 +451,6 @@ None.
 	| a list                         | a runner group)               | labels                         |
 	+--------------------------------+-------------------------------+--------------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ RunsOnText ──────────────────────────────────────
-	│ runsOn? : optional (STRING ∪ seq STRING)
-	│ matrix? : optional COMBINATION
-	│ text!   : STRING
-	├───────────────────────────────────────────────────
-	│ runsOn? ∈ MAPPING ⇒ raises RunsOnInvalid
-	│ runsOn? = ⊥ ⇒ text! = ⟨⟩
-	│ runsOn? ∈ STRING ⇒ text! = interpolate(runsOn?, matrix?)
-	│ runsOn? ∈ seq STRING ⇒ text! = interpolate(join(" ", runsOn?), matrix?)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub runs_on_text {
@@ -549,15 +516,6 @@ None.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ IsLinuxRunner ───────────────────────────────────
-	│ runsOn? : optional STRING
-	│ linux!  : {0, 1}
-	├───────────────────────────────────────────────────
-	│ linux! = 0 ⇔ (∃ w : {windows, macos, darwin} • w is a word of lower(runsOn?))
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub is_linux_runner {
@@ -616,18 +574,6 @@ None.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ DefaultImageForRunner ───────────────────────────
-	│ runsOn?   : optional STRING
-	│ fallback? : optional STRING
-	│ image!    : optional STRING
-	├───────────────────────────────────────────────────
-	│ "ubuntu-" ⁀ v ⊆ runsOn? ∧ v ∈ VERSION ⇒ image! = "ubuntu:" ⁀ v
-	│ "ubuntu-latest" ⊆ runsOn? ⇒ image! = "ubuntu:latest"
-	│ otherwise image! = fallback?
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -697,20 +643,6 @@ None.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ PerlImageForVersion ─────────────────────────────
-	│ version?  : optional STRING
-	│ template? : optional STRING
-	│ image!    : STRING
-	├───────────────────────────────────────────────────
-	│ let t == (template? ∈ {⊥, ⟨⟩} ⇒ "perl:%s") ∧ (otherwise ⇒ template?)
-	│ let v == (version? ∈ {⊥, ⟨⟩, dev, latest} ⇒ "latest")
-	│          ∧ (otherwise ⇒ version? without a leading v)
-	│ "%s" ⊆ t ⇒ image! = t with every "%s" replaced by v
-	│ "%s" ⊈ t ⇒ image! = t ⁀ ":" ⁀ v
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -792,21 +724,6 @@ None.
 	| Invalid arguments to ... | The job is not a hash         | Pass an expanded job           |
 	|                          | reference                     |                                |
 	+--------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ContainerImage ──────────────────────────────────
-	│ job?      : Instance
-	│ runsOn?   : optional STRING
-	│ fallback? : optional STRING
-	│ image!    : optional STRING
-	├───────────────────────────────────────────────────
-	│ job?.container.image ≠ ⊥
-	│     ⇒ image! = interpolateKnown(job?.container.image, job?.matrix)
-	│ job?.container.image = ⊥ ∧ job?.setup_perl_version ∉ {⊥, ⟨⟩}
-	│     ⇒ image! = PerlImageForVersion(job?.setup_perl_version, template?)
-	│ otherwise image! = DefaultImageForRunner(runsOn?, fallback?)
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -1135,13 +1052,252 @@ them without copying, so a caller can change the workflow it was given.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<C<jobs> and C<expand_jobs> are different.>  L</jobs> has one entry
+per job in the file.  L</expand_jobs> has one entry per matrix combination.
+
+=item * B<Do not change what the accessors return.>  They return the
+object's own data, so a change affects later calls.  Copy first.
+
+=item * B<Display names are not GitHub's.>  This module writes C<test
+(perl=5.40)>; GitHub shows C<test (5.40)>.  Match jobs by C<base_id>, not by
+display name.
+
+=item * B<Booleans in a matrix need Perl 5.36.>  On older Perls, a matrix
+value of C<true> becomes C<1>.
+
+=item * B<A matrix from an expression is not expanded.>  C<${{
+fromJSON(...) }}> is kept as one literal value, because the value it needs
+does not exist before the run.
+
+=item * B<C<runs-on> must be text or a list.>  A runner group (a mapping
+with C<group> and C<labels>) is refused with C<workflow.runs_on_invalid>.
+
+=item * B<A non-Ubuntu runner gets the fallback image.>  C<macos-latest> or
+C<windows-latest> are not emulated; L</is_linux_runner> tells you which jobs
+to skip.
+
+=item * B<C<container.image> may still hold expressions.>
+L</container_image> resolves C<matrix.*> only.  C<github.*> and C<env.*>
+are left for the caller.
+
+=back
+
+=head1 ENCODING
+
+The workflow file is read as UTF-8 (see L<App::Actions::Util/ENCODING>).
+Names, step commands and matrix values may contain any Unicode text,
+including non-ASCII characters and emoji, and are returned as Perl
+character strings.  Job ids should be ASCII letters, digits, C<-> and C<_>,
+as GitHub requires.  Image names are ASCII, as Docker requires.  The file
+name you pass is used as bytes.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 load
+
+	┌─ Load ────────────────────────────────────────────
+	│ file? : PATH
+	│ wf!   : Workflow
+	├───────────────────────────────────────────────────
+	│ let doc == LoadYamlMapping(file?, workflow)
+	│ doc.jobs ∉ MAPPING ⇒ raises NoJobs(file?)
+	│ ∀ id : dom doc.jobs •
+	│     doc.jobs(id) ∈ MAPPING ∧ doc.jobs(id).steps ∈ seq VALUE
+	│ wf!.file = file?
+	│ wf!.name = (doc.name ≠ ⊥ ⇒ doc.name) ∧ (doc.name = ⊥ ⇒ basename(file?))
+	│ #wf!.jobs = #(dom doc.jobs)
+	│ ∀ j : ran wf!.jobs • j.needs ∈ seq STRING
+	└───────────────────────────────────────────────────
+
+=head2 file, name, env, defaults, jobs, raw
+
+	┌─ Accessor ────────────────────────────────────────
+	│ ΞWorkflow
+	│ field? : {file, name, env, defaults, jobs, raw}
+	│ value! : VALUE
+	├───────────────────────────────────────────────────
+	│ value! = θWorkflow.field?
+	└───────────────────────────────────────────────────
+
+=head2 job_by_id
+
+	┌─ JobById ─────────────────────────────────────────
+	│ ΞWorkflow
+	│ id?  : STRING
+	│ job! : optional Job
+	├───────────────────────────────────────────────────
+	│ (∃ j : ran jobs • j.id = id?) ⇒ job! = first {j : ran jobs | j.id = id?}
+	│ (∄ j : ran jobs • j.id = id?) ⇒ job! = ⊥
+	└───────────────────────────────────────────────────
+
+=head2 expand_jobs
+
+	COMBINATION == KEY ⇸ VALUE
+
+	┌─ ExpandJobs ──────────────────────────────────────
+	│ ΞWorkflow
+	│ out! : seq Instance
+	├───────────────────────────────────────────────────
+	│ out! = ⁀/ ⟨ j : jobs • ⟨ i : 1 .. #C(j) • instance(j, C(j)(i), i-1, #C(j)) ⟩ ⟩
+	│   where C(j) = ExpandMatrix(j.strategy.matrix)
+	│ ∀ o : ran out! • 0 ≤ o.matrix_index < o.matrix_total
+	└───────────────────────────────────────────────────
+
+	┌─ ExpandMatrix ────────────────────────────────────
+	│ m?  : optional (KEY ⇸ VALUE)
+	│ cs! : seq COMBINATION
+	├───────────────────────────────────────────────────
+	│ m? = ⊥ ⇒ cs! = ⟨∅⟩
+	│ let K == dom m? \ {include, exclude}
+	│ K = ∅ ⇒ cs! = m?.include (or ⟨∅⟩ when that is empty)
+	│ K ≠ ∅ ⇒ cs! = (product(K) ▷ ¬excluded) ⊕ includes
+	│ ∀ k : K • #m?(k) ≥ 1
+	└───────────────────────────────────────────────────
+
+=head2 runs_on_text
+
+	┌─ RunsOnText ──────────────────────────────────────
+	│ runsOn? : optional (STRING ∪ seq STRING)
+	│ matrix? : optional COMBINATION
+	│ text!   : STRING
+	├───────────────────────────────────────────────────
+	│ runsOn? ∈ MAPPING ⇒ raises RunsOnInvalid
+	│ runsOn? = ⊥ ⇒ text! = ⟨⟩
+	│ runsOn? ∈ STRING ⇒ text! = interpolate(runsOn?, matrix?)
+	│ runsOn? ∈ seq STRING ⇒ text! = interpolate(join(" ", runsOn?), matrix?)
+	└───────────────────────────────────────────────────
+
+=head2 is_linux_runner
+
+	┌─ IsLinuxRunner ───────────────────────────────────
+	│ runsOn? : optional STRING
+	│ linux!  : {0, 1}
+	├───────────────────────────────────────────────────
+	│ linux! = 0 ⇔ (∃ w : {windows, macos, darwin} • w is a word of lower(runsOn?))
+	└───────────────────────────────────────────────────
+
+=head2 default_image_for_runner
+
+	┌─ DefaultImageForRunner ───────────────────────────
+	│ runsOn?   : optional STRING
+	│ fallback? : optional STRING
+	│ image!    : optional STRING
+	├───────────────────────────────────────────────────
+	│ "ubuntu-" ⁀ v ⊆ runsOn? ∧ v ∈ VERSION ⇒ image! = "ubuntu:" ⁀ v
+	│ "ubuntu-latest" ⊆ runsOn? ⇒ image! = "ubuntu:latest"
+	│ otherwise image! = fallback?
+	└───────────────────────────────────────────────────
+
+=head2 perl_image_for_version
+
+	┌─ PerlImageForVersion ─────────────────────────────
+	│ version?  : optional STRING
+	│ template? : optional STRING
+	│ image!    : STRING
+	├───────────────────────────────────────────────────
+	│ let t == (template? ∈ {⊥, ⟨⟩} ⇒ "perl:%s") ∧ (otherwise ⇒ template?)
+	│ let v == (version? ∈ {⊥, ⟨⟩, dev, latest} ⇒ "latest")
+	│          ∧ (otherwise ⇒ version? without a leading v)
+	│ "%s" ⊆ t ⇒ image! = t with every "%s" replaced by v
+	│ "%s" ⊈ t ⇒ image! = t ⁀ ":" ⁀ v
+	└───────────────────────────────────────────────────
+
+=head2 container_image
+
+	┌─ ContainerImage ──────────────────────────────────
+	│ job?      : Instance
+	│ runsOn?   : optional STRING
+	│ fallback? : optional STRING
+	│ image!    : optional STRING
+	├───────────────────────────────────────────────────
+	│ job?.container.image ≠ ⊥
+	│     ⇒ image! = interpolateKnown(job?.container.image, job?.matrix)
+	│ job?.container.image = ⊥ ∧ job?.setup_perl_version ∉ {⊥, ⟨⟩}
+	│     ⇒ image! = PerlImageForVersion(job?.setup_perl_version, template?)
+	│ otherwise image! = DefaultImageForRunner(runsOn?, fallback?)
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+A workflow object never changes after L</load>.  This is the path from a
+file to the jobs the runner starts:
+
+	 load($file)
+	      |
+	      v
+	+---------------------+  file / YAML / mapping checks
+	| READ FILE           |  -> workflow.file_required, file_missing,
+	+---------------------+     parse_failed, empty, not_mapping
+	      |
+	      v
+	+---------------------+  jobs not a mapping -> workflow.no_jobs
+	| CHECK EACH JOB      |  job not a mapping  -> workflow.job_not_mapping
+	| (in file order)     |  no steps list      -> workflow.job_no_steps
+	|                     |  bad container / services / runs-on / env /
+	|                     |  defaults / strategy -> workflow.* codes
+	|                     |  each step: App::Actions::Util::normalize_step
+	+---------------------+
+	      |
+	      v
+	+---------------------+
+	| LOADED (immutable)  |  file, name, env, defaults, jobs, raw,
+	+---------------------+  job_by_id
+	      |
+	      | expand_jobs
+	      v
+	+---------------------+  matrix not a mapping   -> workflow.matrix_not_mapping
+	| EXPAND MATRIX       |  matrix with no values  -> workflow.matrix_empty
+	| cross product,      |  bad include / exclude  -> workflow.include_invalid,
+	| - exclude,          |                            workflow.exclude_invalid
+	| + include           |
+	+---------------------+
+	      |
+	      v
+	+---------------------+  each has base_id, matrix, matrix_index,
+	| JOB INSTANCES       |  matrix_total, display_name,
+	+---------------------+  setup_perl_version
+	      |
+	      | runs_on_text, is_linux_runner
+	      v
+	  Linux runner? --no--> the runner skips the job
+	      | yes
+	      v
+	  container_image:
+	    container.image? --yes--> that image, matrix.* filled in
+	          | no
+	    setup-perl step? --yes--> perl_image_for_version(version)
+	          | no
+	    default_image_for_runner(runs-on, fallback)
+	          |
+	          v
+	    image for the runner (App::Actions::Runner)
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

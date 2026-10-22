@@ -697,163 +697,695 @@ sub document {
 
 __END__
 
+=encoding utf-8
+
 =head1 NAME
 
-App::Actions::Cache - the record of images that action-run keeps between runs
+App::Actions::Cache - remember which Docker images action-run downloaded, and remove them
 
 =head1 SYNOPSIS
+
+Record that a run used some images:
 
     use App::Actions::Cache;
 
     my $cache = App::Actions::Cache->new;
-    $cache->remember('alpine:3.20');
+    $cache->remember('alpine:3.20', 'perl:5.40');
 
+List them with their sizes (this is C<action-run cache>):
+
+    use App::Actions::Docker;
+
+    my $docker = App::Actions::Docker->new;
     print $cache->report(docker => $docker);
+
+Remove the images not used for 30 days (C<action-run cache --prune --older-than 30d>):
+
+    my $seconds = App::Actions::Cache::parse_duration('30d');
+    my ($text, $status, $pruned) = $cache->prune(docker => $docker, older_than => $seconds);
+    print $text;
+
+Get the listing as data (C<action-run cache --json>):
+
     my $document = $cache->document(docker => $docker, reachable => 1);
-    my ($report, $exit, $pruned) = $cache->prune(docker => $docker);
+
+Format sizes and times for people:
+
+    print App::Actions::Cache::format_size(1536);       # 1.5 KB
+    print App::Actions::Cache::format_age(3 * 3600);    # 3 hours ago
 
 =head1 DESCRIPTION
 
-A run keeps the images it pulls, because they are the next run's cache.  This
-module is the record of which images those are: it is a small JSON file that
-names each image, when a run last pulled it and how many runs have, so
-C<action-run cache> can list them and C<action-run cache --prune> can remove
-them.  Sizes are asked of Docker each time rather than stored, because an
-image can be removed or replaced outside the tool.
+When C<action-run> runs a workflow, it downloads (pulls) Docker images and
+keeps them, so the next run is faster.  Images can be large, so this module
+keeps a record of which images action-run pulled.  Then C<action-run cache>
+can list them and C<action-run cache --prune> can remove them.  Images you
+pulled yourself are not in the record, so they are never removed.
 
-The file is C<$XDG_CACHE_HOME/action-run/cache.json>, or
-C<~/.cache/action-run/cache.json> when C<XDG_CACHE_HOME> is not set, and
-C<%LOCALAPPDATA%\action-run\cache.json> on Windows.  C<ACTION_RUN_CACHE_FILE>
-overrides it.  A file that cannot be read is treated as empty: the images are
+The record is a small JSON file.  For each image, it holds how many runs
+used it and when it was last used.  It does not hold sizes: those are asked
+from Docker each time, because an image can be removed or replaced outside
+action-run.
+
+The file is:
+
+=over 4
+
+=item * C<ACTION_RUN_CACHE_FILE>, if that environment variable is set and
+not empty;
+
+=item * otherwise F<action-run/cache.json> inside your cache directory (see
+L</base_directory>).
+
+=back
+
+A missing or broken file counts as empty.  That is safe: the images are
 still on the disk, and the next run records them again.
 
-C<action-run cache --json> prints the same listing as a versioned JSON
-document, which is described under L</JSON OUTPUT> and held to the schema
-L</json_schema> returns.
+The file is replaced in one step (written to a new temporary file, then
+renamed), so a crash never leaves a half-written record.  The new file can
+be read only by you.
 
 =head1 METHODS
 
+=head2 base_directory
+
+    my $directory = App::Actions::Cache::base_directory();
+
+Returns your personal cache directory, where action-run keeps its files.
+
+=head3 ARGUMENTS
+
+None.
+
+=head3 RETURNS
+
+On Windows: C<%LOCALAPPDATA%>, or C<%USERPROFILE%\AppData\Local>.
+Elsewhere: C<$XDG_CACHE_HOME>, or F<$HOME/.cache>.  If none of these is
+set: F<./.cache>.
+
+=head3 SIDE EFFECTS
+
+Reads environment variables.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 default_path
+
+    my $file = App::Actions::Cache::default_path();
+
+Returns the record file described above.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
 =head2 new
 
-    my $cache = App::Actions::Cache->new(%options);
+    my $cache = App::Actions::Cache->new(file => $path);
 
-C<file> names the record; the default is the path described above.
+Makes an object for one record file.  The file is not read yet.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<file> - optional.  Default L</default_path>.
+
+=back
+
+=head3 RETURNS
+
+The new object.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { file => { type => 'string', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'object', isa => 'App::Actions::Cache' }
+
+=head3 MESSAGES
+
+None.
+
+=head2 file
+
+    my $path = $cache->file;
+
+Returns the record file this object uses.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 load
+
+    my $data = $cache->load;
+
+Reads the record file, once.  Later calls return the same data without
+reading the file again.
+
+=head3 RETURNS
+
+A hash reference: C<{ version =E<gt> 1, images =E<gt> { NAME =E<gt> { pulls,
+last_used } } }>.  A missing or broken file gives no images.
+
+=head3 SIDE EFFECTS
+
+Reads the file the first time.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+None.  A file that cannot be read or parsed is treated as empty.
+
+=head2 save
+
+    $cache->save;
+
+Writes the record file.  If there are no images, the file is deleted
+instead.  You rarely need this: L</remember> and L</forget> call it.
+
+=head3 RETURNS
+
+1.
+
+=head3 SIDE EFFECTS
+
+Creates the folder if needed.  Writes a new temporary file (mode 0600) next
+to the record and renames it over the record.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'integer', memberof => [ 1 ] }
+
+=head3 MESSAGES
+
+    +-------------------------------------------+---------------------------+----------------------------+
+    | Exception (croak)                         | Meaning                   | What to do                 |
+    +-------------------------------------------+---------------------------+----------------------------+
+    | cannot write a new cache file in 'DIR':   | the folder is not         | fix its permissions, or    |
+    | ERR                                       | writable                  | set ACTION_RUN_CACHE_FILE  |
+    | cannot write 'TEMP': ERR                  | disk full, or I/O error   | free some space            |
+    | cannot replace 'FILE': ERR                | rename failed             | check FILE is not a folder |
+    +-------------------------------------------+---------------------------+----------------------------+
 
 =head2 remember
 
     my $count = $cache->remember(@images);
 
-Record that a run pulled and kept each image, incrementing its use count and
-setting the time it was last used.
+Records that a run used these images: adds 1 to each one's count and sets
+its last use to now.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<@images> - image names.  C<undef> and empty names are skipped.
+
+=back
+
+=head3 RETURNS
+
+How many images were recorded.
+
+=head3 SIDE EFFECTS
+
+Saves the record file if the count is above 0.
+
+=head3 EXAMPLE
+
+    $cache->remember($_) for @pulled;
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { images => { type => 'array', element_type => 'string' } }
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 0 }
+
+=head3 MESSAGES
+
+As for L</save>.
 
 =head2 entries
 
     my $entries = $cache->entries;
 
-Returns an array of C<{ image, pulls, last_used }>, sorted by image name.
+Lists the recorded images.
 
-=head2 parse_duration
+=head3 RETURNS
 
-    my $seconds = App::Actions::Cache::parse_duration('30d');
+An array reference of hash references, sorted by image name, each with
+C<image>, C<pulls> and C<last_used> (seconds since 1970, or C<undef> if not
+known).
 
-Turn a duration such as C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo> or C<1y>
-into seconds.  The unit may be spelled out (C<2 days>).  Months and years are
-the 30- and 365-day spans the age column uses, so a threshold and the ages it
-filters cannot disagree about what C<2 months> means.  An unknown unit, a
-negative number or a number without a unit returns C<undef> instead of a
-quietly wrong threshold.
+=head3 SIDE EFFECTS
 
-=head2 format_span
+Reads the record file the first time.
 
-    my $words = App::Actions::Cache::format_span(2 * 24 * 60 * 60);
+=head3 API SPECIFICATION
 
-How many seconds read when they name a threshold rather than an age: C<2
-days>, C<1 hour>, C<1 year>.  The largest whole unit is used, without the
-C<ago> an age adds, so a filter can say what it selected.
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'arrayref' }
+
+=head3 MESSAGES
+
+None.
 
 =head2 forget
 
     my $count = $cache->forget(@images);
 
-Drop images from the record without contacting Docker.  The record file is
-removed when the last image goes.
+Removes images from the record only.  The images stay in Docker.
+
+=head3 RETURNS
+
+How many of the names were in the record.
+
+=head3 SIDE EFFECTS
+
+Saves the record file (or deletes it, if it is now empty) when the count is
+above 0.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { images => { type => 'array', element_type => 'string' } }
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 0 }
+
+=head3 MESSAGES
+
+As for L</save>.
 
 =head2 report
 
-    print $cache->report(docker => $docker);
+    print $cache->report(%options);
 
-The listing C<action-run cache> prints.  Pass C<docker> to have the sizes and
-missing images reported; without it the names are listed with their sizes
-unknown, which is what happens when the daemon is not running.  Each row
-shows the time an image was last used and its age in words, using the same
-C<generated_at> minus C<last_used> rule as the JSON document; an image with no
-recorded use has an unknown age.  C<older_than> (seconds) restricts the
-listing and its totals to images at least that old; an image with no recorded
-use is left out, because its age cannot be shown to reach the threshold.
-C<now> (epoch seconds) can be passed for a fixed clock in a test.
+Makes the text C<action-run cache> prints: one row per image with its size,
+when it was last used and how long ago, then a total.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<docker> - optional.  An L<App::Actions::Docker>, to ask for the
+sizes.  Without it (for example when Docker is not running), sizes are
+C<unknown>.
+
+=item * C<older_than> - optional.  Seconds.  List only images last used at
+least this long ago.  An image with no recorded last use is left out.
+
+=item * C<now> - optional.  The current time, for tests.
+
+=back
+
+=head3 RETURNS
+
+The text, ending with a newline.
+
+=head3 SIDE EFFECTS
+
+Asks Docker for each image's size, if C<docker> is given.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        docker     => { type => 'object', isa => 'App::Actions::Docker', optional => 1 },
+        older_than => { type => 'integer', min => 0, optional => 1 },
+        now        => { type => 'integer', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+A size of C<missing> means the record names an image that Docker no longer
+has.  The text then says how many are missing.
 
 =head2 prune
 
-    my ($report, $exit, $pruned) = $cache->prune(
-        docker     => $docker,
-        older_than => 2 * 24 * 60 * 60,  # optional
-        now        => time,               # optional, for a fixed clock
-    );
+    my ($text, $status, $pruned) = $cache->prune(docker => $docker, %options);
 
-Remove the selected images and forget them; without C<older_than> that is
-every recorded image.  With C<older_than> only images at least that old are
-considered, so newer images stay in the record, and an image with no recorded
-last use is left alone.  An image that has already gone is forgotten, one
-that cannot be removed stays in the record, and C<$exit> is 1 when any removal
-failed.  C<$pruned> is the C<prune> object of the JSON document, with the
-counts the report says in words.
+Removes the selected images from Docker and from the record.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<docker> - required.  An L<App::Actions::Docker>.
+
+=item * C<older_than> - optional.  Seconds.  Remove only images last used at
+least this long ago.  Without it, every recorded image is removed.
+
+=item * C<now> - optional.  The current time, for tests.
+
+=back
+
+=head3 RETURNS
+
+A list of three values: the text to print; the exit status (0, or 1 if an
+image could not be removed); and a hash reference for the JSON document with
+C<removed>, C<freed> (bytes), C<forgotten> (images Docker no longer had) and
+C<failed> (names).
+
+=head3 SIDE EFFECTS
+
+Runs C<docker image rm -f> for each selected image that Docker still has.
+Removes those images and the ones Docker no longer has from the record.  An
+image that could not be removed stays in the record.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        docker     => { type => 'object', isa => 'App::Actions::Docker' },
+        older_than => { type => 'integer', min => 0, optional => 1 },
+        now        => { type => 'integer', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'array', min => 3, max => 3 }    # (string, 0 or 1, hashref)
+
+=head3 MESSAGES
+
+    +--------------------------------------------+--------------------------------+---------------------------+
+    | Message                                    | Meaning                        | What to do                |
+    +--------------------------------------------+--------------------------------+---------------------------+
+    | pruning the image cache needs a Docker     | no "docker" argument (croak)   | pass one                  |
+    | command                                    |                                |                           |
+    | Removed N images, SIZE freed.              | success                        |                           |
+    | Forgot N images no longer on the daemon.   | they were already gone         |                           |
+    | Could not remove N images:                 | an image is in use by a        | remove the container, and |
+    |   IMAGE                                    | container, for example;        | prune again               |
+    |                                            | status 1                       |                           |
+    +--------------------------------------------+--------------------------------+---------------------------+
+
+And the messages of L</save>.
 
 =head2 document
 
-    my $document = $cache->document(
-        docker     => $docker,      # undef when it could not be reached
-        docker_bin => $docker->bin, # the command named in the document
-        reachable  => 1,
-        older_than => 2 * 24 * 60 * 60,  # optional, seconds
-        prune      => $pruned,      # optional, from prune()
-        now        => time,         # optional, for a fixed clock
-    );
+    my $document = $cache->document(%options);
 
-Returns the document C<action-run cache --json> prints, described under
-L</JSON OUTPUT>.  C<older_than> restricts C<images> and C<totals> to the
-images the listing selected.  The daemon is asked for each image's size only when
-C<reachable> is true; otherwise the sizes, the presence of each image and the
-counts that depend on them are C<undef>, which is written as C<null>.  C<now>
-(epoch seconds) can be passed for a fixed clock in a test; it becomes the
-document's C<generated_at>, and each image's C<age> is that value minus its
-C<last_used>, or C<null> when the record has no last use; a last use later
-than C<generated_at> is reported as age 0.  The
-document is checked against L</json_schema> before it is returned, so a key
-that was added or retyped without the schema changing raises an
-L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
-exception naming the first mismatch instead of being printed.
+Returns the listing as data: the document C<action-run cache --json>
+prints.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<docker> - optional.  An L<App::Actions::Docker>.
+
+=item * C<reachable> - true if Docker answers.  Only then are sizes asked
+for.
+
+=item * C<docker_bin> - optional.  The Docker program to name in the
+document.  Default: C<docker>'s, or C<docker>.
+
+=item * C<older_than> - optional.  As for L</report>.
+
+=item * C<prune> - optional.  The third value L</prune> returned.
+
+=item * C<now> - optional.  The current time.  It becomes C<generated_at>.
+
+=back
+
+=head3 RETURNS
+
+A hash reference, described in L</JSON OUTPUT>.
+
+=head3 SIDE EFFECTS
+
+Asks Docker for sizes, if reachable.  Checks the document against
+L</json_schema>.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        docker     => { type => 'object', isa => 'App::Actions::Docker', optional => 1 },
+        reachable  => { type => 'boolean', optional => 1 },
+        docker_bin => { type => 'string', optional => 1 },
+        older_than => { type => 'integer', min => 0, optional => 1 },
+        prune      => { type => 'hashref', optional => 1 },
+        now        => { type => 'integer', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+    +--------------------------------------------+------------------------------+-----------------+
+    | Exception                                  | Meaning                      | What to do      |
+    +--------------------------------------------+------------------------------+-----------------+
+    | App::Actions::Schema::Invalid: the         | a bug: the document does not | report it; exit |
+    | action-run cache --json document does not  | match its schema             | status 70       |
+    | match App::Actions::Cache->json_schema: ...|                              |                 |
+    +--------------------------------------------+------------------------------+-----------------+
 
 =head2 json_schema
 
     my $schema = App::Actions::Cache->json_schema;
 
-Returns the JSON schema of the C<cache --json> document as a hash, the same
-document C<action-run schema cache> prints.  It lives here rather than in the
-test directory so that an installed distribution can hand the contract to a
-caller; F<t/schema.t> validates the examples and the document against it.
+Returns the JSON schema of the C<cache --json> document, as a new hash
+reference.  C<action-run schema cache> prints the same schema.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+None.
 
 =head2 json_schema_version
 
     my $version = App::Actions::Cache->json_schema_version;
 
-Returns the version of the JSON document, which is also its C<schema_version>
-key.  It is bumped when the shape changes, so an assertion can name the shape
-it was written for.
+Returns the version of the document's shape.  The document carries the same
+number as C<schema_version>.  It goes up whenever the shape changes.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 parse_duration
+
+    my $seconds = App::Actions::Cache::parse_duration('30d');
+
+Turns a length of time, as a person types it, into seconds.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$text> - a whole number and a unit, with or without a space:
+C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo>, C<1y>, or the words (C<2
+days>, C<1 hour>).  Case does not matter.  A month is 30 days and a year 365
+days, the same as in the age column.
+
+=back
+
+=head3 RETURNS
+
+The number of seconds, or C<undef> if the text is not understood (no unit,
+an unknown unit, a negative number or a fraction).
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    App::Actions::Cache::parse_duration('2 days');    # 172800
+    App::Actions::Cache::parse_duration('2');         # undef: no unit
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { text => { type => 'string', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 0, optional => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 format_span
+
+    my $words = App::Actions::Cache::format_span($seconds);
+
+Says a length of time in words, using the largest whole unit: C<2 days>,
+C<1 hour>, C<1 year>.  It is used for thresholds (C<older than 2 days>).
+
+=head3 RETURNS
+
+The words, in the language of L<App::Actions::I18N>.  A negative or invalid
+number counts as 0 (C<0 seconds>).
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { seconds => { type => 'integer', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 format_age
+
+    my $words = App::Actions::Cache::format_age($seconds);
+
+Says an age in words: C<just now> under a minute, otherwise L</format_span>
+followed by C<ago>, for example C<3 hours ago>.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { seconds => { type => 'integer', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 format_size
+
+    my $text = App::Actions::Cache::format_size($bytes);
+
+Says a size in bytes in a short form: C<500 B>, C<1.5 KB>, C<2.3 GB>.  One
+KB is 1024 bytes.
+
+=head3 RETURNS
+
+The text.  C<undef>, 0 or a negative number gives C<0 B>.
+
+=head3 EXAMPLE
+
+    App::Actions::Cache::format_size(1536);    # 1.5 KB
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { bytes => { type => 'integer', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'string', min => 3 }
+
+=head3 MESSAGES
+
+None.
 
 =head1 JSON OUTPUT
 
-With C<json> the listing is a single object, with every key always present and
-C<null> for a value that could not be discovered:
+L</document> returns one object.  Every key is always there.  A value that
+could not be found out is C<null>:
 
     {
       "schema_version": 3,
@@ -868,38 +1400,354 @@ C<null> for a value that could not be discovered:
       "prune": null
     }
 
-With C<older_than> only the images at least that old are in C<images>, and
-the C<totals> count only them; an image with no C<last_used> is not selected.
-C<size> is the bytes the daemon reports, C<present> whether it still has the
-image, C<last_used> the epoch second a run last used it, and C<age> the
-seconds between C<generated_at> and C<last_used>.  C<age> is C<null> when the
-record has no last use, and 0 when the last use is later than
-C<generated_at>, so a clock that is ahead is not reported as a negative age.
-C<generated_at> is the epoch second the document was made, so the age needs
-neither machine to agree on a clock.  When the daemon
-cannot be reached, C<docker.reachable> is false and the sizes, C<present> and
-the C<totals> that would count them are C<null>; the record's own values are
-still listed.  C<prune> is C<null> for a listing and an object after
-C<--prune>, carrying C<removed>, C<freed>, C<forgotten> and the C<failed>
-images that stayed in the record.  The command's exit status is unchanged, so
-a prune that could not remove an image still prints its document and exits 1.
+=over 4
 
-C<schema_version> names the shape of the document; it is the number
-L</json_schema_version> returns.  The schema is what C<action-run schema
-cache> prints, and the checked-in examples are F<t/fixtures/cache.json> (two
-images, one present and one missing), F<t/fixtures/cache-empty.json>,
-F<t/fixtures/cache-unreachable.json> (the nulls for what the daemon could not
-say) and F<t/fixtures/cache-prune.json>.  F<t/schema.t> validates them against
-it and fails when a property or a null variant it names appears in none of
-them.
+=item * C<generated_at> and C<last_used> are seconds since 1970.
+
+=item * C<age> is C<generated_at> minus C<last_used>: C<null> if the last
+use is not known, and 0 (not negative) if it is in the future.
+
+=item * C<size> is the bytes Docker reports; C<present> says whether Docker
+still has the image.
+
+=item * When Docker cannot be reached, C<docker.reachable> is false, and
+C<size>, C<present> and the totals that count them are C<null>.
+
+=item * With C<older_than>, only the selected images are in C<images> and
+counted in C<totals>.
+
+=item * C<prune> is C<null> for a listing.  After a prune, it holds
+C<removed>, C<freed>, C<forgotten> and C<failed>.  The document is printed
+even when a removal failed, and the exit status is then 1.
+
+=back
+
+C<action-run schema cache> prints the schema.  The examples
+F<t/fixtures/cache.json>, F<cache-empty.json>, F<cache-unreachable.json> and
+F<cache-prune.json> are checked against it by F<t/schema.t>.
+
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Only images action-run pulled are listed.>  An image you pulled
+with C<docker pull> is not in the record and is never pruned.
+
+=item * B<C<older_than> is in seconds.>  Use L</parse_duration> to turn
+C<30d> into seconds.
+
+=item * B<C<prune> and C<report> want an L<App::Actions::Docker> object,
+not a program name.>
+
+=item * B<Pruning removes images by force.>  C<docker image rm -f> removes
+an image even if a stopped container uses it.  An image that a I<running>
+container uses cannot be removed and is reported as failed.
+
+=item * B<A broken record file is silently treated as empty.>  Nothing is
+lost (the images stay in Docker), but they are not listed until a run uses
+them again.
+
+=item * B<The object reads the file once.>  If another program changes the
+file after L</load>, this object does not see the change.  Make a new
+object.
+
+=item * B<C<prune> returns a list.>  Write C<my ($text, $status, $data) =
+...>.
+
+=item * B<Months are 30 days and years 365 days.>  C<1mo> is not "the same
+day last month".
+
+=back
+
+=head1 ENCODING
+
+Image names are ASCII in practice (Docker requires it).  The record file is
+JSON written as UTF-8 by L<JSON::PP>.  Its path may contain any characters
+your system allows, including non-ASCII and emoji; it is used as bytes.  The
+words that L</format_span> returns are in the current language of
+L<App::Actions::I18N> and may contain non-ASCII characters (for example in
+Chinese); encode them when you print.
 
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞCache> means the routine changes
+nothing; C<ΔCache> means it can change the record.  The lines below the rule
+are always true when the routine returns.
+
+    [IMAGE, PATH]
+    Entry ≙ [ pulls : ℕ; last_used : optional ℕ ]
+
+    ┌─ Cache ───────────────────────────────────────────
+    │ file   : PATH
+    │ images : IMAGE ⇸ Entry          the record, once loaded
+    │ loaded : 𝔹
+    ├───────────────────────────────────────────────────
+    │ loaded ⇒ (file ∈ files ∧ parses(file) ⇒ images = parse(file).images)
+    └───────────────────────────────────────────────────
+
+    persisted ⇔ (images = ∅ ⇒ file ∉ files') ∧ (images ≠ ∅ ⇒ parse(file') = images)
+    selected(older, now) = { i ∈ dom images | older = ⊥ ∨
+        (images(i).last_used ≠ ⊥ ∧ now − images(i).last_used ≥ older) }
+
+=head2 base_directory
+
+    ┌─ BaseDirectory ───────────────────────────────────
+    │ r! : PATH
+    ├───────────────────────────────────────────────────
+    │ Windows ⇒ r! = first non-empty of ⟨LOCALAPPDATA, USERPROFILE/AppData/Local, ./.cache⟩
+    │ ¬Windows ⇒ r! = first non-empty of ⟨XDG_CACHE_HOME, HOME/.cache, ./.cache⟩
+    └───────────────────────────────────────────────────
+
+=head2 default_path
+
+    ┌─ DefaultPath ─────────────────────────────────────
+    │ r! : PATH
+    ├───────────────────────────────────────────────────
+    │ ACTION_RUN_CACHE_FILE ∉ {⊥, ⟨⟩} ⇒ r! = ACTION_RUN_CACHE_FILE
+    │ otherwise r! = base_directory/action-run/cache.json
+    └───────────────────────────────────────────────────
+
+=head2 new
+
+    ┌─ New ─────────────────────────────────────────────
+    │ Cache'
+    │ file? : optional PATH
+    ├───────────────────────────────────────────────────
+    │ file' = if file? ∈ {⊥, ⟨⟩} then default_path else file?
+    │ ¬loaded'
+    └───────────────────────────────────────────────────
+
+=head2 file
+
+    ┌─ File ────────────────────────────────────────────
+    │ ΞCache
+    │ r! : PATH
+    ├───────────────────────────────────────────────────
+    │ r! = file
+    └───────────────────────────────────────────────────
+
+=head2 load
+
+    ┌─ Load ────────────────────────────────────────────
+    │ ΔCache
+    │ r! : DATA
+    ├───────────────────────────────────────────────────
+    │ loaded ⇒ images' = images
+    │ ¬loaded ∧ (file ∉ files ∨ ¬parses(file)) ⇒ images' = ∅
+    │ loaded' ∧ r! = { version ↦ 1, images ↦ images' }
+    └───────────────────────────────────────────────────
+
+=head2 save
+
+    ┌─ Save ────────────────────────────────────────────
+    │ ΞCache
+    │ r! : {1}
+    ├───────────────────────────────────────────────────
+    │ persisted
+    │ images ≠ ∅ ⇒ mode(file') = 0600 ∧ file is replaced in one rename
+    └───────────────────────────────────────────────────
+
+=head2 remember
+
+    ┌─ Remember ────────────────────────────────────────
+    │ ΔCache
+    │ images? : seq IMAGE
+    │ r!      : ℕ
+    ├───────────────────────────────────────────────────
+    │ G = { i ∈ ran images? | i ≠ ⊥ ∧ i ≠ ⟨⟩ }
+    │ ∀ i ∈ G • images'(i).pulls = (images(i).pulls or 0) + count(i, images?)
+    │         ∧ images'(i).last_used = now
+    │ ∀ i ∈ dom images \ G • images'(i) = images(i)
+    │ r! = #⟨ i in images? | i ∈ G ⟩
+    │ r! > 0 ⇒ persisted
+    └───────────────────────────────────────────────────
+
+=head2 entries
+
+    ┌─ Entries ─────────────────────────────────────────
+    │ ΞCache
+    │ r! : seq (IMAGE × Entry)
+    ├───────────────────────────────────────────────────
+    │ ran r! = images ∧ r! is sorted by IMAGE
+    └───────────────────────────────────────────────────
+
+=head2 forget
+
+    ┌─ Forget ──────────────────────────────────────────
+    │ ΔCache
+    │ images? : seq IMAGE
+    │ r!      : ℕ
+    ├───────────────────────────────────────────────────
+    │ images' = ran images? ⩤ images
+    │ r! = #(ran images? ∩ dom images)
+    │ r! > 0 ⇒ persisted
+    └───────────────────────────────────────────────────
+
+=head2 report
+
+    ┌─ Report ──────────────────────────────────────────
+    │ ΞCache
+    │ older?, now? : optional ℕ
+    │ r!           : TEXT
+    ├───────────────────────────────────────────────────
+    │ one row in r! for each i ∈ selected(older?, now?)
+    └───────────────────────────────────────────────────
+
+=head2 prune
+
+    ┌─ Prune ───────────────────────────────────────────
+    │ ΔCache
+    │ docker? : Docker
+    │ older?  : optional ℕ
+    │ r!      : TEXT × {0, 1} × DATA
+    ├───────────────────────────────────────────────────
+    │ docker? = ⊥ ⇒ raises NeedsDocker
+    │ S = selected(older?, now)
+    │ gone = { i ∈ S | docker?.image_size(i) = ⊥ }
+    │ removed = { i ∈ S \ gone | docker?.image_remove(i) = 0 }
+    │ failed = S \ (gone ∪ removed)
+    │ images' = (gone ∪ removed) ⩤ images
+    │ second(r!) = 0 ⇔ failed = ∅
+    └───────────────────────────────────────────────────
+
+=head2 document
+
+    ┌─ Document ────────────────────────────────────────
+    │ ΞCache
+    │ reachable? : 𝔹
+    │ d!         : DATA
+    ├───────────────────────────────────────────────────
+    │ d!.images lists selected(older?, now?) with age = max(0, now? − last_used)
+    │ ¬reachable? ⇒ d!.totals.size = ⊥ ∧ ∀ e ∈ d!.images • e.size = ⊥
+    │ matches(d!, json_schema) ∨ raises Invalid
+    └───────────────────────────────────────────────────
+
+=head2 json_schema
+
+    ┌─ JsonSchema ──────────────────────────────────────
+    │ r! : SCHEMA
+    ├───────────────────────────────────────────────────
+    │ r! = decode(JSON_SCHEMA) ∧ r! is a new object
+    └───────────────────────────────────────────────────
+
+=head2 json_schema_version
+
+    ┌─ JsonSchemaVersion ───────────────────────────────
+    │ r! : ℕ₁
+    ├───────────────────────────────────────────────────
+    │ r! = JSON_SCHEMA_VERSION
+    └───────────────────────────────────────────────────
+
+=head2 parse_duration
+
+    UNIT == { s ↦ 1, m ↦ 60, h ↦ 3600, d ↦ 86400, w ↦ 604800,
+              mo ↦ 2592000, y ↦ 31536000 } ∪ spelled-out synonyms
+
+    ┌─ ParseDuration ───────────────────────────────────
+    │ text? : optional TEXT
+    │ r!    : optional ℕ
+    ├───────────────────────────────────────────────────
+    │ trim(text?) = n ⁀ spaces ⁀ u ∧ n ∈ DIGITS⁺ ∧ lc(u) ∈ dom UNIT
+    │     ⇒ r! = n × UNIT(lc(u))
+    │ otherwise r! = ⊥
+    └───────────────────────────────────────────────────
+
+=head2 format_span
+
+    ┌─ FormatSpan ──────────────────────────────────────
+    │ seconds? : optional ℤ
+    │ r!       : TEXT
+    ├───────────────────────────────────────────────────
+    │ s = max(0, seconds?) (0 if not a whole number)
+    │ u = the largest of second, minute, hour, day, month, year with size(u) ≤ s
+    │     (second if none)
+    │ r! = i18n("span." ⁀ u, count ↦ s div size(u))
+    └───────────────────────────────────────────────────
+
+=head2 format_age
+
+    ┌─ FormatAge ───────────────────────────────────────
+    │ seconds? : optional ℤ
+    │ r!       : TEXT
+    ├───────────────────────────────────────────────────
+    │ max(0, seconds?) < 60 ⇒ r! = "just now"
+    │ otherwise r! = format_span(seconds?) ⁀ " ago"
+    └───────────────────────────────────────────────────
+
+=head2 format_size
+
+    ┌─ FormatSize ──────────────────────────────────────
+    │ bytes? : optional ℤ
+    │ r!     : TEXT
+    ├───────────────────────────────────────────────────
+    │ bytes? = ⊥ ∨ bytes? ≤ 0 ⇒ r! = "0 B"
+    │ k = min(4, max { j | 1024ʲ ≤ bytes? })
+    │ k = 0 ⇒ r! = show(bytes?) ⁀ " B"
+    │ k > 0 ⇒ r! = show1(bytes? / 1024ᵏ) ⁀ " " ⁀ ⟨KB, MB, GB, TB⟩(k)
+    └───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The object has two states (record not yet read, record in memory).  Each
+image in the record goes through the states on the right:
+
+    Object:
+
+        new()                 load / entries / remember / forget / report /
+    --------> +----------+    prune / document (first call)   +-----------+
+              | UNLOADED |----------------------------------->|  LOADED   |
+              +----------+   file read; missing or broken     | (in       |
+                             file = no images                 |  memory)  |
+                                                              +-----------+
+                                                                |  ^
+                                         remember / forget /    |  | no further
+                                         prune change images:   |  | file reads
+                                         save() writes the file +--+
+
+    One image in the record:
+
+     run pulls IMAGE          remember(IMAGE): pulls+1, last_used=now
+    ----------------> +-------------+ <-----------------------------+
+                      |  RECORDED   |-------------------------------+
+                      +-------------+
+                       |     |     |
+     forget(IMAGE)     |     |     | prune: Docker no longer has it
+     (Docker keeps it) |     |     v
+                       |     |  +-------------+
+                       |     |  | FORGOTTEN   |  counted in "forgotten"
+                       |     |  +-------------+
+                       |     |
+                       |     | prune: docker image rm -f
+                       |     +-------------------+------------------+
+                       |              succeeded  |                  | failed (in use)
+                       v                         v                  v
+                +-------------+          +-------------+    +----------------+
+                | NOT IN      |          | REMOVED     |    | stays RECORDED |
+                | RECORD      |          | from Docker |    | listed in      |
+                +-------------+          | and record  |    | "failed";      |
+                                         +-------------+    | status 1       |
+                                                            +----------------+
+
+    prune(older_than => N) only touches images with a last use at least N
+    seconds ago; the others stay RECORDED.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

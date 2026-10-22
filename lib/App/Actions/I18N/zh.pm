@@ -266,7 +266,33 @@ __END__
 
 App::Actions::I18N::zh - the Chinese message catalogue of App::Actions
 
+=head1 SYNOPSIS
+
+You do not normally use this module directly.  Choose the language through
+L<App::Actions::I18N>:
+
+	use App::Actions::I18N;
+
+	my $i18n = App::Actions::I18N->new(language => 'zh');
+	binmode STDOUT, ':encoding(UTF-8)';
+	print $i18n->message('workflow.empty', { file => 'ci.yml' }), "\n";
+	# (the Chinese text of the message)
+
+Or for a whole run of the command:
+
+	ACTION_RUN_LANG=zh action-run run .github/workflows/ci.yml
+
+Read the catalogue itself, for example to check a translation:
+
+	use App::Actions::I18N::zh;
+
+	my $entries = App::Actions::I18N::zh->messages;
+	print scalar(keys %{$entries}), " messages\n";
+
 =head1 DESCRIPTION
+
+This module holds the Chinese texts of App::Actions' messages.  A key that is missing here is shown in English
+instead.
 
 Data only: L<App::Actions::I18N> loads it and renders its entries.  Keys,
 placeholders and the plural and gender forms are described there.
@@ -295,17 +321,102 @@ Returns a hash reference of message key to entry.
 
 None.
 
-=head3 FORMAL SPECIFICATION
+=head1 COMMON PITFALLS
 
-	MESSAGES : KEY ⇸ ENTRY
+=over 4
+
+=item * B<Do not change the returned hash to translate.>  L</messages>
+returns a copy, so changes to it are lost.  Use
+L<App::Actions::I18N/add_messages>.
+
+=item * B<Keep the placeholders.>  A translation must use the same
+placeholder names as the English text, for example C<%(file)s>.  The test
+F<t/i18n.t> checks this.
+
+=item * B<Plurals follow the Chinese rule.>  Chinese does not change words for number, so every count uses the C<other> form.
+
+=item * B<C<LANG> does not choose this language.>  Use C<ACTION_RUN_LANG=zh>
+or the C<language> argument.
+
+=back
+
+=head1 ENCODING
+
+The source file is UTF-8 and uses C<use utf8>, so every text is a Perl
+character string.  The texts contain non-ASCII characters (Chinese
+characters), and may contain any Unicode character.  Encode the text when you
+print it, for example with C<binmode STDOUT, ':encoding(UTF-8)'>, or Perl
+prints a "Wide character" warning.
 
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+	KEY == { k : seq CHAR | k matches [a-z][a-z0-9_]*(\.[a-z0-9_]+)+ }
+	ENTRY ::= text⟨⟨seq CHAR⟩⟩
+	        | plural⟨⟨{one, other} ⇸ seq CHAR⟩⟩
+	        | gender⟨⟨{female, male, other} ⇸ ENTRY⟩⟩
+	MESSAGES : KEY ⇸ ENTRY             the fixed catalogue in this file
+
+=head2 messages
+
+	┌─ Messages ────────────────────────────────────────
+	│ r! : KEY ⇸ ENTRY
+	├───────────────────────────────────────────────────
+	│ r! = MESSAGES
+	│ r! is a new hash each call: changing it leaves MESSAGES unchanged
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The catalogue never changes.  This is how one of its texts is used:
+
+	 App::Actions::I18N->new(language => 'zh')
+	 (or ACTION_RUN_LANG=zh, or a country that speaks Chinese)
+	        |
+	        v
+	+---------------------+  message($key, \%args)
+	| TRANSLATOR (zh)   |------------------------+
+	+---------------------+                        |
+	                                               v
+	                      +-------------------------------------+
+	                      | $key in this catalogue?             |
+	                      +-------------------------------------+
+	                           | yes                     | no
+	                           v                         v
+	                  +----------------+      +----------------------+
+	                  | entry from     |      | English entry        |
+	                  | this module    |      | (App::Actions::I18N::|
+	                  +----------------+      |  en); none: the key  |
+	                           |              +----------------------+
+	                           +-----------+-----------+
+	                                       v
+	                  gender form, then plural form (Chinese rule),
+	                  then the %(name)s placeholders filled in
+	                                       |
+	                                       v
+	                               the finished text
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

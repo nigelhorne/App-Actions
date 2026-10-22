@@ -1012,10 +1012,19 @@ C<perl:%s>, so C<perl-version: "5.38"> uses C<perl:5.38>.
 
 Pass C<--platform> to Docker, for example C<linux/amd64>.
 
+=item B<--docker> I<program>
+
+The Docker program to run, for example F</usr/local/bin/docker> or a
+wrapper script.  A wrapper written in Perl is run with the same Perl as
+C<action-run>, so it works on Windows too.  Default: C<$DOCKER>, then
+C<docker>.
+
 =item B<--user> I<user[:group]>
 
 Run the job and service containers as this user.  By default containers run as
-their image's default user, usually root.
+their image's default user, usually root.  If the user is neither you nor
+root, the job's runner folder (which holds its step scripts and secrets) must
+be open to every user of the computer, and a warning says so.
 
 =item B<--env> I<NAME=VALUE>
 
@@ -1024,7 +1033,9 @@ Add or override an environment variable.  Repeatable.
 =item B<--secret> I<NAME=VALUE>
 
 Make a secret available to C<${{ secrets.NAME }}>.  Values are redacted from
-the Docker commands that C<action-run> prints.  Repeatable.
+the Docker commands that C<action-run> prints, and are not put on the Docker
+command line.  Repeatable.  Note that the value is on C<action-run>'s own
+command line; see L</COMMON PITFALLS>.
 
 =item B<--pull>, B<--no-pull>
 
@@ -1152,6 +1163,16 @@ Show the version.
 
 =over 4
 
+=item C<ACTION_RUN_LANG>
+
+The language of C<action-run>'s messages: C<en> (the default), C<fr>, C<de>
+or C<zh>.  The system locale (C<LANG>) is not used, so that scripts that read
+the messages on CI machines always see English unless they ask.
+
+=item C<DOCKER>
+
+The Docker program to run, if C<--docker> is not given.  Default C<docker>.
+
 =item C<ACTION_RUN_PULL_CONCURRENCY>
 
 The default for C<--pull-concurrency>: how many images are pulled at the same
@@ -1235,6 +1256,10 @@ not the host a CI job would otherwise repair.
 
 =head1 LIMITATIONS
 
+Values given with C<--secret> and C<--env> are on C<action-run>'s own
+command line, which other users of the computer can read; only the Docker
+command lines it starts keep them hidden.
+
 The per-job logs of a parallel run are kept until C<action-run logs --prune>
 removes them, or C<action-run logs --prune --older-than DURATION> removes the
 old ones; nothing expires them on its own.
@@ -1247,13 +1272,112 @@ mounted and the container image is chosen from the requested Perl version.
 Cache, artifact, and Codecov actions are also no-ops.  Unknown actions are
 skipped with a warning unless C<--strict-actions> is used.
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Run C<action-run check> first.>  Most failures before the first
+job are a Docker problem (not running, Windows containers, a drive not
+shared), and C<check> says how to fix each one.
+
+=item * B<C<--secret> values are visible in C<ps>.>  Every user of the
+computer can read C<action-run>'s own command line while it runs.  On a
+shared computer, do not pass real secrets this way; use a test value, or run
+on a computer only you use.
+
+=item * B<Give the project directory when the workflow is elsewhere.>  If
+the workflow file is not inside the project's F<.github/workflows>, the
+project directory must be the second argument.
+
+=item * B<Jobs for macOS and Windows are skipped, not failed.>  The exit
+status can be 0 even though some jobs did not run.  The summary lists them
+as C<skipped>.
+
+=item * B<Remote actions do not run.>  Only C<./local> actions run.  Use
+C<--strict-actions> to make a skipped action fail the job.
+
+=item * B<Images are kept after the run.>  Use C<action-run cache --prune>
+(or C<--no-keep-images>) to free the disk space.
+
+=item * B<Parallel output goes to logs.>  With C<--parallel> above 1, each
+job's lines are shown with its name in front, and the full logs are kept;
+see C<action-run logs>.
+
+=item * B<C<--older-than> needs a unit.>  C<30d> or C<2 weeks>, not C<30>.
+
+=item * B<Exit status 70 is a bug.>  It means a JSON document did not match
+its own schema.  Please report it.
+
+=item * B<Only run workflows you trust.>  A workflow's C<container.volumes>
+and C<options> can mount any folder of your computer into a container.
+
+=back
+
+=head1 ENCODING
+
+Workflow files are read as UTF-8; their text may contain any Unicode
+characters, including emoji.  File and folder names on the command line are
+used as bytes.  Values given with C<--env> and C<--secret> are passed to the
+containers as the bytes you typed (normally UTF-8).  What the containers
+print is shown unchanged.  Messages are English unless C<ACTION_RUN_LANG>
+chooses another language; set your terminal to UTF-8 for French, German or
+Chinese.  JSON documents (C<--json>) are UTF-8.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 STATE DIAGRAM
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+What happens when you run C<action-run WORKFLOW [DIR]> (the other commands
+are shown on the left):
+
+	 action-run [options] ARGS
+	        |
+	        v
+	+-------------------+  bad option or value  -> message; exit 2
+	| PARSE OPTIONS     |  --help / --version   -> print; exit 0
+	+-------------------+
+	        |
+	        +-- check [DIR] ----------> App::Actions::Check: report; exit 0 / 2
+	        +-- schema KIND ----------> print the JSON schema; exit 0
+	        +-- validate KIND FILE ---> check a saved document; exit 0 / 70
+	        +-- cache [--prune] ------> App::Actions::Cache; exit 0 / 1 (/ 70)
+	        +-- logs [--prune] -------> App::Actions::Logs;  exit 0 / 1 (/ 70)
+	        +-- preflight WF [DIR] ---> checks and pulls only; exit 0 / 2 (/ 70)
+	        +-- --list WF ------------> one line per job; exit 0
+	        |
+	        v  (run)
+	+-------------------+  workflow missing or invalid -> message; exit 2
+	| LOAD WORKFLOW     |
+	+-------------------+
+	        |
+	        v
+	+-------------------+  not ready (unless --skip-check) -> report; exit 2
+	| CHECK DOCKER      |
+	+-------------------+
+	        |
+	        v
+	+-------------------+  an image cannot be pulled -> message; exit 2
+	| PULL IMAGES       |
+	+-------------------+
+	        |
+	        v
+	+-------------------+  for each job: network, services, container,
+	| RUN JOBS          |  steps, clean-up (see App::Actions::Runner)
+	+-------------------+  Ctrl-C: clean up, then exit 2
+	        |
+	        v
+	+-------------------+
+	| SUMMARY           |  exit 0 = all passed, 1 = a job failed
+	+-------------------+
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

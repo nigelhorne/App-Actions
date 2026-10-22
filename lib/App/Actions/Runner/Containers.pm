@@ -61,7 +61,23 @@ App::Actions::Runner::Containers - start, check and remove a run's containers
 	...
 	$containers->cleanup_job($network, \@started);
 
+Make sure nothing is left when a run fails part-way:
+
+	my $ok = eval { run_the_jobs($containers); 1 };
+	$containers->remove_all unless $keep;
+	die $@ unless $ok;
+
+List what a run that keeps its containers left behind:
+
+	my $left = $containers->remaining;
+	print "container $_\n" for @{ $left->{containers} };
+	print "network   $_\n" for @{ $left->{networks} };
+
 =head1 DESCRIPTION
+
+B<In short:> this module starts and stops the Docker containers of a run,
+and explains clearly when one will not start or will not stay up.  It is a
+part of L<App::Actions::Runner>; you rarely use it on its own.
 
 Each job gets its own Docker network, its own service containers, and a
 long-lived job container that its steps are executed in.  This class starts
@@ -148,16 +164,6 @@ None.
 	| ...Containers::new: REASON| an option has the wrong type |                             |
 	+---------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Containers ──────────────────────────────────────
-	│ containers : seq NAME     -- started and not yet removed
-	│ networks   : seq NAME     -- created and not yet removed
-	│ counter    : ℕ           -- resource names issued
-	├───────────────────────────────────────────────────
-	│ containers and networks have no duplicates
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub new {
@@ -209,17 +215,6 @@ replaced and cut to 63 characters.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Name ────────────────────────────────────────────
-	│ ΔContainers
-	│ kind?, suffix? : seq CHAR
-	│ name!          : seq CHAR
-	├───────────────────────────────────────────────────
-	│ counter' = counter + 1
-	│ #name! ≤ 63 ∧ name! ∉ issued
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub name {
@@ -265,16 +260,6 @@ Creates the job's own network and remembers it for the cleanup.
 	| Failed to create Docker     | docker network create failed | Check the daemon; remove    |
 	| network 'X' (exit N)        |                              | stale action-run networks   |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ CreateNetwork ───────────────────────────────────
-	│ ΔContainers
-	│ job?  : JOB
-	│ net!  : NAME
-	├───────────────────────────────────────────────────
-	│ networks' = networks ⁀ ⟨net!⟩
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -353,18 +338,6 @@ Starts containers; prints an explanation block per service in an explain run.
 	| credentials are not         | passed on (a warning)        |                             |
 	| supported; ...              |                              |                             |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ StartServices ───────────────────────────────────
-	│ ΔContainers
-	│ job?     : JOB
-	│ started! : seq (ID × NAME)
-	├───────────────────────────────────────────────────
-	│ dom started! = sorted(dom job?.services)
-	│ ∀ (id, n) : ran started! • running(n) ∧ ¬ restarting(n)
-	│ containers' = containers ⁀ ⟨n : ran started! • second n⟩
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -469,16 +442,6 @@ during the run is not the one the steps talked to.
 	| its last output was: ...    |                              |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ CheckServices ───────────────────────────────────
-	│ ΞContainers
-	│ services? : seq (ID × NAME)
-	├───────────────────────────────────────────────────
-	│ (∃ (id, n) : ran services? • status(n) ∈ {restarting, dead} ∨ restarts(n) > 0)
-	│     ⇒ raises Restarting(id)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub check_services {
@@ -561,17 +524,6 @@ it fails to start or stops at once.
 	| Job container 'X' did not   | /bin/sh is missing or exited | Use an image with a shell   |
 	| stay running (exit N); ...  |                              |                             |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ StartJob ────────────────────────────────────────
-	│ ΔContainers
-	│ image? : IMAGE
-	│ c!     : NAME
-	├───────────────────────────────────────────────────
-	│ running(c!) ⇒ containers' = containers
-	│ ¬ started(c!) ∨ ¬ running(c!) ⇒ raises StartFailure ∧ removed(c!)
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -667,17 +619,6 @@ no sudo and the job runs as root), and whether it has C<bash> and C<node>.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Inspect ─────────────────────────────────────────
-	│ ΞContainers
-	│ c?     : NAME
-	│ facts! : FACTS
-	├───────────────────────────────────────────────────
-	│ facts!.path = aptbin ⁀ ":" ⁀ (if root ∧ ¬ has(c?, sudo) then bin ⁀ ":" else ⟨⟩) ⁀ path(c?)
-	│ facts!.has_bash ⇔ has(c?, bash) ∧ facts!.has_node ⇔ has(c?, node)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub inspect {
@@ -769,16 +710,6 @@ Runs a container; prints an explanation block in an explain run.
 	| ...run_action: REASON     | missing                      | arguments                   |
 	+---------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ RunAction ───────────────────────────────────────
-	│ ΞContainers
-	│ image?  : IMAGE
-	│ rc!     : ℤ
-	├───────────────────────────────────────────────────
-	│ rc! = exitStatus(docker run --rm ... image? arguments?)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub run_action {
@@ -849,17 +780,6 @@ the run keeps them.  Returns the object.
 
 None; a removal that fails is left to the run's final cleanup.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ CleanupJob ──────────────────────────────────────
-	│ ΔContainers
-	│ net?  : NAME
-	│ cs?   : seq NAME
-	├───────────────────────────────────────────────────
-	│ keep ⇒ θContainers' = θContainers
-	│ ¬ keep ⇒ containers' = containers ∖ ran cs? ∧ networks' = networks ∖ {net?}
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub cleanup_job {
@@ -900,15 +820,6 @@ created and has not removed.  A run that keeps its resources lists these.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Remaining ───────────────────────────────────────
-	│ ΞContainers
-	│ r! : RESOURCES
-	├───────────────────────────────────────────────────
-	│ r!.containers = containers ∧ r!.networks = networks
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub remaining {
@@ -939,14 +850,6 @@ newest first.  Returns the object.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ RemoveAll ───────────────────────────────────────
-	│ ΔContainers
-	├───────────────────────────────────────────────────
-	│ containers' = ⟨⟩ ∧ networks' = ⟨⟩
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -1234,13 +1137,236 @@ Docker that rewords them, gets the quotation without a verdict.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Always call L</remove_all> at the end of a run>, even after an
+error, unless the run keeps its containers.  Otherwise containers and
+networks are left on the computer.
+
+=item * B<Pass the same C<\@started> list to the start and clean-up
+calls.>  L</cleanup_job> removes what is in that list, newest first.
+
+=item * B<A service must keep running.>  A database image that exits at
+once (for example because a required password variable is missing) fails
+the job, with its last log lines in the message.
+
+=item * B<Service ports are not published.>  Steps reach a service by its
+id on the job's network (C<postgres:5432>), not on C<localhost>.  Only
+C<ports:> mappings in the workflow publish ports on your computer.
+
+=item * B<Container options from the workflow are passed to Docker as they
+are.>  C<container.options> and C<container.volumes> can mount any folder
+of your computer.  Run only workflows you trust.
+
+=item * B<Names are cut to 63 characters.>  Very long job ids are
+shortened, so do not rely on the full id being in the name.
+
+=back
+
+=head1 ENCODING
+
+Container and network names are made ASCII: unsafe characters in job and
+service ids are replaced.  Image names are ASCII, as Docker requires.
+Environment values and C<options> come from the workflow as Perl character
+strings and are passed to Docker as UTF-8 bytes, so non-ASCII text and emoji
+work in values.  The project path is used as bytes.  The log lines quoted in
+a failure message are what the container printed, as bytes.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ Containers ──────────────────────────────────────
+	│ containers : seq NAME     -- started and not yet removed
+	│ networks   : seq NAME     -- created and not yet removed
+	│ counter    : ℕ           -- resource names issued
+	├───────────────────────────────────────────────────
+	│ containers and networks have no duplicates
+	└───────────────────────────────────────────────────
+
+=head2 name
+
+	┌─ Name ────────────────────────────────────────────
+	│ ΔContainers
+	│ kind?, suffix? : seq CHAR
+	│ name!          : seq CHAR
+	├───────────────────────────────────────────────────
+	│ counter' = counter + 1
+	│ #name! ≤ 63 ∧ name! ∉ issued
+	└───────────────────────────────────────────────────
+
+=head2 create_network
+
+	┌─ CreateNetwork ───────────────────────────────────
+	│ ΔContainers
+	│ job?  : JOB
+	│ net!  : NAME
+	├───────────────────────────────────────────────────
+	│ networks' = networks ⁀ ⟨net!⟩
+	└───────────────────────────────────────────────────
+
+=head2 start_services
+
+	┌─ StartServices ───────────────────────────────────
+	│ ΔContainers
+	│ job?     : JOB
+	│ started! : seq (ID × NAME)
+	├───────────────────────────────────────────────────
+	│ dom started! = sorted(dom job?.services)
+	│ ∀ (id, n) : ran started! • running(n) ∧ ¬ restarting(n)
+	│ containers' = containers ⁀ ⟨n : ran started! • second n⟩
+	└───────────────────────────────────────────────────
+
+=head2 check_services
+
+	┌─ CheckServices ───────────────────────────────────
+	│ ΞContainers
+	│ services? : seq (ID × NAME)
+	├───────────────────────────────────────────────────
+	│ (∃ (id, n) : ran services? • status(n) ∈ {restarting, dead} ∨ restarts(n) > 0)
+	│     ⇒ raises Restarting(id)
+	└───────────────────────────────────────────────────
+
+=head2 start_job
+
+	┌─ StartJob ────────────────────────────────────────
+	│ ΔContainers
+	│ image? : IMAGE
+	│ c!     : NAME
+	├───────────────────────────────────────────────────
+	│ running(c!) ⇒ containers' = containers
+	│ ¬ started(c!) ∨ ¬ running(c!) ⇒ raises StartFailure ∧ removed(c!)
+	└───────────────────────────────────────────────────
+
+=head2 inspect
+
+	┌─ Inspect ─────────────────────────────────────────
+	│ ΞContainers
+	│ c?     : NAME
+	│ facts! : FACTS
+	├───────────────────────────────────────────────────
+	│ facts!.path = aptbin ⁀ ":" ⁀ (if root ∧ ¬ has(c?, sudo) then bin ⁀ ":" else ⟨⟩) ⁀ path(c?)
+	│ facts!.has_bash ⇔ has(c?, bash) ∧ facts!.has_node ⇔ has(c?, node)
+	└───────────────────────────────────────────────────
+
+=head2 run_action
+
+	┌─ RunAction ───────────────────────────────────────
+	│ ΞContainers
+	│ image?  : IMAGE
+	│ rc!     : ℤ
+	├───────────────────────────────────────────────────
+	│ rc! = exitStatus(docker run --rm ... image? arguments?)
+	└───────────────────────────────────────────────────
+
+=head2 cleanup_job
+
+	┌─ CleanupJob ──────────────────────────────────────
+	│ ΔContainers
+	│ net?  : NAME
+	│ cs?   : seq NAME
+	├───────────────────────────────────────────────────
+	│ keep ⇒ θContainers' = θContainers
+	│ ¬ keep ⇒ containers' = containers ∖ ran cs? ∧ networks' = networks ∖ {net?}
+	└───────────────────────────────────────────────────
+
+=head2 remaining
+
+	┌─ Remaining ───────────────────────────────────────
+	│ ΞContainers
+	│ r! : RESOURCES
+	├───────────────────────────────────────────────────
+	│ r!.containers = containers ∧ r!.networks = networks
+	└───────────────────────────────────────────────────
+
+=head2 remove_all
+
+	┌─ RemoveAll ───────────────────────────────────────
+	│ ΔContainers
+	├───────────────────────────────────────────────────
+	│ containers' = ⟨⟩ ∧ networks' = ⟨⟩
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The object keeps a list of the networks and containers the run created and
+has not yet removed.  One job's resources go through these states:
+
+	  create_network($job)
+	        |
+	        v
+	+----------------+
+	| NETWORK MADE   |  recorded for remove_all
+	+----------------+
+	        |
+	        | start_services($job, $network, ...)
+	        v
+	+----------------+  daemon refuses (bad image, entrypoint, port):
+	| SERVICES       |  error quoting the daemon, naming the fault
+	| STARTING       |--------------------------------------------+
+	+----------------+                                            |
+	        |                                                     |
+	        | check_services: each still running, no restarts     |
+	        v                                                     |
+	+----------------+  exited / dead / restarting:               |
+	| SERVICES UP    |  error with status, restart count and      |
+	+----------------+  last log lines --------------------------->+
+	        |                                                     |
+	        | start_job($job, $network, $env, ...)                |
+	        v                                                     |
+	+----------------+  start refused --------------------------->+
+	| JOB CONTAINER  |                                            |
+	| RUNNING (idle) |  inspect: PATH, bash?, node? (for Steps)   |
+	+----------------+                                            |
+	        |                                                     |
+	        | steps run (App::Actions::Runner::Steps);            |
+	        | run_action for a docker:// step (own container,     |
+	        | removed when it exits); check_services again at end |
+	        v                                                     v
+	+----------------+                                   +----------------+
+	| JOB FINISHED   |                                   | JOB FAILED     |
+	+----------------+                                   +----------------+
+	        |                                                     |
+	        +---------------------------+-------------------------+
+	                                    |
+	                cleanup_job($network, \@started)
+	                                    |
+	              keep? ---yes---> left running; listed by remaining()
+	                |
+	                no
+	                v
+	+----------------------------------+
+	| REMOVED: containers newest first,|
+	| then the network                 |
+	+----------------------------------+
+
+	At the end of the run, remove_all() removes anything still recorded
+	(for example after an error or Ctrl-C), newest first.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

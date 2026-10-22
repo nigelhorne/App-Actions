@@ -461,170 +461,711 @@ sub _unlink {
 
 __END__
 
+=encoding utf-8
+
 =head1 NAME
 
-App::Actions::Logs - the per-job logs action-run keeps between runs
+App::Actions::Logs - list and remove the job logs that action-run keeps
 
 =head1 SYNOPSIS
+
+List the kept logs (this is C<action-run logs>):
 
     use App::Actions::Logs;
 
     my $logs = App::Actions::Logs->new;
     print $logs->report;
 
-    my ($report, $exit, $pruned) = $logs->prune;
-    my $document = $logs->document(prune => $pruned);
+Remove every kept log (C<action-run logs --prune>):
+
+    my ($text, $status, $pruned) = $logs->prune;
+    print $text;
+    exit $status;
+
+Remove only logs older than two days:
+
+    my ($text, $status) = $logs->prune(older_than => 2 * 24 * 60 * 60);
+
+Get the listing as data for a program (C<action-run logs --json>):
+
+    use JSON::PP;
+
+    my $document = $logs->document;
+    print JSON::PP->new->canonical->encode($document), "\n";
+
+Use another directory:
+
+    my $logs = App::Actions::Logs->new(directory => '/var/tmp/my-logs');
 
 =head1 DESCRIPTION
 
-A parallel run copies each job's output out of its temporary directory before
-that is removed, so a failure can be read - or pasted into a bug report - after
-the containers are gone.  This module is what C<action-run logs> reads: one
-entry per kept log, with its size and how long ago the run wrote it, and a
-prune that removes them.  C<action-run logs --json> prints the same listing as
-a versioned JSON document, described under L</JSON OUTPUT> and held to the
-schema L</json_schema> returns.
+When C<action-run> runs several jobs at the same time, each job writes its
+output to its own log file.  After the run, these files are copied to a
+I<log directory>, one folder per run, so you can read a failure (or attach
+it to a bug report) after the containers are gone.  This module lists those
+files and removes them when you ask.
 
-The directory is C<$XDG_CACHE_HOME/action-run/logs>, or
-C<~/.cache/action-run/logs> when C<XDG_CACHE_HOME> is not set, and
-C<%LOCALAPPDATA%\\action-run\\logs> on Windows.  C<ACTION_RUN_LOG_DIR>
-overrides it.  Only a run directory named the way this tool writes one is
-listed or removed, so a shared directory holding other files is not emptied.
+The log directory is:
+
+=over 4
+
+=item * C<ACTION_RUN_LOG_DIR>, if that environment variable is set and not
+empty;
+
+=item * otherwise C<action-run/logs> inside your cache directory:
+C<$XDG_CACHE_HOME>, or F<~/.cache> on Unix, or C<%LOCALAPPDATA%> on
+Windows.
+
+=back
+
+B<Only names that action-run writes are touched.>  A run folder must be named
+like C<20261021-121355-6ad8e4c30f83> (date, time, hexadecimal number), and a
+log like C<job-2-test.log>.  Symbolic links are skipped.  So if the log
+directory is shared with other files, they are never listed or removed.
 
 =head1 METHODS
 
+=head2 default_directory
+
+    my $directory = App::Actions::Logs::default_directory();
+
+Returns the log directory described above.  The runner uses the same
+function, so the runs and this module always agree.
+
+=head3 ARGUMENTS
+
+None.
+
+=head3 RETURNS
+
+A path.  It may not exist yet.
+
+=head3 SIDE EFFECTS
+
+Reads C<ACTION_RUN_LOG_DIR> and the cache directory variables.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
 =head2 new
 
-    my $logs = App::Actions::Logs->new(%options);
+    my $logs = App::Actions::Logs->new(directory => $path);
 
-C<directory> names the log directory; the default is the path described above.
+Makes an object for one log directory.  Nothing is read yet.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<directory> - optional.  Default L</default_directory>.
+
+=back
+
+=head3 RETURNS
+
+The new object.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { directory => { type => 'string', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'object', isa => 'App::Actions::Logs' }
+
+=head3 MESSAGES
+
+None.
 
 =head2 directory
 
-Returns the directory this object reads.
+    my $path = $logs->directory;
+
+Returns the log directory this object reads.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
 
 =head2 entries
 
     my $runs = $logs->entries;
 
-Returns one entry per run directory that holds a job log, newest first.  Each
-is C<< { name, directory, logs } >>, and each log is
-C<< { name, path, size, mtime } >>.  A file or directory that does not match
-the names this tool writes is ignored.
+Reads the log directory.
+
+=head3 ARGUMENTS
+
+None.
+
+=head3 RETURNS
+
+An array reference of runs, newest first.  Each run is a hash reference:
+C<name> (the folder name), C<directory> (its full path) and C<logs>.  C<logs>
+is an array reference of hash references, sorted by name, each with C<name>,
+C<path>, C<size> (bytes) and C<mtime> (when it was last written, in seconds
+since 1970).  A run with no logs is not listed.  If the log directory does
+not exist, the list is empty.
+
+=head3 SIDE EFFECTS
+
+Reads the file system.
+
+=head3 EXAMPLE
+
+    for my $run (@{ $logs->entries }) {
+        printf "%s: %d logs\n", $run->{name}, scalar @{ $run->{logs} };
+    }
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'arrayref' }
+
+=head3 MESSAGES
+
+    +--------------------------------------------+-------------------------+----------------------+
+    | Exception (croak)                          | Meaning                 | What to do           |
+    +--------------------------------------------+-------------------------+----------------------+
+    | cannot read the log directory 'DIR': ERR   | the folder exists but   | fix its permissions  |
+    |                                            | cannot be read          |                      |
+    +--------------------------------------------+-------------------------+----------------------+
 
 =head2 report
 
-    print $logs->report;
+    print $logs->report(%options);
 
-The listing C<action-run logs> prints: one row per kept log naming the run,
-the file, its size and its age, then the number of logs and the disk they
-take.  C<older_than> (seconds) restricts the rows and totals to logs at least
-that old, so a run with only newer logs is not listed.  C<now> (epoch seconds)
-can be passed for a fixed clock in a test.
+Makes the text that C<action-run logs> prints: one row per log (run, file,
+size and age), then the number of logs and the space they take.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<older_than> - optional.  Seconds.  List only logs at least this
+old.
+
+=item * C<now> - optional.  The current time, in seconds since 1970.  For
+tests.
+
+=back
+
+=head3 RETURNS
+
+The text, ending with a newline.
+
+=head3 SIDE EFFECTS
+
+Reads the file system.
+
+=head3 EXAMPLE
+
+    print $logs->report(older_than => 7 * 24 * 60 * 60);    # logs older than a week
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        older_than => { type => 'integer', min => 0, optional => 1 },
+        now        => { type => 'integer', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+As for L</entries>.  The text says C<No job logs have been kept yet.> or
+C<No job logs are older than ...> when there is nothing to list.
 
 =head2 prune
 
-    my ($report, $exit, $pruned) = $logs->prune(
-        older_than => 2 * 24 * 60 * 60,  # optional
-        now        => time,               # optional, for a fixed clock
-    );
+    my ($text, $status, $pruned) = $logs->prune(%options);
 
-Remove the selected logs and return what was printed with the exit status: 0
-when every selected log went, 1 when one could not be removed and was
-reported.  Without C<older_than> every kept log is selected; with it only
-logs at least that old are removed, so newer logs stay in their run.  The run
-directory is removed too once it is empty; a directory that does not match
-the name this tool writes, or that holds anything else, is left alone.
-C<$pruned> is the C<prune> object of the JSON document, with the counts the
-report says in words and the runs that stayed.
+Removes the selected logs.  A run folder is removed too when it becomes
+empty.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<older_than> - optional.  Seconds.  Remove only logs at least this
+old.  Without it, every log is removed.
+
+=item * C<now> - optional.  The current time, for tests.
+
+=back
+
+=head3 RETURNS
+
+A list of three values:
+
+=over 4
+
+=item 1. the text to print;
+
+=item 2. the exit status: 0 if every selected log was removed, 1 if one
+could not be (the others are still removed);
+
+=item 3. a hash reference for the JSON document: C<removed> (how many logs),
+C<freed> (bytes) and C<failed> (an array of C<{ run, error }>).
+
+=back
+
+=head3 SIDE EFFECTS
+
+Deletes files and empty folders.  A folder that still holds other files
+stays.
+
+=head3 EXAMPLE
+
+    my ($text, $status, $pruned) = $logs->prune(older_than => 86_400);
+    my $document = $logs->document(prune => $pruned);
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        older_than => { type => 'integer', min => 0, optional => 1 },
+        now        => { type => 'integer', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'array', min => 3, max => 3 }    # (string, 0 or 1, hashref)
+
+=head3 MESSAGES
+
+    +----------------------------------------------+------------------------------+---------------------+
+    | Text                                         | Meaning                      | What to do          |
+    +----------------------------------------------+------------------------------+---------------------+
+    | Removed N logs, SIZE freed.                  | success                      |                     |
+    | Could not remove N runs:                     | a file could not be deleted; | fix permissions and |
+    |   RUN: cannot remove 'PATH': ERR             | status 1                     | prune again         |
+    +----------------------------------------------+------------------------------+---------------------+
 
 =head2 document
 
-    my $document = $logs->document(
-        older_than => 2 * 24 * 60 * 60,  # optional
-        prune      => $pruned,            # optional, from prune()
-        now        => time,               # optional, for a fixed clock
-    );
+    my $document = $logs->document(%options);
 
-Returns the document C<action-run logs --json> prints, described under
-L</JSON OUTPUT>.  C<older_than> restricts C<logs> and C<totals> to the logs
-the listing selected.  C<prune> is omitted for a listing and is the value
-L</prune> returned after a prune.  C<now> (epoch seconds) can be passed for a
-fixed clock in a test; it becomes the document's C<generated_at>.  The
-document is checked against
-L</json_schema> before it is returned, so a key that was added or retyped
-without the schema changing raises an
-L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
-exception naming the first mismatch instead of being printed.
+Returns the listing as data: the document C<action-run logs --json> prints.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<older_than> - optional.  As for L</report>.
+
+=item * C<prune> - optional.  The third value L</prune> returned, to
+describe a prune that just happened.
+
+=item * C<now> - optional.  The current time.  It becomes C<generated_at>.
+
+=back
+
+=head3 RETURNS
+
+A hash reference, described in L</JSON OUTPUT>.
+
+=head3 SIDE EFFECTS
+
+Reads the file system.  Checks the document against L</json_schema>.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        older_than => { type => 'integer', min => 0, optional => 1 },
+        prune      => { type => 'hashref', optional => 1 },
+        now        => { type => 'integer', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+    +-------------------------------------------+------------------------------+------------------+
+    | Exception                                 | Meaning                      | What to do       |
+    +-------------------------------------------+------------------------------+------------------+
+    | App::Actions::Schema::Invalid: the        | a bug: the document does not | report it; exit  |
+    | action-run logs --json document does not  | match its schema             | status 70        |
+    | match App::Actions::Logs->json_schema: ...|                              |                  |
+    +-------------------------------------------+------------------------------+------------------+
+
+And the messages of L</entries>.
 
 =head2 json_schema
 
     my $schema = App::Actions::Logs->json_schema;
 
-Returns the JSON schema of the C<logs --json> document as a hash, the same
-document C<action-run schema logs> prints.  It lives here rather than in the
-test directory so that an installed distribution can hand the contract to a
-caller; F<t/schema.t> validates the examples and the document against it.
+Returns the JSON schema of the C<logs --json> document, as a new hash
+reference.  C<action-run schema logs> prints the same schema.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+None.
 
 =head2 json_schema_version
 
     my $version = App::Actions::Logs->json_schema_version;
 
-Returns the version of the JSON document, which is also its C<schema_version>
-key.  It is bumped when the shape changes, so an assertion can name the shape
-it was written for.
+Returns the version of the document's shape, which the document also
+carries as C<schema_version>.  It goes up whenever the shape changes.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 format_age
+
+    my $words = App::Actions::Logs::format_age($seconds);
+
+Says how old something is, in words: C<just now>, C<3 minutes ago>, C<2
+hours ago>, C<5 days ago>, C<2 months ago> or C<1 year ago>.  It uses the
+largest whole unit, so 90 minutes is C<1 hour ago>.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$seconds> - the age.  A negative age (a clock ahead) is C<just
+now>.
+
+=back
+
+=head3 RETURNS
+
+The words.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { seconds => { type => 'integer' } }
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
 
 =head1 JSON OUTPUT
 
-With C<json> the listing is a single object, with every key always present:
+L</document> returns one object.  Every key is always there:
 
     {
       "schema_version": 3,
       "generated_at": 1792540920,
       "logs_directory": "/home/me/.cache/action-run/logs",
       "logs": [
-        { "run": "20261021-121355-6ad8e4c30f83", "name": "job-1-test_n_one.log", "path": "/home/me/.cache/action-run/logs/20261021-121355-6ad8e4c30f83/job-1-test_n_one.log", "size": 1229, "mtime": 1792540800, "age": 120 },
-        { "run": "20261021-121355-6ad8e4c30f83", "name": "job-2-test_n_two.log", "path": "/home/me/.cache/action-run/logs/20261021-121355-6ad8e4c30f83/job-2-test_n_two.log", "size": 819, "mtime": 1792540800, "age": 120 }
+        { "run": "20261021-121355-6ad8e4c30f83", "name": "job-1-test_n_one.log",
+          "path": "/home/me/.cache/action-run/logs/20261021-121355-6ad8e4c30f83/job-1-test_n_one.log",
+          "size": 1229, "mtime": 1792540800, "age": 120 }
       ],
-      "totals": { "runs": 1, "logs": 2, "size": 2048 },
+      "totals": { "runs": 1, "logs": 1, "size": 1229 },
       "prune": null
     }
 
-C<logs> is sorted by run and then by file name.  C<size> is the bytes the log
-takes, C<generated_at> the epoch second the document was made, C<mtime> the
-epoch second the log was last written and C<age> the seconds between them.
-C<age> is C<generated_at> minus C<mtime>, so a caller can use it without
-subtracting from its own clock or parsing a phrase; it is 0 when the log's
-clock is ahead of C<generated_at>, as the text report shows such a log as
-C<just now>.  C<totals> counts the runs, logs and bytes the listing found.
-With C<older_than> only the selected logs are in C<logs>, and the totals count
-only them.  C<prune> is C<null> for a listing and an object after C<--prune>,
-carrying C<removed>, C<freed> and the C<failed> runs that stayed, each with
-its C<run> name and C<error>.  The document is printed even when a removal
-failed, and the exit status is 1.
+=over 4
 
-C<schema_version> names the shape of the document; it is the number
-L</json_schema_version> returns.  The schema is what C<action-run schema
-logs> prints, and the checked-in examples are F<t/fixtures/logs.json>,
-F<t/fixtures/logs-empty.json>, F<t/fixtures/logs-prune.json> and
-F<t/fixtures/logs-prune-failed.json>.  F<t/schema.t> validates them against
-it and fails when a property it names appears in none of them.
+=item * C<generated_at> and C<mtime> are seconds since 1970.
 
-=head2 format_age
+=item * C<age> is C<generated_at> minus C<mtime>, in seconds, so you do not
+need your own clock.  It is 0 (not negative) if the log's time is in the
+future.
 
-    my $age = App::Actions::Logs::format_age($seconds);
+=item * C<size> is in bytes.
 
-How old a log is in words: C<just now>, C<3 minutes ago>, C<2 hours ago>,
-C<5 days ago>, C<2 months ago> or C<1 year ago>.  Each step uses the largest
-whole unit, so 90 minutes is C<1 hour ago>.
+=item * C<logs> lists the newest run first, and each run's logs by name.
+
+=item * C<totals> counts the runs, logs and bytes in C<logs>.  With
+C<older_than>, only the selected logs are counted.
+
+=item * C<prune> is C<null> for a listing.  After a prune it is an object
+with C<removed>, C<freed> and C<failed>; each failed run has C<run> and
+C<error>.  The document is printed even when a removal failed, and the exit
+status is then 1.
+
+=back
+
+C<action-run schema logs> prints the schema.  The examples in
+F<t/fixtures/logs.json>, F<logs-empty.json>, F<logs-prune.json> and
+F<logs-prune-failed.json> are checked against it by F<t/schema.t>.
+
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Only parallel runs keep logs.>  A run of one job at a time prints
+to the terminal and keeps nothing here.
+
+=item * B<C<older_than> is in seconds.>  Two days is C<2 * 24 * 60 * 60>,
+not C<2>.
+
+=item * B<C<prune> returns a list.>  C<my $text = $logs-E<gt>prune> gives the
+I<last> value (the hash), not the text.  Write C<my ($text, $status, $data)
+= ...>.
+
+=item * B<Renamed files are invisible.>  If you rename a log or a run
+folder, it no longer matches the names this module looks for, so it is
+neither listed nor removed.
+
+=item * B<Pruning does not ask.>  Without C<older_than>, it removes every
+log.  Call L</report> first to see what will go.
+
+=item * B<A failed removal does not stop the prune.>  Check the status: 1
+means some logs are still there.
+
+=back
+
+=head1 ENCODING
+
+Run and log names are ASCII by construction (job names are made safe before
+they are used in file names).  The log directory path may contain any
+characters your system allows, including non-ASCII and emoji; it is used and
+reported as bytes.  The log files themselves are read only for their size
+and time, never for their content.
 
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞFileSystem> means the routine changes
+no file.  The lines below the rule are always true when the routine
+returns.
+
+    [PATH, NAME]
+    RUNNAME == { n : NAME | n matches \d{8}-\d{6}-[0-9a-fA-F]+ }
+    LOGNAME == { n : NAME | n matches job-\d+(-[A-Za-z0-9_.-]+)?\.log }
+    Log ≙ [ name : LOGNAME; path : PATH; size, mtime : ℕ ]
+    Run ≙ [ name : RUNNAME; directory : PATH; logs : seq₁ Log ]
+
+    ┌─ Logs ────────────────────────────────────────────
+    │ directory : PATH
+    └───────────────────────────────────────────────────
+
+    selected(older, now) = { r : entries • r with logs restricted to
+        { l | older = ⊥ ∨ now − l.mtime ≥ older } } \ { runs with no logs }
+
+=head2 default_directory
+
+    ┌─ DefaultDirectory ────────────────────────────────
+    │ r! : PATH
+    ├───────────────────────────────────────────────────
+    │ ENV.ACTION_RUN_LOG_DIR ∉ {⊥, ⟨⟩} ⇒ r! = ENV.ACTION_RUN_LOG_DIR
+    │ otherwise r! = cacheBase ⁀ "/action-run/logs"
+    └───────────────────────────────────────────────────
+
+=head2 new
+
+    ┌─ New ─────────────────────────────────────────────
+    │ Logs'
+    │ directory? : optional PATH
+    ├───────────────────────────────────────────────────
+    │ directory' = if directory? ∈ {⊥, ⟨⟩} then default_directory else directory?
+    └───────────────────────────────────────────────────
+
+=head2 directory
+
+    ┌─ Directory ───────────────────────────────────────
+    │ ΞLogs
+    │ r! : PATH
+    ├───────────────────────────────────────────────────
+    │ r! = directory
+    └───────────────────────────────────────────────────
+
+=head2 entries
+
+    ┌─ Entries ─────────────────────────────────────────
+    │ ΞLogs ∧ ΞFileSystem
+    │ r! : seq Run
+    ├───────────────────────────────────────────────────
+    │ directory ∉ DIRS ⇒ r! = ⟨⟩
+    │ ∀ r ∈ ran r! • r.name ∈ RUNNAME ∧ r.directory is a real directory
+    │     ∧ ∀ l ∈ ran r.logs • l.name ∈ LOGNAME ∧ l.path is a real file
+    │ r! is sorted by name, descending; each r.logs by name, ascending
+    │ unreadable directory ⇒ raises CannotRead(directory)
+    └───────────────────────────────────────────────────
+
+=head2 report
+
+    ┌─ Report ──────────────────────────────────────────
+    │ ΞLogs ∧ ΞFileSystem
+    │ older? : optional ℕ
+    │ now?   : optional ℕ
+    │ r!     : TEXT
+    ├───────────────────────────────────────────────────
+    │ one row in r! for each log of selected(older?, now?)
+    │ selected = ⟨⟩ ⇒ r! says that nothing is kept or nothing is old enough
+    └───────────────────────────────────────────────────
+
+=head2 prune
+
+    ┌─ Prune ───────────────────────────────────────────
+    │ ΔFileSystem
+    │ older? : optional ℕ
+    │ r!     : TEXT × {0, 1} × DATA
+    ├───────────────────────────────────────────────────
+    │ S = selected(older?, now)
+    │ ∀ r ∈ S • (∀ l ∈ ran r.logs • l.path ∉ files') ∨ r ∈ failed
+    │ ∀ r ∈ S • r.directory empty after removal ⇒ r.directory ∉ dirs'
+    │ files not in S are unchanged
+    │ second(r!) = 0 ⇔ failed = ∅
+    │ third(r!).removed = Σ { #r.logs | r ∈ S \ failed }
+    └───────────────────────────────────────────────────
+
+=head2 document
+
+    ┌─ Document ────────────────────────────────────────
+    │ ΞLogs ∧ ΞFileSystem
+    │ older?, now? : optional ℕ
+    │ prune?       : optional DATA
+    │ d!           : DATA
+    ├───────────────────────────────────────────────────
+    │ d!.generated_at = now?
+    │ d!.logs = ⟨ l with run, age = max(0, now? − l.mtime) |
+    │             l ∈ logs of selected(older?, now?) ⟩
+    │ d!.totals = (#selected, #d!.logs, Σ size)
+    │ d!.prune = prune?
+    │ matches(d!, json_schema) ∨ raises Invalid
+    └───────────────────────────────────────────────────
+
+=head2 json_schema
+
+    ┌─ JsonSchema ──────────────────────────────────────
+    │ r! : SCHEMA
+    ├───────────────────────────────────────────────────
+    │ r! = decode(JSON_SCHEMA) ∧ r! is a new object
+    └───────────────────────────────────────────────────
+
+=head2 json_schema_version
+
+    ┌─ JsonSchemaVersion ───────────────────────────────
+    │ r! : ℕ₁
+    ├───────────────────────────────────────────────────
+    │ r! = JSON_SCHEMA_VERSION
+    └───────────────────────────────────────────────────
+
+=head2 format_age
+
+    ┌─ FormatAge ───────────────────────────────────────
+    │ seconds? : ℤ
+    │ r!       : TEXT
+    ├───────────────────────────────────────────────────
+    │ r! = App::Actions::Cache::format_age(seconds?)
+    └───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The object holds only a directory name.  The states below are the states of
+one kept log file, from the run that writes it to the prune that removes
+it:
+
+     parallel run of action-run
+              |
+              | job writes its output; the run copies it to
+              | LOGDIR/<date>-<time>-<hex>/job-N-<name>.log
+              v
+     +------------------+   entries / report / document   +------------------+
+     |      KEPT        |-------------------------------->|  LISTED          |
+     | (on disk)        |<--------------------------------|  (nothing        |
+     +------------------+          (no change)             |   changes)       |
+         |         |                                       +------------------+
+         |         | prune(older_than => N) and the log is newer than N
+         |         +----------------------------------------> stays KEPT
+         |
+         | prune(), or prune(older_than => N) and the log is at least N old
+         v
+     +------------------+   unlink fails     +-------------------------------+
+     |   REMOVING       |------------------->| FAILED: stays on disk; its run |
+     +------------------+                    | is in "failed"; status 1       |
+         |                                   +-------------------------------+
+         | unlink succeeds
+         v
+     +------------------+   run folder now empty    +------------------+
+     |   REMOVED        |-------------------------->| run folder       |
+     |   (counted in    |                           | removed too      |
+     |    removed/freed)|   folder holds other files+------------------+
+     +------------------+-------------------------->  folder stays
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

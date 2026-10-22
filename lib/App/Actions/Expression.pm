@@ -588,67 +588,606 @@ sub _stringify {
 
 __END__
 
+=encoding utf-8
+
 =head1 NAME
 
-App::Actions::Expression - evaluate GitHub Actions expressions
+App::Actions::Expression - work out the value of a GitHub Actions C<${{ }}> expression
 
 =head1 SYNOPSIS
+
+Work out one expression:
 
     use App::Actions::Expression;
 
     my $expression = App::Actions::Expression->new;
-    my $value = $expression->evaluate(
-        q{matrix.perl == '5.38'},
-        { matrix => { perl => '5.38' } },
-        { success => 1 },
+    my $context = { matrix => { perl => '5.40', os => 'ubuntu-latest' } };
+
+    my $value = $expression->evaluate(q{matrix.perl == '5.40'}, $context);    # 1
+
+Fill in the expressions in a text:
+
+    my $name = $expression->interpolate('Test on Perl ${{ matrix.perl }}', $context);
+    # "Test on Perl 5.40"
+
+Decide whether a step runs (an C<if:> value):
+
+    my $runs = $expression->condition(
+        q{${{ failure() && startsWith(matrix.os, 'ubuntu') }}},
+        $context,
+        { success => 0, failure => 1, cancelled => 0 },
     );
 
-    my $text = $expression->interpolate(
-        'Testing Perl ${{ matrix.perl }}',
-        { matrix => { perl => '5.38' } },
-    );
+Refuse a value that does not exist yet:
+
+    my $image = eval { $expression->interpolate_strict('perl:${{ matrix.perl }}', {}) };
+    # dies: unable to resolve '${{ matrix.perl }}' from the values available
+
+Fill in only what is known now, and the rest later:
+
+    my $half = $expression->interpolate_known('${{ env.A }}-${{ steps.x.outputs.y }}',
+        { env => { A => 'a' } });
+    # "a-${{ steps.x.outputs.y }}"
 
 =head1 DESCRIPTION
 
-This module implements the subset of the GitHub Actions expression language
-that is useful when running workflows locally.  It supports property and
-index access, comparisons, logical operators, and the common expression
-functions such as C<contains()>, C<startsWith()>, C<format()>, C<toJSON()>,
-and C<fromJSON()>.  The status functions C<success()>, C<failure()>,
-C<always()>, and C<cancelled()> are supplied by the caller.
+GitHub Actions workflows contain I<expressions>: small formulas written as
+C<${{ ... }}>, for example C<${{ matrix.perl }}> or C<${{ github.ref ==
+'refs/heads/main' }}>.  This module works out their values, so that
+workflows can run on your own computer.
+
+It supports the part of the language that matters when you run a workflow
+locally:
+
+=over 4
+
+=item * B<Values:> strings in single quotes (write two quotes for one quote
+inside: C<'it''s'>), numbers (C<42>, C<1.5>, C<1e3>), and C<true>,
+C<false> and C<null>.
+
+=item * B<Looking up values:> C<matrix.perl>, C<env['HOME']>,
+C<steps.build.outputs.path>, C<list[0]>.  Names are matched without regard
+to upper and lower case, as on GitHub.  A name that does not exist gives
+C<null>; it is not an error (but see L</interpolate_strict>).
+
+=item * B<Operators,> from loosest to tightest: C<||>, C<&&>, C<==> and
+C<!=>, C<E<lt>> C<E<lt>=> C<E<gt>> C<E<gt>=>, C<!>, and brackets C<( )>.
+C<||> and C<&&> return one of their operands, as on GitHub: C<a || 'x'> is
+C<a> if it is true, otherwise C<'x'>.
+
+=item * B<Comparisons:> two numbers are compared as numbers.  Anything else
+is compared as text, without regard to case, so C<'ABC' == 'abc'> is true.
+C<true> and C<false> count as 1 and 0 when compared with a number.
+
+=item * B<Functions:> C<contains>, C<startsWith>, C<endsWith>, C<format>,
+C<join>, C<toJSON>, C<fromJSON>, and the status functions C<success>,
+C<failure>, C<cancelled> and C<always>.  Function names are not case
+sensitive.
+
+=back
+
+I<Truth:> C<null>, C<false>, the empty string, C<0> and C<'0'> are false.
+Everything else is true, including every array and object, even empty ones.
 
 =head1 METHODS
 
+=head2 new
+
+    my $expression = App::Actions::Expression->new;
+
+Makes an evaluator.  One evaluator can be used for any number of
+expressions, but not by two threads at once.
+
+=head3 ARGUMENTS
+
+None.
+
+=head3 RETURNS
+
+The new object.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'object', isa => 'App::Actions::Expression' }
+
+=head3 MESSAGES
+
+None.
+
 =head2 evaluate
 
-    my $value = $expression->evaluate($expression, \%context, \%status);
+    my $value = $expression->evaluate($text, \%context, \%status);
 
-Evaluates one expression and returns its value.
+Works out the value of one expression.  The text is the part inside
+C<${{ }}>, without the braces.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$text> - the expression, for example C<matrix.perl == '5.40'>.
+
+=item * C<\%context> - optional.  The values names look up: a hash
+reference such as C<{ matrix =E<gt> {...}, env =E<gt> {...}, github =E<gt>
+{...} }>.
+
+=item * C<\%status> - optional.  The answers for the status functions:
+C<{ success =E<gt> 1, failure =E<gt> 0, cancelled =E<gt> 0 }>.  Missing keys
+are false.  C<always()> is always true.
+
+=back
+
+=head3 RETURNS
+
+The value: a string, a number, 1 or 0 for a comparison, a reference for an
+array or object, or C<undef> for C<null> or a missing name.
+
+=head3 SIDE EFFECTS
+
+Remembers whether a name was missing, for L</interpolate_strict> and
+L</interpolate_known>.
+
+=head3 EXAMPLE
+
+    my $list = $expression->evaluate(q{fromJSON('[1, 2, 3]')});            # [1, 2, 3]
+    my $has  = $expression->evaluate(q{contains(matrix.os, 'ubuntu')},
+        { matrix => { os => 'Ubuntu-24.04' } });                          # 1
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        expression => { type => 'string', min => 1 },
+        context    => { type => 'hashref', optional => 1 },
+        status     => { type => 'hashref', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'any', optional => 1 }
+
+=head3 MESSAGES
+
+All are thrown with C<croak>.  Fix the expression in the workflow.
+
+    +----------------------------------------------+------------------------------------------+
+    | Message                                      | Meaning                                  |
+    +----------------------------------------------+------------------------------------------+
+    | Cannot evaluate an undefined expression      | $text was undef                          |
+    | Cannot evaluate an empty expression          | $text was empty or only spaces           |
+    | Unterminated string in expression 'T'        | a ' has no closing '                     |
+    | Unexpected character 'C' in expression 'T'   | C is not part of the language (e.g. + *) |
+    | Unexpected 'X' in expression ['T']           | X is in the wrong place, or extra text   |
+    |                                              | follows a complete expression            |
+    | Unexpected end of expression                 | the expression stops too early           |
+    | Expected 'X' in expression                   | a ) or ] is missing                      |
+    | Expected a property name after dot           | "a." with no name, or "a.1"              |
+    | F() expects N argument(s)                    | wrong number of arguments to function F  |
+    | join() first argument must be an array       | join('a', ',') - use an array            |
+    | fromJSON() failed: ERR                       | the text is not valid JSON               |
+    | hashFiles() is not supported by local        | this function is not implemented         |
+    | action-run                                   |                                          |
+    | Unknown function 'F()' in expression         | F is not one of the functions above      |
+    +----------------------------------------------+------------------------------------------+
 
 =head2 interpolate
 
-    my $text = $expression->interpolate($string, \%context, \%status);
+    my $result = $expression->interpolate($text, \%context, \%status);
 
-Expands every C<${{ ... }}> sequence in a string.
+Replaces every C<${{ ... }}> in a text with its value.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$text> - the text.  C<undef> and references are returned
+unchanged.
+
+=item * C<\%context>, C<\%status> - as for L</evaluate>.
+
+=back
+
+=head3 RETURNS
+
+The new text.  Values are written as GitHub writes them: C<null> and missing
+names as the empty string, an array or object as JSON.  Text that comes from
+a value is not searched again for C<${{>.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    print $expression->interpolate('${{ format(\'{0}-{1}\', 1, 2) }}');    # 1-2
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        text    => { type => 'string', optional => 1 },
+        context => { type => 'hashref', optional => 1 },
+        status  => { type => 'hashref', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'string', optional => 1 }
+
+=head3 MESSAGES
+
+    +--------------------------------+---------------------------------+----------------------+
+    | Message (croak)                | Meaning                         | What to do           |
+    +--------------------------------+---------------------------------+----------------------+
+    | Unclosed expression in 'T'     | a ${{ has no }} after it        | add the }}           |
+    | (any message of evaluate)      | an expression inside is invalid | fix that expression  |
+    +--------------------------------+---------------------------------+----------------------+
+
+=head2 interpolate_strict
+
+    my $result = $expression->interpolate_strict($text, \%context, \%status);
+
+Like L</interpolate>, but a name that does not exist is an error instead of
+an empty string.  Use it when an empty value would be wrong, for example in
+an image name.
+
+=head3 ARGUMENTS
+
+As for L</interpolate>.
+
+=head3 RETURNS
+
+As for L</interpolate>.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    $expression->interpolate_strict('node:${{ matrix.node }}', { matrix => { node => 20 } });    # node:20
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        text    => { type => 'string', optional => 1 },
+        context => { type => 'hashref', optional => 1 },
+        status  => { type => 'hashref', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'string', optional => 1 }
+
+=head3 MESSAGES
+
+As for L</interpolate>, and:
+
+    +------------------------------------------------+-------------------------+--------------------------+
+    | Message (croak)                                | Meaning                 | What to do               |
+    +------------------------------------------------+-------------------------+--------------------------+
+    | unable to resolve '${{ E }}' from the values   | E names something that  | give that value, or      |
+    | available                                      | does not exist          | correct the name         |
+    +------------------------------------------------+-------------------------+--------------------------+
+
+A name that exists but whose value is empty is not an error.
+
+=head2 interpolate_known
+
+    my $result = $expression->interpolate_known($text, \%context, \%status);
+
+Like L</interpolate>, but an expression that names something missing is
+left in the text, exactly as written.  Use it when you know some values now
+and the others later: call it again later with the full context.
+
+=head3 ARGUMENTS
+
+As for L</interpolate>.
+
+=head3 RETURNS
+
+The text with the known expressions replaced.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    $expression->interpolate_known('${{ a }}/${{ b }}', { a => 1 });    # 1/${{ b }}
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        text    => { type => 'string', optional => 1 },
+        context => { type => 'hashref', optional => 1 },
+        status  => { type => 'hashref', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'string', optional => 1 }
+
+=head3 MESSAGES
+
+As for L</interpolate>.
 
 =head2 condition
 
-    my $boolean = $expression->condition($if, \%context, \%status);
+    my $runs = $expression->condition($if, \%context, \%status);
 
-Evaluates a workflow C<if:> value.
+Works out a workflow's C<if:> value: should this job or step run?
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$if> - the C<if:> value.  It may be written with or without
+C<${{ }}> around it.  C<undef> or empty means "no condition".  A YAML
+boolean (C<if: false>) is used as it is.
+
+=item * C<\%context>, C<\%status> - as for L</evaluate>.
+
+=back
+
+=head3 RETURNS
+
+1 to run, 0 not to run.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    $expression->condition("github.event_name == 'push'", { github => { event_name => 'push' } });    # 1
+    $expression->condition(undef);                                                              # 1
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        condition => { type => 'string', optional => 1 },
+        context   => { type => 'hashref', optional => 1 },
+        status    => { type => 'hashref', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'integer', memberof => [ 0, 1 ] }
+
+=head3 MESSAGES
+
+As for L</evaluate>.
+
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Strings use single quotes.>  C<"main"> is not a string; write
+C<'main'>.  Inside a string, write C<''> for one quote.
+
+=item * B<A missing name is not an error.>  C<matrix.pearl> (a typing
+mistake) quietly gives C<null>.  Use L</interpolate_strict> where that
+matters.
+
+=item * B<Text comparison ignores case.>  C<'Main' == 'main'> is true, and
+so are C<contains>, C<startsWith> and C<endsWith> with different case.
+
+=item * B<C<'1.0' == 1> is true, C<'1.0' == '1'> is also true.>  Values that
+look like numbers are compared as numbers.
+
+=item * B<C<||> and C<&&> do not always return true or false.>  They return
+an operand, so C<${{ a || 'default' }}> is a common way to give a default.
+
+=item * B<Booleans in text are not always C<true>/C<false>.>  In this
+version, C<${{ true }}> and C<${{ 1 == 1 }}> are written as C<1>, and
+C<${{ 1 == 2 }}> as C<0>, but C<${{ 1 != 1 }}> as C<false>.  GitHub writes
+C<true> or C<false> for all of them.  Use comparisons in C<if:>, where they
+work the same, rather than in text.
+
+=item * B<An empty array is true.>  C<if: ${{ fromJSON('[]') }}> runs.
+
+=item * B<No arithmetic.>  C<+>, C<->, C<*> and C</> are not part of the
+language; they are errors.
+
+=item * B<Status functions need the status hash.>  Without it,
+C<success()> is false, so C<if: success()> does not run.
+
+=item * B<The context is not copied.>  Values from it, such as arrays, are
+returned as the same references.  Do not change them.
+
+=back
+
+=head1 ENCODING
+
+Expressions, contexts and results are Perl character strings.  String
+literals and values may contain any Unicode text, including non-ASCII and
+emoji, as long as the workflow was decoded as UTF-8 (L<App::Actions::Util>
+does this).  Names (C<matrix.perl>) must be ASCII letters, digits, C<_> and
+C<->.  Case-insensitive comparison uses Perl's C<lc>, which handles
+non-ASCII letters too.
 
 =head1 LIMITATIONS
 
-C<hashFiles()> is not supported.  Arithmetic is not part of the GitHub Actions
-expression language and is not implemented.
+=over 4
+
+=item * C<hashFiles()> is not supported.
+
+=item * The object filter C<*> (as in C<github.event.*.name>) is not
+supported.
+
+=item * Booleans made by an expression are not written as C<true>/C<false>
+in text; see L</COMMON PITFALLS>.
+
+=item * Arithmetic is not part of the GitHub Actions expression language and
+is not implemented.
+
+=back
 
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞEvaluator> means the routine leaves
+the evaluator's visible state alone.  The lines below the rule are always
+true when the routine returns.
+
+    [VALUE, TEXT]
+    CONTEXT == NAME ⇸ VALUE
+    STATUS == {success, failure, cancelled} ⇸ 𝔹
+    value : TEXT × CONTEXT × STATUS ⇸ VALUE       the language's meaning
+    missing : TEXT × CONTEXT → 𝔹                  some lookup found nothing
+    truthy : VALUE → 𝔹
+    truthy(v) ⇔ v ∉ {⊥, false, ⟨⟩, 0, "0"}
+    show : VALUE → TEXT                           as App::Actions::Util::stringify
+
+    ┌─ Evaluator ───────────────────────────────────────
+    │ unresolved : 𝔹
+    └───────────────────────────────────────────────────
+
+=head2 new
+
+    ┌─ New ─────────────────────────────────────────────
+    │ Evaluator'
+    ├───────────────────────────────────────────────────
+    │ unresolved' = false
+    └───────────────────────────────────────────────────
+
+=head2 evaluate
+
+    ┌─ Evaluate ────────────────────────────────────────
+    │ ΔEvaluator
+    │ text?    : TEXT
+    │ context? : CONTEXT
+    │ status?  : STATUS
+    │ v!       : VALUE
+    ├───────────────────────────────────────────────────
+    │ text? = ⊥ ⇒ raises Undefined
+    │ text? is only white space ⇒ raises Empty
+    │ text? ∉ dom value ⇒ raises Syntax
+    │ otherwise v! = value(text?, context?, status?)
+    │     ∧ unresolved' = missing(text?, context?)
+    └───────────────────────────────────────────────────
+
+=head2 interpolate
+
+    ┌─ Interpolate ─────────────────────────────────────
+    │ ΞEvaluator
+    │ text?  : optional TEXT
+    │ r!     : optional TEXT
+    ├───────────────────────────────────────────────────
+    │ text? = ⊥ ∨ text? ∈ REF ⇒ r! = text?
+    │ text? = p₀ ⁀ "${{" ⁀ e₁ ⁀ "}}" ⁀ p₁ ⁀ … ⁀ "${{" ⁀ eₙ ⁀ "}}" ⁀ pₙ
+    │     where no pᵢ contains "${{" and no eᵢ contains "}}"
+    │     ⇒ r! = p₀ ⁀ show(value(e₁)) ⁀ p₁ ⁀ … ⁀ show(value(eₙ)) ⁀ pₙ
+    │ "${{" in pₙ with no "}}" after it ⇒ raises Unclosed
+    └───────────────────────────────────────────────────
+
+=head2 interpolate_strict
+
+    ┌─ InterpolateStrict ───────────────────────────────
+    │ Interpolate
+    ├───────────────────────────────────────────────────
+    │ ∃ i • missing(eᵢ, context?) ⇒ raises Unresolved(eᵢ)
+    └───────────────────────────────────────────────────
+
+=head2 interpolate_known
+
+    ┌─ InterpolateKnown ────────────────────────────────
+    │ Interpolate
+    ├───────────────────────────────────────────────────
+    │ r! = p₀ ⁀ k₁ ⁀ p₁ ⁀ … ⁀ kₙ ⁀ pₙ where
+    │     kᵢ = "${{" ⁀ eᵢ ⁀ "}}"   if missing(eᵢ, context?)
+    │     kᵢ = show(value(eᵢ))     otherwise
+    └───────────────────────────────────────────────────
+
+=head2 condition
+
+    ┌─ Condition ───────────────────────────────────────
+    │ ΞEvaluator
+    │ if?     : optional (TEXT ∪ BOOLEAN)
+    │ r!      : {0, 1}
+    ├───────────────────────────────────────────────────
+    │ if? = ⊥ ∨ trim(if?) = ⟨⟩ ⇒ r! = 1
+    │ if? ∈ BOOLEAN ⇒ r! = (if if? then 1 else 0)
+    │ trim(if?) = "${{" ⁀ e ⁀ "}}" ⇒ r! = truthy(value(trim(e))) as 0/1
+    │ otherwise r! = truthy(value(trim(if?))) as 0/1
+    └───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The evaluator has one piece of state: whether the last lookup found
+nothing.  Each call to L</evaluate> goes through these steps:
+
+                         evaluate($text, $context, $status)
+                                     |
+                                     v
+                           +-------------------+   undef / empty
+                           |  CHECK INPUT      |------------------> croak
+                           +-------------------+
+                                     |  unresolved := false
+                                     v
+                           +-------------------+   bad character,
+                           |  TOKENIZE         |   open string
+                           |  (one pass, \G)   |------------------> croak
+                           +-------------------+
+                                     |
+                                     v
+                           +-------------------+   unexpected token,
+                           |  PARSE + COMPUTE  |   bad function call
+                           |  || && == < ! ()  |------------------> croak
+                           +-------------------+
+                              |            |
+               lookup found   |            | lookup found nothing
+               a value        |            v
+                              |   +-------------------+
+                              |   | unresolved := true|
+                              |   | value := undef    |
+                              |   +-------------------+
+                              |            |
+                              v            v
+                           +-------------------+
+                           |  DONE: value      |
+                           +-------------------+
+                              |
+         interpolate ---------+--> insert show(value) into the text
+         interpolate_strict --+--> unresolved ? croak : insert
+         interpolate_known ---+--> unresolved ? keep "${{ ... }}" : insert
+         condition -----------+--> truthy(value) ? 1 : 0
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

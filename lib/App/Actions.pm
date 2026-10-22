@@ -15,6 +15,8 @@ use App::Actions::Logs;
 use App::Actions::Runner;
 use App::Actions::Workflow;
 
+use Object::Configure;
+
 use Sub::Private ();
 use Sub::Protected ();
 
@@ -53,20 +55,81 @@ Readonly::Hash my %LIST_OPTIONS => (dry_run => 1, quiet => 1);
 
 =head1 NAME
 
-App::Actions - run GitHub Actions workflows locally with Docker
+App::Actions - run GitHub Actions workflows locally
 
 =head1 SYNOPSIS
+
+Run every job of a workflow (this is what C<action-run run> does):
 
 	use App::Actions;
 
 	my $actions = App::Actions->new(
-		workflow_file => "$ENV{HOME}/src/njh/CGI-Info/.github/workflows/perl-ci.yml",
-		project_dir   => "$ENV{HOME}/src/njh/CGI-Info",
+		workflow_file => "$ENV{HOME}/src/CGI-Info/.github/workflows/perl-ci.yml",
+		project_dir   => "$ENV{HOME}/src/CGI-Info",
 	);
 
-	exit $actions->run();
+	exit $actions->run();    # 0 = passed, 1 = a job failed, 2 = could not run
+
+Run one job, with a secret, and show the Docker commands:
+
+	my $actions = App::Actions->new(
+		workflow_file => '.github/workflows/ci.yml',
+		jobs          => [ 'test' ],
+		secrets       => { CODECOV_TOKEN => $ENV{CODECOV_TOKEN} },
+		verbose       => 1,
+	);
+	exit $actions->run;
+
+See what would run, without running it:
+
+	App::Actions->new(workflow_file => '.github/workflows/ci.yml')->list_jobs;
+	exit App::Actions->new(workflow_file => '.github/workflows/ci.yml', dry_run => 1)->run;
+
+Check Docker and download the images first, for a CI job:
+
+	use JSON::PP;
+
+	my $result = App::Actions->new(workflow_file => '.github/workflows/ci.yml')->preflight(json => 1);
+	print JSON::PP->new->canonical->encode($result->{summary}), "\n";
+	exit $result->{exit};
+
+Run the jobs of a matrix four at a time, and keep their logs:
+
+	App::Actions->new(workflow_file => '.github/workflows/ci.yml', parallel => 4)->run;
+	# logs: see "action-run logs"
 
 =head1 DESCRIPTION
+
+B<In short:> this module runs a GitHub Actions workflow on your own
+computer, in Docker containers, so you can test and debug it without
+pushing to GitHub.  Most people use it through the C<action-run> command;
+see L<action-run>.
+
+How it works, in brief:
+
+=over 4
+
+=item 1. It reads the workflow file (L<App::Actions::Workflow>) and expands
+each job's matrix.
+
+=item 2. It checks that Docker works and can see your project (as
+C<action-run check> does).
+
+=item 3. It downloads the images the jobs need, several at a time.
+
+=item 4. For each job, it makes a private Docker network, starts the job's
+service containers (for example a database), and starts one long-lived
+container for the job, with your project mounted in it.
+
+=item 5. It runs each step in that container with C<docker exec>.  Files and
+installed modules stay between steps, as on GitHub.
+
+=item 6. It removes the job's containers and network, and reports the
+result.
+
+=back
+
+The rest of this section gives the details.
 
 App::Actions runs a GitHub Actions workflow on a local machine using Docker
 containers, allowing troublesome issues to be more easily debugged.
@@ -264,28 +327,6 @@ Reads and parses the workflow file.
 
 The messages of L<App::Actions::Workflow/load> apply to the workflow file.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ New ─────────────────────────────────────────────
-	│ ΞFileSystem
-	│ workflowFile? : optional PATH
-	│ projectDir?   : optional PATH
-	│ options?      : OPTION ⇸ VALUE
-	│ actions!      : Actions
-	├───────────────────────────────────────────────────
-	│ dom options? ⊆ RUNNER_OPTIONS
-	│ workflowFile? = ⊥ ⇒ raises WorkflowFileRequired
-	│ abs(workflowFile?) ∉ regularFiles ⇒ raises WorkflowFileMissing
-	│ projectDir? = ⊥ ∧ abs(workflowFile?) ∉ (PATH ⁀ "/.github/workflows/" ⁀ NAME)
-	│     ⇒ raises ProjectDirRequired
-	│ let root == (projectDir? ≠ ⊥ ⇒ abs(projectDir?))
-	│             ∧ (projectDir? = ⊥ ⇒ repository(abs(workflowFile?)))
-	│ root ∉ directories ⇒ raises ProjectDirMissing
-	│ actions!.workflow = Workflow.Load(abs(workflowFile?))
-	│ actions!.project_dir = root
-	│ actions!.options = options?
-	└───────────────────────────────────────────────────
-
 =head3 PSEUDOCODE
 
 	validate the arguments, refusing unknown options
@@ -305,6 +346,8 @@ sub new {
 		project_dir => { type => 'string', optional => 1 },
 		%OPTION_RULES,
 	});
+
+	$params = Object::Configure::configure($class, $params);
 
 	$class->throw('actions.workflow_file_required') unless defined $params->{workflow_file};
 
@@ -351,16 +394,6 @@ None.
 =head3 EXAMPLE
 
 	printf "%s from %s\n", $actions->workflow->name, $actions->project_dir;
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Accessor ────────────────────────────────────────
-	│ ΞActions
-	│ field? : {workflow, workflow_file, project_dir}
-	│ value! : VALUE
-	├───────────────────────────────────────────────────
-	│ value! = θActions.field?
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -416,17 +449,6 @@ C<project_dir>.
 Failures of the run itself are printed by L<App::Actions::Runner> and
 reported by the exit code rather than raised.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Run ─────────────────────────────────────────────
-	│ ΞActions
-	│ overrides? : OPTION ⇸ VALUE
-	│ exit!      : {0, 1, 2}
-	├───────────────────────────────────────────────────
-	│ dom overrides? ⊆ RUNNER_OPTIONS
-	│ exit! = Runner.Run(options ⊕ overrides?)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub run {
@@ -470,7 +492,7 @@ appears in none of them.  With C<json =E<gt> 1> nothing is
 printed, so the caller's output can be a single document; C<ready> is then a
 JSON boolean and the summary is the document C<action-run preflight --json>
 prints, already validated against that schema, so a mismatch dies with an
-L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
+L<App::Actions::Schema::Invalid>
 exception naming the first key at fault rather than being returned; the
 command gives that exit 70.
 
@@ -510,20 +532,6 @@ The option rules of L</new>, all optional, plus
 	| --json document does not | schema (an                    | report it                      |
 	| match ...                | App::Actions::Schema::Invalid)|                                |
 	+--------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Preflight ───────────────────────────────────────
-	│ ΞActions
-	│ overrides? : OPTION ⇸ VALUE
-	│ json?      : optional BOOLEAN
-	│ result!    : Result
-	├───────────────────────────────────────────────────
-	│ dom overrides? ⊆ RUNNER_OPTIONS
-	│ result! = Runner.Preflight(options ⊕ overrides?, json?)
-	│ result!.exit ∈ {0, 2}
-	│ json? ⇒ valid(result!.summary, PreflightSchema)
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -592,19 +600,6 @@ None.
 	| preflight, cache or logs |                               |                                |
 	+--------------------------+-------------------------------+--------------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	DOCUMENT ::= check | preflight | cache | logs
-
-	┌─ JsonSchema ──────────────────────────────────────
-	│ name?   : optional STRING
-	│ schema! : KEY ⇸ VALUE
-	├───────────────────────────────────────────────────
-	│ name? ∈ {⊥, ⟨⟩} ⇒ raises DocumentRequired
-	│ name? ∉ DOCUMENT ⇒ raises DocumentUnknown(name?)
-	│ name? ∈ DOCUMENT ⇒ schema! = owner(name?).json_schema
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub json_schema {
@@ -671,17 +666,6 @@ The option rules of L</new>, all optional.
 	| Invalid arguments to     | An unknown or mistyped        | Use the options of new         |
 	| App::Actions::list_jobs  | override                      |                                |
 	+--------------------------+-------------------------------+--------------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ListJobs ────────────────────────────────────────
-	│ ΞActions
-	│ overrides? : OPTION ⇸ VALUE
-	│ exit!      : {0}
-	├───────────────────────────────────────────────────
-	│ output' = output ⁀ ⟨ j : selected(jobs ⊕ overrides?) • j.base_id ⁀ TAB ⁀ j.display_name ⟩
-	│ exit! = 0
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -910,16 +894,219 @@ L<App::Actions::I18N/LIMITATIONS>.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Docker must be running, and able to see your project.>  Run
+C<action-run check> first if a run fails before any job starts.
+
+=item * B<Only Linux jobs run.>  Jobs with C<runs-on: macos-*> or
+C<windows-*> are skipped, not failed.
+
+=item * B<Remote actions are not downloaded.>  C<actions/checkout>,
+setup-perl and a few others are treated as no-ops (your project is already
+mounted).  Other remote actions are skipped with a warning; set
+C<strict_actions> to make them fail instead.
+
+=item * B<Secrets must be passed in.>  Nothing is read from GitHub.  Pass
+C<secrets =E<gt> { NAME =E<gt> value }> (or C<--secret> on the command
+line).  Missing secrets are empty, as on GitHub for a fork.
+
+=item * B<Images are kept.>  The images a run downloads stay, to make the
+next run faster.  Set C<keep_images =E<gt> 0>, or use C<action-run cache
+--prune>, to remove them.
+
+=item * B<C<run> returns a status; it does not die for a failed job.>
+Check the number: 0, 1 or 2.
+
+=item * B<Unknown options are errors.>  A misspelt option name (C<job> for
+C<jobs>) stops with C<Invalid arguments to App::Actions::new>.
+
+=item * B<Run as yourself or root.>  With C<user> set to another user, the
+job's files (secrets included) must be readable by every user of the
+computer, and a warning says so.
+
+=item * B<Only run workflows you trust.>  A workflow can mount any folder
+of your computer into its containers, as it can on GitHub's own runners.
+
+=item * B<Parallel jobs write to log files, not the terminal.>  With
+C<parallel> above 1, read the output with C<action-run logs>.
+
+=back
+
+=head1 ENCODING
+
+Workflow and action files are read as UTF-8.  Their names, commands and
+values may contain any Unicode text, including non-ASCII characters and
+emoji.  File and folder names are used as bytes, as your system stores
+them.  Commands, environment variables and secrets are passed to Docker as
+bytes (UTF-8 for text from the workflow).  What the containers print is
+passed through to your terminal unchanged.  Messages from this module are
+in English unless C<ACTION_RUN_LANG> chooses French (C<fr>), German
+(C<de>) or Chinese (C<zh>); those are character strings, so the terminal
+should use UTF-8.
+
 =head1 AUTHOR
 
 Nigel Horne, C<< <njh at nigelhorne.com> >>
 
-=head1 LICENCE AND COPYRIGHT
+=head1 FORMAL SPECIFICATION
+
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ New ─────────────────────────────────────────────
+	│ ΞFileSystem
+	│ workflowFile? : optional PATH
+	│ projectDir?   : optional PATH
+	│ options?      : OPTION ⇸ VALUE
+	│ actions!      : Actions
+	├───────────────────────────────────────────────────
+	│ dom options? ⊆ RUNNER_OPTIONS
+	│ workflowFile? = ⊥ ⇒ raises WorkflowFileRequired
+	│ abs(workflowFile?) ∉ regularFiles ⇒ raises WorkflowFileMissing
+	│ projectDir? = ⊥ ∧ abs(workflowFile?) ∉ (PATH ⁀ "/.github/workflows/" ⁀ NAME)
+	│     ⇒ raises ProjectDirRequired
+	│ let root == (projectDir? ≠ ⊥ ⇒ abs(projectDir?))
+	│             ∧ (projectDir? = ⊥ ⇒ repository(abs(workflowFile?)))
+	│ root ∉ directories ⇒ raises ProjectDirMissing
+	│ actions!.workflow = Workflow.Load(abs(workflowFile?))
+	│ actions!.project_dir = root
+	│ actions!.options = options?
+	└───────────────────────────────────────────────────
+
+=head2 workflow, workflow_file, project_dir
+
+	┌─ Accessor ────────────────────────────────────────
+	│ ΞActions
+	│ field? : {workflow, workflow_file, project_dir}
+	│ value! : VALUE
+	├───────────────────────────────────────────────────
+	│ value! = θActions.field?
+	└───────────────────────────────────────────────────
+
+=head2 run
+
+	┌─ Run ─────────────────────────────────────────────
+	│ ΞActions
+	│ overrides? : OPTION ⇸ VALUE
+	│ exit!      : {0, 1, 2}
+	├───────────────────────────────────────────────────
+	│ dom overrides? ⊆ RUNNER_OPTIONS
+	│ exit! = Runner.Run(options ⊕ overrides?)
+	└───────────────────────────────────────────────────
+
+=head2 preflight
+
+	┌─ Preflight ───────────────────────────────────────
+	│ ΞActions
+	│ overrides? : OPTION ⇸ VALUE
+	│ json?      : optional BOOLEAN
+	│ result!    : Result
+	├───────────────────────────────────────────────────
+	│ dom overrides? ⊆ RUNNER_OPTIONS
+	│ result! = Runner.Preflight(options ⊕ overrides?, json?)
+	│ result!.exit ∈ {0, 2}
+	│ json? ⇒ valid(result!.summary, PreflightSchema)
+	└───────────────────────────────────────────────────
+
+=head2 json_schema
+
+	DOCUMENT ::= check | preflight | cache | logs
+
+	┌─ JsonSchema ──────────────────────────────────────
+	│ name?   : optional STRING
+	│ schema! : KEY ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ name? ∈ {⊥, ⟨⟩} ⇒ raises DocumentRequired
+	│ name? ∉ DOCUMENT ⇒ raises DocumentUnknown(name?)
+	│ name? ∈ DOCUMENT ⇒ schema! = owner(name?).json_schema
+	└───────────────────────────────────────────────────
+
+=head2 list_jobs
+
+	┌─ ListJobs ────────────────────────────────────────
+	│ ΞActions
+	│ overrides? : OPTION ⇸ VALUE
+	│ exit!      : {0}
+	├───────────────────────────────────────────────────
+	│ output' = output ⁀ ⟨ j : selected(jobs ⊕ overrides?) • j.base_id ⁀ TAB ⁀ j.display_name ⟩
+	│ exit! = 0
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+An App::Actions object only holds options; each call to L</run>,
+L</preflight> or L</list_jobs> builds a new L<App::Actions::Runner> and goes
+through these states (the full detail of each is in L<App::Actions::Runner>
+and its parts):
+
+	 new(%options)
+	      |   options checked; workflow loaded (errors are thrown here)
+	      v
+	+-------------+
+	|   READY     |<------------------------------------------------------+
+	+-------------+                                                       |
+	   |       |  list_jobs: print "id<TAB>display name" per job; return 0 |
+	   |       +-------------------------------------------------------->-+
+	   |
+	   | run(%overrides) / preflight(%overrides)
+	   v
+	+----------------+  daemon unreachable, not Linux containers,
+	| CHECK DOCKER   |  project not mountable -> print report; status 2
+	| (skip_check:   |---------------------------------------------------+
+	|  skipped)      |                                                   |
+	+----------------+                                                   |
+	   |                                                                 |
+	   v                                                                 |
+	+----------------+  an image cannot be pulled -> status 2            |
+	| PREPARE IMAGES |------------------------------------------------->-+
+	| (pull missing, |                                                   |
+	|  N at a time)  |  preflight stops here: return { exit, summary }   |
+	+----------------+------------------------------------------------->-+
+	   |                                                                 |
+	   | for each selected job (matrix expanded; non-Linux skipped;      |
+	   | up to "parallel" at a time)                                     |
+	   v                                                                 |
+	+----------------+  network, services, job container                 |
+	| START JOB      |  (a service that stops -> job fails)              |
+	+----------------+                                                   |
+	   |                                                                 |
+	   v                                                                 |
+	+----------------+  each step: if: condition -> docker exec;         |
+	| RUN STEPS      |  GITHUB_ENV / PATH / OUTPUT / STATE honoured;     |
+	|                |  a failed step fails the job (later steps run     |
+	|                |  only with if: failure() / always())              |
+	+----------------+                                                   |
+	   |                                                                 |
+	   v                                                                 |
+	+----------------+  containers and network removed (unless keep);    |
+	| CLEAN UP JOB   |  images kept unless keep_images is false          |
+	+----------------+                                                   |
+	   |                                                                 |
+	   v                                                                 |
+	+----------------+  status 0 = every job passed, 1 = a job failed    |
+	| REPORT         |------------------------------------------------->-+
+	+----------------+                     returns the status
+
+=head1 LICENSE AND COPYRIGHT
 
 Copyright 2026 Nigel Horne.
 
-Usage is subject to the GPL2 licence terms.
-If you use it,
-please let me know.
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

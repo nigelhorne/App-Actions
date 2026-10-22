@@ -309,7 +309,35 @@ App::Actions::Runner - plan and run a GitHub Actions workflow in Docker
 
 Most callers use L<App::Actions>, which builds the runner for them.
 
+Run only some jobs, without starting anything (a dry run):
+
+	my $runner = App::Actions::Runner->new(
+		workflow    => $workflow,
+		project_dir => $project,
+		jobs        => [ 'lint', 'test' ],
+		dry_run     => 1,
+	);
+	$runner->run;    # prints the Docker commands it would run
+
+Prepare everything, then report as data:
+
+	my $result = App::Actions::Runner->new(workflow => $workflow, project_dir => $project)
+		->preflight(json => 1);
+	print "ready\n" if $result->{exit} == 0;
+
+Test without Docker, with an object that has the L<App::Actions::Docker>
+interface:
+
+	my $runner = App::Actions::Runner->new(
+		workflow    => $workflow,
+		project_dir => $project,
+		docker      => My::FakeDocker->new,
+	);
+
 =head1 DESCRIPTION
+
+B<In short:> the runner is the part of App::Actions that decides what to
+run, in what order, and then asks its helper modules to do it.
 
 The runner is the planner of a run.  It expands the workflow's jobs, selects
 the ones asked for, checks the host, orders the jobs by their C<needs>, decides
@@ -423,24 +451,6 @@ Reads C<ACTION_RUN_PULL_CONCURRENCY> when C<pull_concurrency> is not given.
 	|                             | the wrong type               |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ NewRunner ───────────────────────────────────────
-	│ workflow?    : WORKFLOW
-	│ projectDir?  : PATH
-	│ options?     : OPTION ⇸ VALUE
-	│ r!           : Runner
-	├───────────────────────────────────────────────────
-	│ dom options? ⊆ dom optionRules
-	│ isDirectory(projectDir?)
-	│ ¬ (options?(pull) ∧ options?(no_pull))
-	│ r!.pullConcurrency =
-	│     first(options?(pull_concurrency), env(ACTION_RUN_PULL_CONCURRENCY), 4) ∈ ℕ₁
-	│ r!.parallel = (if options?(parallel) ∈ ℕ₁ then options?(parallel) else 1)
-	│ r!.dryRun = options?(dry_run) ∨ options?(explain)
-	│ r!.keepImages = (if options?(keep_images) = ⊥ then true else options?(keep_images))
-	└───────────────────────────────────────────────────
-
 =head3 PSEUDOCODE
 
 	validate the arguments against the option rules
@@ -532,14 +542,6 @@ accept exactly the same options.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ OptionRules ─────────────────────────────────────
-	│ rules! : OPTION ⇸ RULE
-	├───────────────────────────────────────────────────
-	│ rules! = optionRules
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub option_rules {
@@ -571,14 +573,6 @@ ships with the module rather than only with the tests.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ JsonSchema ──────────────────────────────────────
-	│ schema! : JSON
-	├───────────────────────────────────────────────────
-	│ schema! = decode(JSON_SCHEMA) ∧ schema!.version = PREFLIGHT_SCHEMA_VERSION
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -612,14 +606,6 @@ in F<t/schema.t>.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ PreflightSchemaVersion ──────────────────────────
-	│ v! : ℕ₁
-	├───────────────────────────────────────────────────
-	│ v! = PREFLIGHT_SCHEMA_VERSION
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub preflight_schema_version { return $PREFLIGHT_SCHEMA_VERSION }
@@ -645,15 +631,6 @@ Returns the L<App::Actions::Workflow> the runner was given.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Workflow ────────────────────────────────────────
-	│ ΞRunner
-	│ w! : WORKFLOW
-	├───────────────────────────────────────────────────
-	│ w! = workflow
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -688,17 +665,6 @@ name>, and returns 0.
 	| No job matched 'X'          | A jobs filter names no job   | Use an id or a display name |
 	|                             |                              | the listing shows           |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ListJobs ────────────────────────────────────────
-	│ ΞRunner
-	│ out! : seq LINE
-	│ exit! : ℤ
-	├───────────────────────────────────────────────────
-	│ out! = ⟨ j : selected(expand(workflow)) • j.base_id ⁀ TAB ⁀ redact(j.display_name) ⟩
-	│ exit! = 0
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -746,18 +712,6 @@ standard error, and the run exits 2.  The commonest:
 	| job 'X'                     |                              |                             |
 	| Interrupted / Terminated    | SIGINT or SIGTERM            | None                        |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Run ─────────────────────────────────────────────
-	│ ΔRunner
-	│ exit! : {0, 1, 2}
-	├───────────────────────────────────────────────────
-	│ raised ⇒ exit! = 2
-	│ ¬ raised ∧ report.failed' ⇒ exit! = 1
-	│ ¬ raised ∧ ¬ report.failed' ⇒ exit! = 0
-	│ cleanedUp'
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -884,19 +838,6 @@ report unless C<json> is set.
 	| --json document does not    | its schema; raised as an     | report it                   |
 	| match ...json_schema: ...   | App::Actions::Schema::Invalid|                             |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Preflight ───────────────────────────────────────
-	│ ΔRunner
-	│ json? : 𝔹
-	│ r!    : RESULT
-	├───────────────────────────────────────────────────
-	│ r!.summary.ready ⇔ checksPassed ∧ (∀ i : r!.summary.images • i.status ≠ failed)
-	│ r!.exit = (if r!.summary.ready then 0 else 2)
-	│ json? ⇒ valid(r!.summary, JsonSchema)
-	│ ¬ checksPassed ⇒ ∀ i : r!.summary.images • i.status = skipped
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -1943,13 +1884,237 @@ lookups it relies on would all fail them.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Make a new runner for each run.>  A runner is not reusable: a
+second L</run> starts with the state the first left behind.
+
+=item * B<C<project_dir> must exist.>  It is mounted into every job
+container.
+
+=item * B<Options are fixed when the runner is made.>  The parts copy them,
+so changing an option afterwards has no effect.
+
+=item * B<C<run> reports failures by status, not by exception.>  Errors of
+the run are printed as C<action-run: MESSAGE> and give status 2.
+
+=item * B<Ctrl-C still cleans up.>  SIGINT and SIGTERM stop the run, but the
+containers and networks are removed first.  Press Ctrl-C again only if the
+clean-up itself hangs.
+
+=item * B<C<keep> keeps everything.>  With C<keep>, containers and networks
+are left running for you to inspect; remove them yourself afterwards (their
+names start with C<action-run->).
+
+=item * B<C<parallel> is ignored with C<keep>>, on Windows, and where
+C<fork> does not work; jobs then run one at a time.
+
+=item * B<C<user> other than yourself or root opens the runner folder to
+all users.>  See L</LIMITATIONS>.
+
+=back
+
+=head1 ENCODING
+
+Text from the workflow (commands, names, environment values, secrets) is
+handled as Perl character strings and passed to Docker as UTF-8 bytes, so
+non-ASCII characters and emoji work in step commands and values.  Step
+scripts are written as UTF-8 with LF line endings.  Paths (the project
+folder, the temporary folder) are used as bytes, as your system stores them.
+Output from the containers is passed to your terminal as bytes, unchanged.
+Messages from the runner itself are in the language of L<App::Actions::I18N>;
+non-English messages contain non-ASCII characters.
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ NewRunner ───────────────────────────────────────
+	│ workflow?    : WORKFLOW
+	│ projectDir?  : PATH
+	│ options?     : OPTION ⇸ VALUE
+	│ r!           : Runner
+	├───────────────────────────────────────────────────
+	│ dom options? ⊆ dom optionRules
+	│ isDirectory(projectDir?)
+	│ ¬ (options?(pull) ∧ options?(no_pull))
+	│ r!.pullConcurrency =
+	│     first(options?(pull_concurrency), env(ACTION_RUN_PULL_CONCURRENCY), 4) ∈ ℕ₁
+	│ r!.parallel = (if options?(parallel) ∈ ℕ₁ then options?(parallel) else 1)
+	│ r!.dryRun = options?(dry_run) ∨ options?(explain)
+	│ r!.keepImages = (if options?(keep_images) = ⊥ then true else options?(keep_images))
+	└───────────────────────────────────────────────────
+
+=head2 option_rules
+
+	┌─ OptionRules ─────────────────────────────────────
+	│ rules! : OPTION ⇸ RULE
+	├───────────────────────────────────────────────────
+	│ rules! = optionRules
+	└───────────────────────────────────────────────────
+
+=head2 json_schema
+
+	┌─ JsonSchema ──────────────────────────────────────
+	│ schema! : JSON
+	├───────────────────────────────────────────────────
+	│ schema! = decode(JSON_SCHEMA) ∧ schema!.version = PREFLIGHT_SCHEMA_VERSION
+	└───────────────────────────────────────────────────
+
+=head2 preflight_schema_version
+
+	┌─ PreflightSchemaVersion ──────────────────────────
+	│ v! : ℕ₁
+	├───────────────────────────────────────────────────
+	│ v! = PREFLIGHT_SCHEMA_VERSION
+	└───────────────────────────────────────────────────
+
+=head2 workflow
+
+	┌─ Workflow ────────────────────────────────────────
+	│ ΞRunner
+	│ w! : WORKFLOW
+	├───────────────────────────────────────────────────
+	│ w! = workflow
+	└───────────────────────────────────────────────────
+
+=head2 list_jobs
+
+	┌─ ListJobs ────────────────────────────────────────
+	│ ΞRunner
+	│ out! : seq LINE
+	│ exit! : ℤ
+	├───────────────────────────────────────────────────
+	│ out! = ⟨ j : selected(expand(workflow)) • j.base_id ⁀ TAB ⁀ redact(j.display_name) ⟩
+	│ exit! = 0
+	└───────────────────────────────────────────────────
+
+=head2 run
+
+	┌─ Run ─────────────────────────────────────────────
+	│ ΔRunner
+	│ exit! : {0, 1, 2}
+	├───────────────────────────────────────────────────
+	│ raised ⇒ exit! = 2
+	│ ¬ raised ∧ report.failed' ⇒ exit! = 1
+	│ ¬ raised ∧ ¬ report.failed' ⇒ exit! = 0
+	│ cleanedUp'
+	└───────────────────────────────────────────────────
+
+=head2 preflight
+
+	┌─ Preflight ───────────────────────────────────────
+	│ ΔRunner
+	│ json? : 𝔹
+	│ r!    : RESULT
+	├───────────────────────────────────────────────────
+	│ r!.summary.ready ⇔ checksPassed ∧ (∀ i : r!.summary.images • i.status ≠ failed)
+	│ r!.exit = (if r!.summary.ready then 0 else 2)
+	│ json? ⇒ valid(r!.summary, JsonSchema)
+	│ ¬ checksPassed ⇒ ∀ i : r!.summary.images • i.status = skipped
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The runner is used once.  These are the states of one L</run> (L</preflight>
+stops after PREPARING IMAGES; a dry run prints the Docker commands instead
+of running them):
+
+	  new(workflow, project_dir, %options)
+	        |   options checked, parts built from copies of the options
+	        v
+	  +-----------+  run / preflight
+	  |  CREATED  |-----------------+
+	  +-----------+                 |
+	                                v
+	                       +-----------------+  SIGINT / SIGTERM at any later
+	                       | SELECTING JOBS  |  point -> error "Interrupted" ->
+	                       | expand matrix;  |  CLEANING UP; status 2
+	                       | jobs filter;    |
+	                       | non-Linux: skip |
+	                       +-----------------+
+	                                |
+	                                v
+	                       +-----------------+  daemon / Linux / mount problem
+	                       | CHECKING HOST   |  -> report printed -> FAILED (2)
+	                       | (skip_check:    |
+	                       |  skipped)       |
+	                       +-----------------+
+	                                |
+	                                v
+	                       +-----------------+  a pull fails -> FAILED (2)
+	                       | PREPARING IMAGES|  preflight: return here
+	                       | (Images part)   |  { exit, summary, error }
+	                       +-----------------+
+	                                |
+	                                v
+	                       +-----------------+  needs cycle -> FAILED (2)
+	                       | ORDERING JOBS   |
+	                       | by needs        |
+	                       +-----------------+
+	                                |
+	                                v
+	           +---------> +-----------------+
+	           |           | NEXT GROUP      |  jobs whose needs are done
+	           |           +-----------------+
+	           |              |           |
+	           |   if: false, |           | one job, or a matrix with
+	           |   or a need  |           | parallel = 1
+	           |   failed:    |           v
+	           |   SKIPPED    |   +----------------+    a matrix with parallel > 1:
+	           |              |   | RUNNING JOB    |    Parallel part forks one
+	           |              |   | Containers:    |    child per job, up to
+	           |              |   |   network,     |    "parallel" at once; each
+	           |              |   |   services,    |    child does RUNNING JOB;
+	           |              |   |   job container|    output goes to log files
+	           |              |   | Steps: each    |
+	           |              |   |   step         |
+	           |              |   | Containers:    |
+	           |              |   |   remove       |
+	           |              |   +----------------+
+	           |              |           |
+	           |              +-----+-----+  job passed / failed / skipped
+	           |                    |
+	           +---- more groups ---+
+	                                | no more
+	                                v
+	                       +-----------------+
+	                       | REPORTING       |  summary table (Report part);
+	                       +-----------------+  logs kept for parallel jobs
+	                                |
+	                                v
+	                       +-----------------+  containers, networks; images
+	                       | CLEANING UP     |  this run pulled (unless
+	                       |                 |  keep_images); temporary folder
+	                       +-----------------+  (all skipped with keep)
+	                                |
+	                                v
+	              status 0 (all passed), 1 (a job failed), 2 (FAILED)
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

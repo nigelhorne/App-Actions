@@ -49,7 +49,25 @@ App::Actions::Runner::Images - work out, pull and track the images a run needs
 	my $prepared = $images->prepare($instances);
 	die $images->failure_message($prepared->{failures}[0]) if @{ $prepared->{failures} };
 
+List the images a run will need, without pulling anything:
+
+	for my $entry (@{ $images->required($instances) }) {
+		print defined $entry->{image}
+			? "$entry->{image}  (for $entry->{source})\n"
+			: "deferred: $entry->{expression}\n";
+	}
+
+Make sure one image is there, then record what was downloaded:
+
+	$images->ensure('perl:5.40');
+	$images->remember($cache_file);    # for "action-run cache"
+
 =head1 DESCRIPTION
+
+B<In short:> this module finds every Docker image a run will need,
+downloads the missing ones before any job starts, and remembers what it
+downloaded.  It is a part of L<App::Actions::Runner>; you rarely use it on
+its own.
 
 Every image a run will use - each job's container, each service, and each
 C<docker://> action, including those inside local composite actions - is
@@ -147,21 +165,6 @@ None.
 	| ...Images::new: REASON    | an option has the wrong type |                             |
 	+---------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Images ──────────────────────────────────────────
-	│ pulled     : ℙ IMAGE     -- images this run downloaded that were absent
-	│ pulledOnce : ℙ IMAGE     -- images this run has pulled at all
-	├───────────────────────────────────────────────────
-	│ pulled ⊆ pulledOnce
-	└───────────────────────────────────────────────────
-
-	┌─ NewImages ───────────────────────────────────────
-	│ Images'
-	├───────────────────────────────────────────────────
-	│ pulled' = ∅ ∧ pulledOnce' = ∅
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub new {
@@ -219,16 +222,6 @@ is the number handed to the puller, and so the one the preflight reports.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Concurrency ─────────────────────────────────────
-	│ ΞImages
-	│ n! : ℕ₁
-	├───────────────────────────────────────────────────
-	│ os = MSWin32 ⇒ n! = 1
-	│ os ≠ MSWin32 ⇒ n! = pullConcurrency
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub concurrency {
@@ -265,18 +258,6 @@ Jobs whose runner is not Linux are left out, because they will not run.
 =head3 MESSAGES
 
 None; an expression that fails to resolve is reported in its entry.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Required ────────────────────────────────────────
-	│ ΞImages
-	│ instances? : seq JOB
-	│ entries!   : seq ENTRY
-	├───────────────────────────────────────────────────
-	│ ∀ e : ran entries! • e.image ≠ ⊥ ∨ e.expression ≠ ⊥
-	│ ∀ i, j : dom entries! | i ≠ j ∧ entries!(i).image ≠ ⊥ •
-	│     entries!(i).image ≠ entries!(j).image
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -353,16 +334,6 @@ absent for an action.
 =head3 MESSAGES
 
 None; a local action that cannot be read contributes no images.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ JobExpressions ──────────────────────────────────
-	│ ΞImages
-	│ job? : JOB
-	│ e!   : seq ENTRY
-	├───────────────────────────────────────────────────
-	│ e! = jobImage(job?) ⁀ serviceImages(job?) ⁀ ⁀/ (map actionImages job?.steps)
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -467,19 +438,6 @@ Pulls images, prints progress unless quiet, and remembers what it pulled.
 	| Failed to pull Docker image | The pull exited non-zero     | Check the name, the registry|
 	| 'X' (exit N)                |                              | and the Docker login        |
 	+-----------------------------+------------------------------+-----------------------------+
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Prepare ─────────────────────────────────────────
-	│ ΔImages
-	│ instances? : seq JOB
-	│ records!   : seq RECORD
-	│ failures!  : seq RECORD
-	├───────────────────────────────────────────────────
-	│ failures! = records! ↾ {r | r.status = failed}
-	│ pulled' = pulled ∪ {r.image | r ∈ ran records! ∧ r.status = pulled ∧ ¬ present(r.image)}
-	│ pulledOnce' = pulledOnce ∪ {r.image | r ∈ ran records! ∧ r.status = pulled}
-	└───────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -595,20 +553,6 @@ Pulls images that are not present.
 	| 'X', needed by S: E         | pulled                       |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ PrepareJob ──────────────────────────────────────
-	│ ΔImages
-	│ job?      : JOB
-	│ image!    : optional IMAGE
-	│ deferred! : seq ENTRY
-	├───────────────────────────────────────────────────
-	│ ∀ e : jobExpressions(job?) | e.kind ∈ {job} ∪ services •
-	│     resolves(e) ∨ raises Unresolved
-	│ image! = resolve(e) where e.kind = job
-	│ ran deferred! = {e : jobExpressions(job?) | ¬ resolves(e) ∧ e.kind = ⊥}
-	└───────────────────────────────────────────────────
-
 =head3 PSEUDOCODE
 
 	for each image expression the job uses:
@@ -681,18 +625,6 @@ run needs.  Falls back to the configured default image, then to C<alpine:3.20>.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Probe ───────────────────────────────────────────
-	│ ΞImages
-	│ instances? : seq JOB
-	│ image!     : IMAGE
-	├───────────────────────────────────────────────────
-	│ (∃ i : ran instances? • linux(i) ∧ known(jobImage(i)))
-	│     ⇒ image! = jobImage(first such i)
-	│ otherwise image! = (if defaultImage ≠ ⊥ then defaultImage else alpine:3.20)
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub probe {
@@ -748,20 +680,6 @@ a second step that names the same image would otherwise download it again.
 	| available locally (--no-pull)| image is absent             |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Ensure ──────────────────────────────────────────
-	│ ΔImages
-	│ image? : IMAGE
-	├───────────────────────────────────────────────────
-	│ dryRun ∨ image? ∈ pulledOnce ⇒ θImages' = θImages
-	│ present(image?) ∧ ¬ pull ⇒ θImages' = θImages
-	│ (¬ present(image?) ∨ pull) ∧ noPull ⇒ raises NotLocal
-	│ (¬ present(image?) ∨ pull) ∧ ¬ noPull ⇒
-	│     pulledOnce' = pulledOnce ∪ {image?} ∧
-	│     pulled' = pulled ∪ (if present(image?) then ∅ else {image?})
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub ensure {
@@ -809,15 +727,6 @@ to keep its images removes them too.  Returns the object.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ NotePulled ──────────────────────────────────────
-	│ ΔImages
-	│ images? : ℙ IMAGE
-	├───────────────────────────────────────────────────
-	│ pulled' = pulled ∪ images?
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub note_pulled {
@@ -850,15 +759,6 @@ not there before.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Pulled ──────────────────────────────────────────
-	│ ΞImages
-	│ images! : seq IMAGE
-	├───────────────────────────────────────────────────
-	│ ran images! = pulled ∧ images! is sorted
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -916,16 +816,6 @@ Writes the cache record; warns (when verbose) if it cannot.
 	| the image cache: E          | be written (verbose only)    | permissions                 |
 	+-----------------------------+------------------------------+-----------------------------+
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Remember ────────────────────────────────────────
-	│ ΞImages
-	│ ΔCacheFile
-	├───────────────────────────────────────────────────
-	│ pulled ≠ ∅ ∧ ¬ dryRun ⇒ cache' = cache ∪ pulled
-	│ pulled = ∅ ∨ dryRun ⇒ cache' = cache
-	└───────────────────────────────────────────────────
-
 =cut
 
 sub remember {
@@ -967,15 +857,6 @@ needed it, and what went wrong.
 
 The text it returns is C<runner.image.unprepared>: "cannot prepare the image
 'X', needed by S: E".
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ FailureMessage ──────────────────────────────────
-	│ record? : RECORD
-	│ text!   : seq CHAR
-	├───────────────────────────────────────────────────
-	│ text! = render(unprepared, record?.image, record?.source, record?.error)
-	└───────────────────────────────────────────────────
 
 =cut
 
@@ -1204,13 +1085,244 @@ again for every job that uses it.
 
 =back
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Some images cannot be known in advance.>  An image whose name uses
+a value that a step produces is I<deferred>: L</required> and L</prepare>
+list its expression instead of a name, and L</prepare_job> pulls it when
+the job starts.
+
+=item * B<Image names are compared as text.>  C<perl:5.40> and
+C<docker.io/library/perl:5.40> count as two images.
+
+=item * B<On Windows, pulls run one at a time>, whatever
+C<pull_concurrency> says.  L</concurrency> tells you the real number.
+
+=item * B<With C<pull>, each image is pulled once per run>, not once per
+job.  Call L</ensure> freely.
+
+=item * B<Images pulled in another process are not known> until you call
+L</note_pulled> with them (the parallel runner does this for its children).
+
+=item * B<L</remember> never fails the run.>  If the cache file cannot be
+written, a warning is printed and the run goes on.
+
+=back
+
+=head1 ENCODING
+
+Image names are ASCII, as Docker requires; a name built from workflow
+values containing other characters is refused by Docker when it is pulled.
+Expressions and source descriptions are Perl character strings and may
+contain any Unicode text.  The cache file is written as UTF-8 JSON (see
+L<App::Actions::Cache>).
+
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.  It is for readers who want to check exactly what a routine
+promises.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΞState> means the routine changes
+nothing, and C<ΔState> means it can change the state.  The lines below the
+rule are the conditions that are always true when the routine returns.
+
+=head2 new
+
+	┌─ Images ──────────────────────────────────────────
+	│ pulled     : ℙ IMAGE     -- images this run downloaded that were absent
+	│ pulledOnce : ℙ IMAGE     -- images this run has pulled at all
+	├───────────────────────────────────────────────────
+	│ pulled ⊆ pulledOnce
+	└───────────────────────────────────────────────────
+
+	┌─ NewImages ───────────────────────────────────────
+	│ Images'
+	├───────────────────────────────────────────────────
+	│ pulled' = ∅ ∧ pulledOnce' = ∅
+	└───────────────────────────────────────────────────
+
+=head2 concurrency
+
+	┌─ Concurrency ─────────────────────────────────────
+	│ ΞImages
+	│ n! : ℕ₁
+	├───────────────────────────────────────────────────
+	│ os = MSWin32 ⇒ n! = 1
+	│ os ≠ MSWin32 ⇒ n! = pullConcurrency
+	└───────────────────────────────────────────────────
+
+=head2 required
+
+	┌─ Required ────────────────────────────────────────
+	│ ΞImages
+	│ instances? : seq JOB
+	│ entries!   : seq ENTRY
+	├───────────────────────────────────────────────────
+	│ ∀ e : ran entries! • e.image ≠ ⊥ ∨ e.expression ≠ ⊥
+	│ ∀ i, j : dom entries! | i ≠ j ∧ entries!(i).image ≠ ⊥ •
+	│     entries!(i).image ≠ entries!(j).image
+	└───────────────────────────────────────────────────
+
+=head2 job_expressions
+
+	┌─ JobExpressions ──────────────────────────────────
+	│ ΞImages
+	│ job? : JOB
+	│ e!   : seq ENTRY
+	├───────────────────────────────────────────────────
+	│ e! = jobImage(job?) ⁀ serviceImages(job?) ⁀ ⁀/ (map actionImages job?.steps)
+	└───────────────────────────────────────────────────
+
+=head2 prepare
+
+	┌─ Prepare ─────────────────────────────────────────
+	│ ΔImages
+	│ instances? : seq JOB
+	│ records!   : seq RECORD
+	│ failures!  : seq RECORD
+	├───────────────────────────────────────────────────
+	│ failures! = records! ↾ {r | r.status = failed}
+	│ pulled' = pulled ∪ {r.image | r ∈ ran records! ∧ r.status = pulled ∧ ¬ present(r.image)}
+	│ pulledOnce' = pulledOnce ∪ {r.image | r ∈ ran records! ∧ r.status = pulled}
+	└───────────────────────────────────────────────────
+
+=head2 prepare_job
+
+	┌─ PrepareJob ──────────────────────────────────────
+	│ ΔImages
+	│ job?      : JOB
+	│ image!    : optional IMAGE
+	│ deferred! : seq ENTRY
+	├───────────────────────────────────────────────────
+	│ ∀ e : jobExpressions(job?) | e.kind ∈ {job} ∪ services •
+	│     resolves(e) ∨ raises Unresolved
+	│ image! = resolve(e) where e.kind = job
+	│ ran deferred! = {e : jobExpressions(job?) | ¬ resolves(e) ∧ e.kind = ⊥}
+	└───────────────────────────────────────────────────
+
+=head2 probe
+
+	┌─ Probe ───────────────────────────────────────────
+	│ ΞImages
+	│ instances? : seq JOB
+	│ image!     : IMAGE
+	├───────────────────────────────────────────────────
+	│ (∃ i : ran instances? • linux(i) ∧ known(jobImage(i)))
+	│     ⇒ image! = jobImage(first such i)
+	│ otherwise image! = (if defaultImage ≠ ⊥ then defaultImage else alpine:3.20)
+	└───────────────────────────────────────────────────
+
+=head2 ensure
+
+	┌─ Ensure ──────────────────────────────────────────
+	│ ΔImages
+	│ image? : IMAGE
+	├───────────────────────────────────────────────────
+	│ dryRun ∨ image? ∈ pulledOnce ⇒ θImages' = θImages
+	│ present(image?) ∧ ¬ pull ⇒ θImages' = θImages
+	│ (¬ present(image?) ∨ pull) ∧ noPull ⇒ raises NotLocal
+	│ (¬ present(image?) ∨ pull) ∧ ¬ noPull ⇒
+	│     pulledOnce' = pulledOnce ∪ {image?} ∧
+	│     pulled' = pulled ∪ (if present(image?) then ∅ else {image?})
+	└───────────────────────────────────────────────────
+
+=head2 note_pulled
+
+	┌─ NotePulled ──────────────────────────────────────
+	│ ΔImages
+	│ images? : ℙ IMAGE
+	├───────────────────────────────────────────────────
+	│ pulled' = pulled ∪ images?
+	└───────────────────────────────────────────────────
+
+=head2 pulled
+
+	┌─ Pulled ──────────────────────────────────────────
+	│ ΞImages
+	│ images! : seq IMAGE
+	├───────────────────────────────────────────────────
+	│ ran images! = pulled ∧ images! is sorted
+	└───────────────────────────────────────────────────
+
+=head2 remember
+
+	┌─ Remember ────────────────────────────────────────
+	│ ΞImages
+	│ ΔCacheFile
+	├───────────────────────────────────────────────────
+	│ pulled ≠ ∅ ∧ ¬ dryRun ⇒ cache' = cache ∪ pulled
+	│ pulled = ∅ ∨ dryRun ⇒ cache' = cache
+	└───────────────────────────────────────────────────
+
+=head2 failure_message
+
+	┌─ FailureMessage ──────────────────────────────────
+	│ record? : RECORD
+	│ text!   : seq CHAR
+	├───────────────────────────────────────────────────
+	│ text! = render(unprepared, record?.image, record?.source, record?.error)
+	└───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The object remembers which images it has made sure of, and which it
+downloaded.  One image goes through these states during a run:
+
+	  required($instances) / job_expressions(...)
+	        |   the image is found in a job, service or docker:// step
+	        v   (also inside local composite actions)
+	+-------------------+  name uses a step's output
+	| NAMED             |--------------------------------+
+	+-------------------+                                |
+	        |                                            v
+	        | prepare($instances)                 +---------------+
+	        v                                     |   DEFERRED    |
+	+-------------------+                         +---------------+
+	| CHECKING          |  image_exists?                 |
+	+-------------------+                                | prepare_job($job, $context)
+	   |            |                                    | when the job starts:
+	   | present,   | missing, or --pull                 | resolve with the job's
+	   | no --pull  v                                    | values, then CHECKING
+	   |    +-------------------+                        |
+	   |    | PULLING           |  up to concurrency()   |
+	   |    | (pull_many)       |  at once               |
+	   |    +-------------------+                        |
+	   |       |            |                            |
+	   |       | ok         | failed                     |
+	   |       v            v                            |
+	   |   +--------+   +-------------------------+      |
+	   |   | PULLED |   | FAILED: run stops with  |      |
+	   |   +--------+   | failure_message(record) |      |
+	   |       |        +-------------------------+      |
+	   v       v                                         |
+	+-------------------+ <------------------------------+
+	| READY             |  ensure($image) later: no second pull,
+	+-------------------+  even with --pull
+	        |
+	        | end of run
+	        v
+	  keep_images? --no--> images in pulled() are removed
+	        | yes
+	        v
+	  remember($cache_file): pulled() recorded for "action-run cache"
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

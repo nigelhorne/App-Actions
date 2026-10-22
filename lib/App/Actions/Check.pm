@@ -543,45 +543,84 @@ sub _trim {
 
 __END__
 
+=encoding utf-8
+
 =head1 NAME
 
-App::Actions::Check - diagnose the host, Docker and bind mounts for App::Actions
+App::Actions::Check - find out whether this computer can run workflows with Docker
 
 =head1 SYNOPSIS
 
+Check the computer and print a report (this is C<action-run check>):
+
     use App::Actions::Check;
 
-    my $check = App::Actions::Check->new(
-        docker_bin => 'docker',
-        image      => 'alpine:3.20',
-        directory  => '/path/to/project',
-    );
-    my $exit_code = $check->run;
+    my $status = App::Actions::Check->new->run;    # 0 = ready, 2 = not ready
+    exit $status;
+
+Also check that Docker can see your project directory:
+
+    my $check = App::Actions::Check->new(directory => '/home/me/src/project');
+    exit $check->run;
+
+Print a JSON report for a CI job (C<action-run check --json>):
+
+    my $check = App::Actions::Check->new(json => 1);
+    $check->run;    # prints one JSON object
+
+Print nothing unless something is wrong:
+
+    my $check = App::Actions::Check->new(quiet => 1);
+    die "Docker is not ready\n" if $check->run;
+
+Get the report as data, without printing it:
+
+    open my $sink, '>', \my $ignored;
+    my $check = App::Actions::Check->new(output => $sink);
+    my $status = $check->run;
+    my $report = $check->summary($status);
+    print "Docker $report->{docker}{daemon}\n";
 
 =head1 DESCRIPTION
 
-L<App::Actions::Check> performs the checks that explain most failures to run
-a workflow locally: whether the host is one that C<action-run> supports,
-whether the Docker daemon is reachable and can run Linux containers, and
-whether Docker can bind-mount the host directories that a run needs.
+Most failures to run a workflow locally have one of a few causes: Docker is
+not installed, the Docker service is not running, it runs Windows containers
+instead of Linux ones, or it cannot see the folders on this computer.  This
+module checks each of these, in order, and stops at the first that fails:
 
-The mount check starts one short-lived container, mounts a temporary
-directory and reads a file back from it.  When C<directory> is given, that
-directory is mounted read-only as well and the number of entries visible
-inside the container is compared with the host, which catches a drive that
-Docker Desktop has not shared.
+=over 4
 
-Every problem is followed by one or more C<remedy> lines naming the step that
-fixes it: starting Docker Desktop or the daemon, switching Docker Desktop to
-Linux containers, sharing the drive that holds the temporary or project
-directory, pulling the probe image by hand, or choosing another directory.
-The remedies name the tools of the platform the check runs on.
+=item 1. B<The host.>  Which system and Perl this is.  This never fails.
 
-The text report names the version of the schema that its JSON document is
-written against, on a C<schema> line before the verdict, so a report pasted
-into an issue says which contract its lines belong to.  Set C<schema_line> to
-false in a caller whose own report is not that document, such as the
-preflight, which has one of its own.
+=item 2. B<The Docker program.>  Can C<docker version> run?
+
+=item 3. B<The Docker service (daemon).>  Does it answer?  Does it run
+Linux containers?
+
+=item 4. B<Folder sharing (bind mounts).>  It writes a file in a new
+temporary folder, starts one small container (C<alpine:3.20> by default)
+with that folder mounted, and reads the file back.  If you give a
+C<directory>, it also mounts that folder read-only and compares the number
+of entries seen inside the container with the number on the computer.  This
+finds a drive that Docker Desktop does not share.
+
+=back
+
+Every problem is followed by one or more C<remedy> lines that say how to fix
+it, in the words of the system the check runs on (for example Docker Desktop
+settings on Windows, C<systemctl> on Linux).
+
+A text report looks like this:
+
+    action-run check
+      host      Linux (linux), perl 5.40.0, x86_64-linux
+      docker    docker
+      client    29.0.1
+      daemon    29.0.1, linux containers
+      image     alpine:3.20
+      mount     /tmp/action-run-check-AbC123 -> /action-run-check: OK
+      schema    version 2 (action-run schema check)
+    Result: ready
 
 =head1 METHODS
 
@@ -589,64 +628,319 @@ preflight, which has one of its own.
 
     my $check = App::Actions::Check->new(%options);
 
-Options are C<docker_bin>, C<image> (default C<alpine:3.20>), C<platform>
-(passed to Docker as C<--platform>), C<directory> (an extra directory to
-test), C<output> (a filehandle, default C<STDOUT>), C<title> (the heading,
-default C<action-run check>; an empty string leaves it out), C<summary>
-(default true; set it to false to leave the final C<Result:> line to the
-caller), C<quiet> (print nothing unless a problem was found), C<json> (print
-one JSON object instead of the text report), C<schema_line> (default true;
-set it to false to leave the schema version out of a report that is not the
-check document) and C<os> (the platform whose remedies are printed, default
-C<$^O>; set it to report for another host, for example when pasting a report
-into a bug tracker).
+Makes a check.  Nothing is checked yet.
+
+=head3 ARGUMENTS
+
+All are optional.
+
+=over 4
+
+=item * C<docker_bin> - the Docker program.  Default as in
+L<App::Actions::Docker/new>.
+
+=item * C<image> - the small image used for the folder test.  Default
+C<alpine:3.20>.
+
+=item * C<platform> - passed to Docker as C<--platform>, for example
+C<linux/amd64> on an ARM computer.
+
+=item * C<directory> - a folder to test as well, for example your project.
+
+=item * C<output> - where to print.  A file handle.  Default C<STDOUT>.
+
+=item * C<title> - the first line.  Default C<action-run check>.  An empty
+string leaves it out.
+
+=item * C<summary> - default true.  False leaves out the last C<Result:>
+line, for a caller that prints its own.
+
+=item * C<quiet> - true to print the text report only if there is a problem.
+
+=item * C<json> - true to print one JSON object instead of the text report.
+See L</JSON OUTPUT>.
+
+=item * C<schema_line> - default true.  False leaves out the C<schema> line,
+for a caller whose report is not this document.
+
+=item * C<os> - the system whose remedies are printed, as in C<$^O>
+(C<linux>, C<darwin>, C<MSWin32>, ...).  Default: this computer's.
+
+=back
+
+=head3 RETURNS
+
+The new object.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    my $check = App::Actions::Check->new(platform => 'linux/amd64', title => '');
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        docker_bin  => { type => 'string', optional => 1 },
+        image       => { type => 'string', optional => 1, default => 'alpine:3.20' },
+        platform    => { type => 'string', optional => 1 },
+        directory   => { type => 'string', optional => 1 },
+        output      => { type => 'object', optional => 1 },
+        title       => { type => 'string', optional => 1, default => 'action-run check' },
+        summary     => { type => 'boolean', optional => 1, default => 1 },
+        quiet       => { type => 'boolean', optional => 1 },
+        json        => { type => 'boolean', optional => 1 },
+        schema_line => { type => 'boolean', optional => 1, default => 1 },
+        os          => { type => 'string', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'object', isa => 'App::Actions::Check' }
+
+=head3 MESSAGES
+
+None.
 
 =head2 run
 
-Prints a report and returns 0 when every check passed, or 2 when a problem
-was found.
+    my $status = $check->run;
 
-=head2 image
+Runs the checks and prints the report.
 
-Returns the image used for the mount probe.
+=head3 ARGUMENTS
+
+None.
+
+=head3 RETURNS
+
+0 if everything is ready; 2 if there is a problem.  These are the exit
+statuses C<action-run check> uses.
+
+=head3 SIDE EFFECTS
+
+Runs Docker commands; may download the probe image; starts and removes one
+container with no network; creates and removes a temporary folder; prints
+the report to C<output>.  Calling C<run> again starts a fresh report.
+
+=head3 EXAMPLE
+
+    if ($check->run != 0) {
+        print STDERR "Fix the problems above, then try again.\n";
+    }
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'integer', memberof => [ 0, 2 ] }
+
+=head3 MESSAGES
+
+Problems are printed, not thrown.  Each C<problem> line has its own
+C<remedy> lines:
+
+    +--------------------------------------------------+-----------------------------------------+
+    | Problem                                          | Usual cause                             |
+    +--------------------------------------------------+-----------------------------------------+
+    | the Docker command 'BIN' could not be run        | Docker not installed, or not on PATH    |
+    | the daemon is not reachable; is Docker running   | Docker not started, or no permission    |
+    | and can this user access it?                     | (add the user to the docker group)      |
+    | the daemon runs 'windows' containers; action-run | Docker Desktop in Windows mode          |
+    | needs Linux containers                           |                                         |
+    | cannot write 'FILE': ERR                         | temporary folder not writable           |
+    | 'DIR' is not a directory                         | wrong "directory" option                |
+    | the probe container failed (exit N)              | image cannot be pulled, or wrong        |
+    |                                                  | platform                                |
+    | the container could not read the mounted         | drive not shared, or a remote Docker    |
+    | temporary directory                              | (DOCKER_HOST) that cannot see this disk |
+    | could not count the entries in 'DIR'             | the probe printed something unexpected  |
+    | 'DIR' -> /check-project sees N entries, the host | drive not shared; Docker sees an empty  |
+    | has M                                            | or different folder                     |
+    +--------------------------------------------------+-----------------------------------------+
+
+Thrown:
+
+    +----------------------------------------------+------------------------------------+------------------+
+    | Exception                                    | Meaning                            | What to do       |
+    +----------------------------------------------+------------------------------------+------------------+
+    | App::Actions::Schema::Invalid: the           | (json only) a bug: the document    | report it; exit  |
+    | action-run check --json document does not    | does not match its schema; nothing | status 70        |
+    | match App::Actions::Check->json_schema: ...  | is printed                         |                  |
+    | Unable to buffer the check report: ERR (die) | out of memory                      |                  |
+    +----------------------------------------------+------------------------------------+------------------+
 
 =head2 summary
 
-    my $report = $check->summary($exit);
+    my $report = $check->summary($status);
 
-Returns the report as a hash reference instead of printing it, with the keys
-described under L</JSON OUTPUT>.  C<ready> is a plain 0 or 1 here, so a caller
-that encodes it as JSON should convert it to a JSON boolean.  The preflight
-uses this to add the images it prepared.
+Returns the last report as data instead of text.  Call it after L</run>.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$status> - what L</run> returned.
+
+=back
+
+=head3 RETURNS
+
+A hash reference with the keys described in L</JSON OUTPUT>.  Here C<ready>
+is 1 or 0, not a JSON boolean; convert it before you encode it as JSON.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    my $report = $check->summary($check->run);
+    print "$_->{problem}\n" for @{ $report->{issues} };
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { exit => { type => 'integer', memberof => [ 0, 2 ] } }
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+None.
+
+=head2 host_info
+
+    my $host = App::Actions::Check->host_info;
+    my $host = $check->host_info;
+    my $host = App::Actions::Check->host_info('MSWin32');
+
+Describes this computer, without running any check.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$os> - optional.  The system name to report.  Default: the
+object's C<os>, or C<$^O>.
+
+=back
+
+=head3 RETURNS
+
+A hash reference: C<os> (as in C<$^O>), C<name> (for people, such as
+C<macOS>), C<perl> (the version, such as C<5.40.0>) and C<archname>.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { os => { type => 'string', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+None.
+
+=head2 image
+
+    my $image = $check->image;
+
+Returns the image used for the folder test.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
 
 =head2 json_schema
 
     my $schema = App::Actions::Check->json_schema;
 
-Returns the JSON schema of the C<check --json> document as a hash, the same
-document C<action-run schema check> prints.  It lives here rather than in the
-test directory so that an installed distribution can hand the contract to a
-caller; F<t/schema.t> validates the example and the document against it.
+Returns the JSON schema of the C<check --json> document, as a hash
+reference.  C<action-run schema check> prints the same schema.
+
+=head3 ARGUMENTS
+
+None.
+
+=head3 RETURNS
+
+A new hash reference each time, so you may change it.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'hashref' }
+
+=head3 MESSAGES
+
+None.
 
 =head2 json_schema_version
 
     my $version = App::Actions::Check->json_schema_version;
 
-Returns the version of the JSON document, which is also its C<schema_version>
-key.  It is bumped when the shape changes, so an assertion can name the shape
-it was written for.
+Returns the version of the JSON document's shape.  The document carries the
+same number as C<schema_version>.  It goes up whenever the shape changes.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 1 }
+
+=head3 MESSAGES
+
+None.
 
 =head1 JSON OUTPUT
 
-With C<json> the report is a single object, with every key always present and
-C<null> for a value that could not be discovered:
+With C<json>, the report is one JSON object.  Every key is always there.  A
+value that could not be found out is C<null>:
 
     {
       "schema_version": 2,
       "ready": true,
       "problems": 0,
       "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
-      "docker": { "bin": "docker", "client": "29.9.1", "daemon": "29.9.1", "containers": "linux" },
+      "docker": { "bin": "docker", "client": "29.0.1", "daemon": "29.0.1", "containers": "linux" },
       "image": "alpine:3.20",
       "mounts": [
         { "host": "/tmp/action-run-check-XXXX", "container": "/action-run-check", "ok": true },
@@ -655,34 +949,215 @@ C<null> for a value that could not be discovered:
       "issues": [ { "problem": "...", "remedies": [ "..." ] } ]
     }
 
-C<schema_version> names the shape of the document; it is the number
-L</json_schema_version> returns.  The schema is what C<action-run schema
-check> prints, and the checked-in examples are F<t/fixtures/check.json> (a
-passing report), F<t/fixtures/check-unready.json> (a mount mismatch),
-F<t/fixtures/check-unreachable.json> (Docker could not be run, so its version
-fields and the probe image are C<null>) and F<t/fixtures/check-uncounted.json>
-(the probe ran but could not count the project's entries, so both counts are
-C<null>).  F<t/schema.t> validates them against it and fails when a property,
-an enum value or a null variant it names appears in none of them, so a shape
-left behind by the code or by the schema cannot hide there.
+C<schema_version> is the number L</json_schema_version> returns.  The schema
+itself is what C<action-run schema check> prints.  The examples in
+F<t/fixtures/check.json>, F<check-unready.json>, F<check-unreachable.json>
+and F<check-uncounted.json> show a ready computer, a folder mismatch, a
+Docker that could not be run, and a folder whose entries could not be
+counted.
 
-Before the document is printed it is validated against that schema, so a key
-that was added, removed or retyped without the schema being updated is an
-error here rather than a surprise in the assertion that reads it.  Nothing is
-printed when that happens: the exception is an
-L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Invalid>
-carrying the first mismatch and the number of others, which C<action-run>
-turns into exit 70.
+Before the document is printed, it is checked against its schema.  If it
+does not match (a bug), nothing is printed and an
+L<App::Actions::Schema::Invalid> is thrown; C<action-run> then exits with
+70.  The return value of L</run> is the same with or without C<json>.
 
-The exit status is unchanged, so a caller may use either.
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<The check stops at the first failure.>  If Docker is not running,
+the folder test is not tried.  Run the check again after each fix.
+
+=item * B<It downloads an image.>  The first run pulls C<alpine:3.20> (a few
+megabytes).  Without internet access, pass an C<image> you already have.
+
+=item * B<The image needs C<sh>, C<cat>, C<ls> and C<wc>.>  A "distroless"
+or "scratch" image will fail the probe.
+
+=item * B<A remote Docker cannot see your files.>  With C<DOCKER_HOST>
+pointing at another computer, the folder test fails.  That is a real
+problem: workflows will not see your project either.
+
+=item * B<C<summary> is only meaningful after C<run>.>  Before it, the
+report is empty.
+
+=item * B<In C<summary>, C<ready> is 0 or 1, not a JSON boolean.>
+
+=item * B<C<quiet> does not silence C<json>.>  With C<json>, the document is
+always printed.
+
+=back
+
+=head1 ENCODING
+
+Folder names may contain any characters your system allows, including
+non-ASCII and emoji; they are passed to Docker as bytes and reported as
+bytes.  The text report itself is ASCII except for those names and for what
+Docker prints.  The JSON report is UTF-8 encoded only if the input strings
+are; decode folder names with your system's encoding if you need characters.
 
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  C<ΔCheck> means the routine can change
+the object.  The lines below the rule are always true when the routine
+returns.
+
+    [ISSUE, MOUNT]
+    STAGE ::= host | program | daemon | linux | mounts | project
+    passes : STAGE → 𝔹                   what the computer would answer
+
+    ┌─ Check ───────────────────────────────────────────
+    │ image    : seq₁ CHAR
+    │ problems : ℕ
+    │ issues   : seq ISSUE
+    │ mounts   : seq MOUNT
+    ├───────────────────────────────────────────────────
+    │ problems = #issues
+    └───────────────────────────────────────────────────
+
+=head2 new
+
+    ┌─ New ─────────────────────────────────────────────
+    │ Check'
+    │ image? : optional seq CHAR
+    ├───────────────────────────────────────────────────
+    │ image' = if image? = ⊥ ∨ image? = ⟨⟩ then "alpine:3.20" else image?
+    │ problems' = 0 ∧ issues' = ⟨⟩ ∧ mounts' = ⟨⟩
+    └───────────────────────────────────────────────────
+
+=head2 run
+
+    ┌─ Run ─────────────────────────────────────────────
+    │ ΔCheck
+    │ r! : {0, 2}
+    ├───────────────────────────────────────────────────
+    │ order = ⟨program, daemon, linux, mounts, project⟩
+    │ failed = first s in order with ¬passes(s), or ⊥
+    │ failed = ⊥ ⇒ r! = 0 ∧ problems' = 0
+    │ failed ≠ ⊥ ⇒ r! = 2 ∧ problems' = 1
+    │ ∀ s after failed in order • s is not tried
+    │ project is tried only when a directory was given
+    └───────────────────────────────────────────────────
+
+=head2 summary
+
+    ┌─ Summary ─────────────────────────────────────────
+    │ ΞCheck
+    │ exit? : {0, 2}
+    │ r!    : KEY ⇸ VALUE
+    ├───────────────────────────────────────────────────
+    │ r!.ready = (if exit? = 0 then 1 else 0)
+    │ r!.problems = problems ∧ r!.issues = issues ∧ r!.mounts = mounts
+    │ r!.schema_version = json_schema_version
+    └───────────────────────────────────────────────────
+
+=head2 host_info
+
+    ┌─ HostInfo ────────────────────────────────────────
+    │ os? : optional seq CHAR
+    │ r!  : KEY ⇸ VALUE
+    ├───────────────────────────────────────────────────
+    │ r!.os = first non-empty of ⟨os?, self.os, $^O⟩
+    │ r!.name = displayName(r!.os) if known, else r!.os
+    │ dom r! = {os, name, perl, archname}
+    └───────────────────────────────────────────────────
+
+=head2 image
+
+    ┌─ Image ───────────────────────────────────────────
+    │ ΞCheck
+    │ r! : seq₁ CHAR
+    ├───────────────────────────────────────────────────
+    │ r! = image
+    └───────────────────────────────────────────────────
+
+=head2 json_schema
+
+    ┌─ JsonSchema ──────────────────────────────────────
+    │ r! : SCHEMA
+    ├───────────────────────────────────────────────────
+    │ r! = decode(JSON_SCHEMA) ∧ r! is a new object
+    └───────────────────────────────────────────────────
+
+=head2 json_schema_version
+
+    ┌─ JsonSchemaVersion ───────────────────────────────
+    │ r! : ℕ₁
+    ├───────────────────────────────────────────────────
+    │ r! = JSON_SCHEMA_VERSION
+    └───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+L</run> moves through these states.  Any failed test records one problem
+with its remedies and jumps to NOT READY:
+
+     new(%options)
+          |
+          v
+    +-----------+  run   +------------+       +----------------+  fails  +-----------+
+    |  CREATED  |------->| HOST       |------>| DOCKER PROGRAM |-------->|           |
+    +-----------+        | (always ok)|       | docker version |         |           |
+          ^              +------------+       +----------------+         |           |
+          |                                          | ok                |           |
+          |                                          v                   |           |
+          |                                   +----------------+  fails  |           |
+          |                                   | DAEMON         |-------->|           |
+          |                                   | server version |         |           |
+          |                                   +----------------+         |           |
+          |                                          | ok                |           |
+          |                                          v                   |    NOT    |
+          |                                   +----------------+  not    |   READY   |
+          |                                   | LINUX          |  linux  |  status 2 |
+          |                                   | CONTAINERS?    |-------->|           |
+          |                                   +----------------+         |           |
+          |                                          | yes               |           |
+          |                                          v                   |           |
+          |                                   +----------------+  fails  |           |
+          |                                   | TEMP MOUNT     |-------->|           |
+          |                                   | write, run,    |         |           |
+          |                                   | read back      |         |           |
+          |                                   +----------------+         |           |
+          |                                          | ok                |           |
+          |                          no directory    v                   |           |
+          |                        +---------+---------------+  differ   |           |
+          |                        |         | PROJECT MOUNT |---------->|           |
+          |                        |         | count entries |           +-----------+
+          |                        |         +---------------+                 |
+          |                        v                 | same                     |
+          |                  +-----------+           |                          |
+          |                  |   READY   |<----------+                          |
+          |                  |  status 0 |                                      |
+          |                  +-----------+                                      |
+          |                        |                                            |
+          |                        +--------------------+-----------------------+
+          |                                             v
+          |                                  +---------------------+
+          |                                  | REPORT              |  json: check against the
+          |                                  | text, or JSON       |  schema, then print (or
+          |                                  | (quiet: only if not |  throw Schema::Invalid)
+          |                                  |  ready)             |
+          |                                  +---------------------+
+          |                                             |
+          +---------------- run again ------------------+   summary($status) reads the report
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut

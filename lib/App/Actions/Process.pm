@@ -346,80 +346,672 @@ sub run {
 
 __END__
 
+=encoding utf-8
+
 =head1 NAME
 
-App::Actions::Process - run external commands portably
+App::Actions::Process - run other programs, the same way on Unix and Windows
 
 =head1 SYNOPSIS
 
+Run a program and read what it printed:
+
     use App::Actions::Process;
 
-    my ($output, $status) = App::Actions::Process::capture(['git', 'status']);
+    my ($output, $status) = App::Actions::Process::capture(['git', 'rev-parse', 'HEAD']);
+    die "not a git checkout\n" if $status != 0;
+
+Run a program and show its output to the user:
+
+    my $status = App::Actions::Process::stream(['make', 'test']);
+
+Run a program and hide everything it prints:
+
     my $status = App::Actions::Process::run_quiet(['docker', 'info']);
+
+Run several programs at the same time:
+
+    my $statuses = App::Actions::Process::run_parallel(
+        [ ['docker', 'pull', 'alpine'], ['docker', 'pull', 'perl'] ],
+        concurrency => App::Actions::Process::cpu_count(),
+    );
+
+Send the output to a file:
+
+    my $status = App::Actions::Process::run(['ls', '-l'], stdout => 'listing.txt');
 
 =head1 DESCRIPTION
 
-L<App::Actions::Docker> and L<App::Actions::Runner> need to run external
-programs and inspect their exit codes.  The obvious implementations use
-C<fork> and the piped forms of C<open>, which are not reliably available on
-Windows.  This module uses C<system> with explicitly redirected standard
-output instead, so the same code works on Unix and on Windows.  Arguments that
-need quoting are quoted here rather than left to Perl, whose Win32 quoting
-gives up on any argument containing a double quote.
+This module starts other programs and tells you how they ended.  It works on
+Linux, macOS and Windows with the same code.
+
+Every function takes the command as a reference to a list: the program
+first, then each argument.  B<A shell is never used.>  Each argument reaches
+the program exactly as you wrote it, even if it contains spaces, quotes,
+C<$>, C<;> or C<|>.  So text from a workflow cannot run a second command.
+
+Windows has no separate arguments: a program gets one command line and
+splits it up itself.  On Windows this module quotes each argument with
+L</quote_win32> so that it is split back correctly.  On other systems the
+arguments are passed as they are.
+
+Every function returns an I<exit status> as a shell shows it:
+
+=over 4
+
+=item * 0 - the program succeeded;
+
+=item * 1 to 125 - the program failed, and this is the number it chose;
+
+=item * 255 - the program could not be started (for example, it does not
+exist);
+
+=item * 128 + N - the program was stopped by signal N (130 for Ctrl-C).
+
+=back
 
 =head1 FUNCTIONS
 
-=head2 capture
-
-    my ($output, $status) = capture(\@command, quiet_stderr => 1);
-    my ($merged) = capture(\@command, merge_stderr => 1);
-
-Runs the command, capturing its standard output.  Standard error is passed
-through unless C<quiet_stderr> is true.  With C<merge_stderr> it is captured
-too, as if the command had been run with C<2>&1>, which is what a caller wants
-when the message it is building has room for both streams.  Newlines in the
-captured output are normalised to C<"\n">.  The command is not run through a
-shell.
-
-=head2 run_quiet
-
-    my $status = run_quiet(\@command);
-
-Runs the command with both standard output and standard error discarded.
-
-=head2 stream
-
-    my $status = stream(\@command);
-
-Runs the command with its standard output and standard error going straight to
-the caller, and returns its exit code.
-
-=head2 quote_win32
-
-    my $argument = quote_win32('sh -c printf "$PATH"');
-
-Quotes one argument for the Win32 command line, following the rules the C
-runtime uses to split a command line back into arguments.  Perl's own quoting
-leaves an argument containing a double quote unquoted, so the C runtime splits
-it at its spaces; this is why a C<-e> program containing quotes cannot be
-passed to C<system> on Windows.  Every function in this module that starts a
-command applies this on Windows only; elsewhere the arguments are used as
-given.
+No function is exported.  Call them with their full names, for example
+C<App::Actions::Process::capture(...)>.
 
 =head2 exit_code
 
-    my $code = exit_code($?);
+    my $status = App::Actions::Process::exit_code($?);
 
-Converts the value of C<$?> into an exit code, mapping a signal to
-C<128 + signal>.
+Turns Perl's C<$?> into an exit status, as described above.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$status> - the value of C<$?> after C<system> or C<waitpid>.
+
+=back
+
+=head3 RETURNS
+
+The exit status.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    system { 'true' } 'true';
+    print App::Actions::Process::exit_code($?);    # 0
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { status => { type => 'integer', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 0, max => 255 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 cpu_count
+
+    my $count = App::Actions::Process::cpu_count();
+
+Returns how many processors this computer can use now.  C<action-run> uses
+it as the default for C<--parallel>.
+
+=head3 ARGUMENTS
+
+None.
+
+=head3 RETURNS
+
+A whole number, 1 or more.  If the computer does not say, 1.
+
+=head3 SIDE EFFECTS
+
+Reads C<NUMBER_OF_PROCESSORS> on Windows, F</proc/cpuinfo> on Linux, or asks
+the system with C<sysconf>.
+
+=head3 EXAMPLE
+
+    my $jobs = App::Actions::Process::cpu_count();
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {}
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head2 capture
+
+    my ($output, $status) = App::Actions::Process::capture(\@command, %options);
+
+Runs a program and returns what it printed.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<\@command> - the program and its arguments.  Not empty.
+
+=item * C<quiet_stderr> - optional.  True to throw away the error output.
+Otherwise it goes to your terminal.
+
+=item * C<merge_stderr> - optional.  True to include the error output in the
+returned text, in the order the program wrote it (like the shell's
+C<2E<gt>&1>).
+
+=back
+
+=head3 RETURNS
+
+A list of two values: the output, and the exit status.  Windows line ends
+(C<\r\n>) in the output become C<\n>.
+
+=head3 SIDE EFFECTS
+
+Writes the output to a temporary file, which is deleted afterwards.
+
+=head3 EXAMPLE
+
+    my ($version) = App::Actions::Process::capture(['perl', '-e', 'print $]']);
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        command      => { type => 'arrayref', min => 1 },
+        quiet_stderr => { type => 'boolean', optional => 1 },
+        merge_stderr => { type => 'boolean', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'array', min => 2, max => 2 }    # (string, integer)
+
+=head3 MESSAGES
+
+    +------------------------------------------+---------------------------------+---------------------------+
+    | Exception (croak)                        | Meaning                         | What to do                |
+    +------------------------------------------+---------------------------------+---------------------------+
+    | No command given                         | not a non-empty array reference | pass [program, args...]   |
+    | Unable to rewind captured output: ERR    | the temporary file failed       | check the temp directory  |
+    | Unable to redirect command output: ERR   | the output file could not be    | check the temp directory  |
+    |                                          | opened                          | and disk space            |
+    | Unable to duplicate STDOUT/STDERR: ERR   | the program's own handles are   | do not close STDOUT or    |
+    | Unable to restore STDOUT/STDERR: ERR     | broken                          | STDERR before calling     |
+    +------------------------------------------+---------------------------------+---------------------------+
+
+=head2 run
+
+    my $status = App::Actions::Process::run(\@command, %options);
+
+Runs a program and sends its output to a file.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<\@command> - the program and its arguments.  Not empty.
+
+=item * C<stdout> - optional.  The file for the output.  Default: the null
+device (the output is thrown away).
+
+=item * C<stderr> - optional.  The file for the error output.  Default: your
+terminal.
+
+=item * C<merge_stderr> - optional.  True to send the error output to the
+C<stdout> file too.  It wins over C<stderr>.
+
+=back
+
+=head3 RETURNS
+
+The exit status.
+
+=head3 SIDE EFFECTS
+
+Replaces the files named by C<stdout> and C<stderr>.  While the program runs,
+this process's own C<STDOUT> and C<STDERR> point to those files; they are
+put back afterwards.
+
+=head3 EXAMPLE
+
+    my $status = App::Actions::Process::run(['make'], stdout => 'build.log', merge_stderr => 1);
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        command      => { type => 'arrayref', min => 1 },
+        stdout       => { type => 'string', optional => 1 },
+        stderr       => { type => 'string', optional => 1 },
+        merge_stderr => { type => 'boolean', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 0, max => 255 }
+
+=head3 MESSAGES
+
+As for L</capture>, except the "rewind" message.
+
+=head2 run_quiet
+
+    my $status = App::Actions::Process::run_quiet(\@command);
+
+Runs a program and throws away everything it prints.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<\@command> - the program and its arguments.
+
+=back
+
+=head3 RETURNS
+
+The exit status.
+
+=head3 SIDE EFFECTS
+
+None, apart from what the program does.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { command => { type => 'arrayref', min => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 0, max => 255 }
+
+=head3 MESSAGES
+
+As for L</run>.
+
+=head2 stream
+
+    my $status = App::Actions::Process::stream(\@command);
+
+Runs a program with its output and error output going straight to your
+terminal, as it happens.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<\@command> - the program and its arguments.
+
+=back
+
+=head3 RETURNS
+
+The exit status.
+
+=head3 SIDE EFFECTS
+
+Flushes C<STDOUT> and C<STDERR> first, so that what you printed before
+appears before the program's output.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { command => { type => 'arrayref', min => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'integer', min => 0, max => 255 }
+
+=head3 MESSAGES
+
+    +------------------+------------------------------------+-------------------------+
+    | Exception (croak)| Meaning                            | What to do              |
+    +------------------+------------------------------------+-------------------------+
+    | No command given | not a non-empty array reference    | pass [program, args...] |
+    +------------------+------------------------------------+-------------------------+
+
+=head2 run_parallel
+
+    my $statuses = App::Actions::Process::run_parallel(\@commands, %options);
+
+Runs several programs, some at the same time.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<\@commands> - a list of commands, each a list reference as for
+L</stream>.
+
+=item * C<concurrency> - optional.  The most programs that run at the same
+time.  Default 4.
+
+=item * C<stdout>, C<stderr> - optional.  Files for every program's output,
+as for L</run>.  Without them, the output goes to your terminal, mixed
+together.
+
+=back
+
+=head3 RETURNS
+
+An array reference of exit statuses, in the same order as C<\@commands>.
+An empty list gives an empty array reference.
+
+=head3 SIDE EFFECTS
+
+On Unix, uses C<fork>.  On Windows, or with C<concurrency> below 2, the
+programs run one after the other.  If this process is interrupted while
+waiting, the programs still running are killed.
+
+=head3 EXAMPLE
+
+    my $statuses = App::Actions::Process::run_parallel(
+        [ map { ['gzip', '-9', $_] } @files ],
+        concurrency => 2,
+    );
+    my @failed = grep { $statuses->[$_] != 0 } 0 .. $#files;
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    {
+        commands    => { type => 'arrayref' },
+        concurrency => { type => 'integer', min => 1, optional => 1, default => 4 },
+        stdout      => { type => 'string', optional => 1 },
+        stderr      => { type => 'string', optional => 1 },
+    }
+
+=head4 OUTPUT
+
+    { type => 'arrayref', element_type => 'integer' }
+
+=head3 MESSAGES
+
+    +--------------------------+----------------------------------+------------------------------+
+    | Message                  | Meaning                          | What to do                   |
+    +--------------------------+----------------------------------+------------------------------+
+    | No commands given (croak)| \@commands is not an array ref   | pass an array reference      |
+    | Unable to run 'P': ERR   | (printed by the child) program P | install P or fix its path;   |
+    |                          | could not start; status 127      | the status is 127            |
+    | Unable to redirect       | (printed by the child) the file  | check the path; status 127   |
+    | STREAM to 'F': ERR       | could not be opened              |                              |
+    +--------------------------+----------------------------------+------------------------------+
+
+=head2 quote_win32
+
+    my $argument = App::Actions::Process::quote_win32($text);
+
+Quotes one argument for a Windows command line, using the rules Windows
+programs use to split it again.  The other functions call it for you on
+Windows; you need it only to build a Windows command line yourself.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$text> - one argument.  C<undef> is treated as the empty string.
+
+=back
+
+=head3 RETURNS
+
+The argument, quoted if it needs to be.  An argument without spaces or
+double quotes is returned unchanged.  An empty argument becomes C<"">.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+    print App::Actions::Process::quote_win32('say "hi"');    # "say \"hi\""
+    print App::Actions::Process::quote_win32('C:\dir\\');    # C:\dir\
+    print App::Actions::Process::quote_win32('a b\\');       # "a b\\"
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+    { argument => { type => 'string', optional => 1 } }
+
+=head4 OUTPUT
+
+    { type => 'string', min => 1 }
+
+=head3 MESSAGES
+
+None.
+
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Pass a list reference, not a string.>  C<capture('ls -l')> is an
+error, and C<capture(['ls -l'])> looks for a program called "ls -l".  Write
+C<capture(['ls', '-l'])>.
+
+=item * B<There is no shell.>  Pipes (C<|>), redirection (C<E<gt>>),
+wildcards (C<*.txt>) and variables (C<$HOME>) are not expanded.  If you need
+them, run the shell yourself: C<['sh', '-c', 'ls *.txt']>, and never put
+untrusted text inside that string.
+
+=item * B<capture returns a list.>  C<my $text = capture(...)> gives the
+status, not the text.  Write C<my ($text, $status) = capture(...)>.
+
+=item * B<A status is not Perl's C<$?>.>  Compare it with 0, not with
+C<$? E<gt>E<gt> 8>.
+
+=item * B<A missing program is status 255, not an exception.>  Perl also
+prints a "Can't exec" warning, except in L</run>, L</run_quiet> and
+L</capture>, which hide it.
+
+=item * B<Output from parallel programs is mixed.>  Without C<stdout>,
+L</run_parallel> lets every program write to the same terminal, so their
+lines can be interleaved.
+
+=item * B<Captured output is held in memory.>  Do not capture a program that
+prints gigabytes.
+
+=back
+
+=head1 ENCODING
+
+Commands, arguments and captured output are bytes.  Encode text with
+non-ASCII characters or emoji (for example with
+C<Encode::encode('UTF-8', $text)>) before you put it in a command, and decode
+captured output if you need characters.  On Windows, the program receives the
+command line through the Windows "ANSI" code page, so characters outside it
+may be lost.  An argument cannot contain a NUL character.
 
 =head1 AUTHOR
 
 Nigel Horne, C<njh@nigelhorne.com>
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+This section describes each routine in the Z notation, a precise
+mathematical language for describing programs.  You do not need to read it
+to use the module: everything here is also said in plain words in the
+sections above.
+
+How to read it: a box names a routine.  The lines above the middle rule
+declare the values it works with.  A name ending in C<?> is an input, and a
+name ending in C<!> is an output.  The lines below the rule are always true
+when the routine returns.  The module keeps no state of its own; C<Host> is
+the computer, whose processes and files the routines change.
+
+    [ARG, FILE]
+    STATUS == 0 .. 255
+    COMMAND == seq₁ ARG
+    exec : COMMAND → STATUS × seq BYTE × seq BYTE    status, output, error output
+    exec(c) runs program head c with arguments tail c, without a shell
+
+=head2 exit_code
+
+    ┌─ ExitCode ────────────────────────────────────────
+    │ status? : optional ℤ
+    │ r!      : STATUS
+    ├───────────────────────────────────────────────────
+    │ status? = 0 ∨ status? = ⊥ ⇒ r! = 0
+    │ status? mod 128 ≠ 0 ⇒ r! = 128 + (status? mod 128)
+    │ otherwise r! = status? div 256
+    └───────────────────────────────────────────────────
+
+=head2 cpu_count
+
+    ┌─ CpuCount ────────────────────────────────────────
+    │ ΞHost
+    │ r! : ℕ₁
+    ├───────────────────────────────────────────────────
+    │ r! = first defined of ⟨NUMBER_OF_PROCESSORS (Windows),
+    │      #processor lines in /proc/cpuinfo, sysconf(NPROCESSORS_ONLN), 1⟩
+    └───────────────────────────────────────────────────
+
+=head2 capture
+
+    ┌─ Capture ─────────────────────────────────────────
+    │ ΔHost
+    │ command? : COMMAND
+    │ quiet?, merge? : 𝔹
+    │ r! : seq BYTE × STATUS
+    ├───────────────────────────────────────────────────
+    │ (s, out, err) = exec(command?)
+    │ merge? ⇒ r! = (crlf_to_lf(out ⋈ err), s)     ⋈ : in time order
+    │ ¬merge? ⇒ r! = (crlf_to_lf(out), s)
+    │ ¬merge? ∧ ¬quiet? ⇒ err goes to the caller's STDERR
+    └───────────────────────────────────────────────────
+
+=head2 run
+
+    ┌─ Run ─────────────────────────────────────────────
+    │ ΔHost
+    │ command? : COMMAND
+    │ stdout?, stderr? : optional FILE
+    │ merge? : 𝔹
+    │ r! : STATUS
+    ├───────────────────────────────────────────────────
+    │ (s, out, err) = exec(command?)
+    │ r! = s
+    │ contents'(stdout? or null) = out ⋈ (if merge? then err else ⟨⟩)
+    │ ¬merge? ∧ stderr? ≠ ⊥ ⇒ contents'(stderr?) = err
+    │ STDOUT' = STDOUT ∧ STDERR' = STDERR
+    └───────────────────────────────────────────────────
+
+=head2 run_quiet
+
+    ┌─ RunQuiet ────────────────────────────────────────
+    │ Run[stdout? := null, stderr? := null]
+    └───────────────────────────────────────────────────
+
+=head2 stream
+
+    ┌─ Stream ──────────────────────────────────────────
+    │ ΔHost
+    │ command? : COMMAND
+    │ r! : STATUS
+    ├───────────────────────────────────────────────────
+    │ (s, out, err) = exec(command?) ∧ r! = s
+    │ out goes to STDOUT and err to STDERR, after what was already buffered
+    └───────────────────────────────────────────────────
+
+=head2 run_parallel
+
+    ┌─ RunParallel ─────────────────────────────────────
+    │ ΔHost
+    │ commands?    : seq COMMAND
+    │ concurrency? : ℕ₁
+    │ r!           : seq STATUS
+    ├───────────────────────────────────────────────────
+    │ #r! = #commands?
+    │ ∀ i ∈ dom commands? • r!(i) = first(exec(commands?(i)))
+    │ at no time do more than min(concurrency?, #commands?) commands run
+    │ Windows ∨ concurrency? < 2 ⇒ the commands run one after another
+    └───────────────────────────────────────────────────
+
+=head2 quote_win32
+
+    ┌─ QuoteWin32 ──────────────────────────────────────
+    │ arg? : optional seq CHAR
+    │ r!   : seq₁ CHAR
+    ├───────────────────────────────────────────────────
+    │ arg? = ⊥ ∨ arg? = ⟨⟩ ⇒ r! = "\"\""
+    │ arg? contains no white space and no '"' ⇒ r! = arg?
+    │ otherwise r! = '"' ⁀ escape(arg?) ⁀ '"' where
+    │     a run of n '\' before '"' becomes 2n+1 '\' then '"',
+    │     a run of n '\' at the end becomes 2n '\',
+    │     any other run of '\' is unchanged
+    │ CommandLineToArgv(r!) = ⟨arg?⟩
+    └───────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The module keeps no state between calls.  Each command goes through these
+states:
+
+         capture / run / run_quiet / stream / run_parallel
+                              |
+                              v
+                     +------------------+  not a non-empty list   +-------------+
+                     | CHECK ARGUMENTS  |------------------------>| croak       |
+                     +------------------+                         +-------------+
+                              |
+                              v
+                     +------------------+  (run, capture, run_quiet)
+                     | REDIRECT         |  STDOUT/STDERR -> files;  open fails
+                     | (if asked)       |------------------------------+
+                     +------------------+                              |
+                              |                                        |
+                              v                                        |
+                     +------------------+  Windows: quote_win32 each   |
+                     | START PROGRAM    |  argument; never a shell     |
+                     +------------------+                              |
+                       |            |                                  |
+          cannot start |            | started                          |
+                       v            v                                  |
+               status 255    +------------------+                      |
+                       |     |    RUNNING       |  run_parallel: up to |
+                       |     +------------------+  "concurrency" here  |
+                       |            |                                  |
+                       |            | exits, or killed by signal N     |
+                       |            v                                  |
+                       |     status = code, or 128 + N                 |
+                       |            |                                  |
+                       +------+-----+                                  |
+                              v                                        |
+                     +------------------+                              |
+                     | RESTORE HANDLES  |<-----------------------------+
+                     +------------------+
+                       |            |
+                       |            +--- redirect had failed --> croak
+                       v
+              return status (capture: and the output)
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+This program is released under the GNU General Public License, version 2.
+See the F<LICENSE> file that comes with this distribution.
+If you use it, please let me know.
 
 =cut
