@@ -138,8 +138,6 @@ my $JSON_SCHEMA = <<'JSON';
 JSON
 
 sub json_schema {
-    my ($class) = @_;
-
     return JSON::PP->new->decode($JSON_SCHEMA);
 }
 
@@ -151,11 +149,11 @@ sub json_schema_version { return $JSON_SCHEMA_VERSION }
 # are.
 sub default_directory {
     my $override = $ENV{ACTION_RUN_LOG_DIR};
-    return $override if defined $override && length $override;
 
-    return File::Spec->catdir(
-        App::Actions::Cache::base_directory(), 'action-run', 'logs',
-    );
+    # An empty variable is the same as an unset one.
+    return (defined $override && length $override)
+        ? $override
+        : File::Spec->catdir(App::Actions::Cache::base_directory(), 'action-run', 'logs');
 }
 
 sub new {
@@ -452,7 +450,7 @@ sub document {
 # The one place a log file is removed, so a test can make the filesystem say
 # no without changing permissions that mean different things on another host.
 sub _unlink {
-    my ($self, $path) = @_;
+    my (undef, $path) = @_;
     return unlink $path;
 }
 

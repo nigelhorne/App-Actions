@@ -15,38 +15,21 @@ use App::Actions::Logs;
 use App::Actions::Runner;
 use App::Actions::Workflow;
 
-BEGIN { $Sub::Private::config{mode} = 'enforce' }
-use Sub::Private;
-use Sub::Protected;
+use Sub::Private ();
+use Sub::Protected ();
+
+use App::Actions::Access;
 
 our $VERSION = '0.001.0';
 
-# The options a run is configured with.  new() accepts them, run(),
-# preflight() and list_jobs() accept them again as overrides, and every one is
-# handed to App::Actions::Runner under the same name.  Keeping the list in one
-# place is what stops an option being accepted here and silently dropped on
-# its way to the runner, which is what had happened to cache_file.
-Readonly::Array my @RUNNER_OPTIONS => qw(
-	jobs image perl_image platform user env secrets
-	dry_run explain verbose quiet keep keep_images log_dir cache_file
-	pull no_pull strict_actions skip_check pull_concurrency parallel
-	docker docker_bin
-);
-
-# The Params::Validate::Strict rule of each option.  Flags are strings rather
-# than booleans because callers pass undef, 0, 1 and '' interchangeably, and
-# the runner reads them for truth.  pull_concurrency and parallel are left to
-# the runner, whose message says what a valid value is.
-Readonly::Hash my %OPTION_RULES => (
-	jobs => { type => 'arrayref', optional => 1 },
-	env => { type => 'hashref', optional => 1 },
-	secrets => { type => 'hashref', optional => 1 },
-	docker => { type => 'object', optional => 1 },
-	map({ $_ => { type => 'string', optional => 1 } } qw(
-		image perl_image platform user log_dir cache_file docker_bin pull_concurrency parallel
-		dry_run explain verbose quiet keep keep_images pull no_pull strict_actions skip_check
-	)),
-);
+# The options a run is configured with, and the Params::Validate::Strict rule
+# of each.  new() accepts them, run(), preflight() and list_jobs() accept them
+# again as overrides, and every one is handed to App::Actions::Runner under
+# the same name.  The table is the runner's own, so an option cannot be
+# accepted here and silently dropped on its way there, which is what had
+# happened to cache_file.
+Readonly::Hash my %OPTION_RULES => %{ App::Actions::Runner->option_rules };
+Readonly::Array my @RUNNER_OPTIONS => sort keys %OPTION_RULES;
 
 # The machine-readable documents, in the order the error message lists them,
 # and the module whose json_schema describes each.
@@ -721,7 +704,7 @@ sub list_jobs {
 #              options the runner rejects.
 # Side effects: None until the runner is used.
 # Protected rather than private so a subclass can substitute its own runner.
-sub _runner :Protected {
+sub _runner {
 	my ($self, $overrides) = @_;
 
 	my %options = map { $_ => (exists $overrides->{$_} ? $overrides->{$_} : $self->{$_}) } @RUNNER_OPTIONS;
@@ -740,7 +723,7 @@ sub _runner :Protected {
 #              message; $args - its arguments (invocant removed).
 # Exit status: Returns a hash reference of the overrides (empty when none).
 # Side effects: None; croaks on an unknown or mistyped option.
-sub _overrides :Private {
+sub _overrides {
 	my (undef, $routine, $args) = @_;
 
 	return validate_args(__PACKAGE__ . "::$routine", $args, \%OPTION_RULES);
@@ -753,7 +736,7 @@ sub _overrides :Private {
 # Exit status: Returns the absolute project directory; throws when it cannot
 #              be inferred or does not exist.
 # Side effects: None.
-sub _project_dir :Private {
+sub _project_dir {
 	my ($class, $given, $workflow_file) = @_;
 
 	# A workflow in a repository's .github/workflows knows its repository.
@@ -767,6 +750,16 @@ sub _project_dir :Private {
 	$class->throw('actions.project_dir_missing', { dir => $wanted }) unless defined $project_dir && -d $project_dir;
 
 	return $project_dir;
+}
+
+# _runner is protected, so a subclass may build its own runner; every other
+# _name routine above may be called only from this package.  Sub::Private's
+# mode is process-wide, so it is set to enforce for this one call rather than
+# for good, which would change how other modules' :Private routines behave.
+BEGIN {
+	Sub::Protected->import('_runner');
+	local $Sub::Private::config{mode} = 'enforce';
+	Sub::Private->import(@{ App::Actions::Access->private_names(__PACKAGE__, '_runner') });
 }
 
 1;
@@ -887,27 +880,33 @@ Design weaknesses that remain:
 
 =over 4
 
-=item * L<App::Actions::Runner> is a single 4,000-line class that plans the
-run, talks to Docker, interprets steps, runs parallel jobs and writes logs.
-Its private methods share state through one hash, so none of those concerns
-can be tested or replaced alone.  It should be split, at least into a
-planner (what to run), an executor (how to run one step) and a reporter.
+=item * L<App::Actions::Runner> plans the run and hands the work to five
+parts (images, containers, steps, parallel jobs and the report), each in its
+own module under F<App/Actions/Runner/>.  The parts are built from copies of
+the runner's options rather than given the runner, so they can be tested
+alone, but a change to an option after construction is not seen by them, and
+the planner is still the largest of them.
 
-=item * Errors are mostly strings.  Only schema drift has an exception class;
-callers such as F<bin/action-run> tell other failures apart by matching
-their text, which a translation would break.  The catalogue keys are the
-natural basis for an exception class carrying a stable code.
+=item * Errors raised through the catalogue are L<App::Actions::Error>
+objects carrying the message key as a stable code, and F<bin/action-run>
+asks for the code rather than matching the text.  The errors of
+L<App::Actions::Check>, L<App::Actions::Docker>, L<App::Actions::Expression>,
+L<App::Actions::Process>, L<App::Actions::Cache> and L<App::Actions::Logs> are
+still strings.
 
-=item * Options are validated twice: their types here and their values in
-the runner.  The runner's checks are the ones with the specific messages,
-so the two cannot simply be merged without moving those messages.
+=item * The option rules are one table, the runner's (see
+L<App::Actions::Runner/option_rules>), but the options are still checked
+twice: here, where the caller passes them, and in the runner, which is a
+public class and so checks its own arguments.  The cost is a second pass
+over a dozen keys per call.
 
 =item * Unknown options are now an error.  A caller that passed an option
 this module never forwarded (and which therefore had no effect) will now be
 told so.
 
-=item * The Runner, Check, Docker and command-line messages have not been
-moved into the catalogue yet; see L<App::Actions::I18N/LIMITATIONS>.
+=item * The Check, Docker, Expression, Process and command-line messages
+have not been moved into the catalogue yet; see
+L<App::Actions::I18N/LIMITATIONS>.
 
 =back
 

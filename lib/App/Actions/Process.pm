@@ -15,9 +15,10 @@ our $VERSION = '0.01';
 sub exit_code {
     my ($status) = @_;
 
-    return 0 unless $status;
-    return 128 + ($status & 127) if $status & 127;
-    return $status >> 8;
+    # A signal is reported as a shell reports it, 128 plus its number.
+    return !$status ? 0
+        : ($status & 127) ? 128 + ($status & 127)
+        : $status >> 8;
 }
 
 # How many jobs this machine can usefully run at once.  Linux reports the
@@ -122,9 +123,10 @@ sub _spawn_args {
     my ($command) = @_;
 
     my @args = @$command;
-    return @args unless $^O eq 'MSWin32';
 
-    return ($args[0], map { quote_win32($_) } @args[1 .. $#args]);
+    # Only Windows rebuilds a command line from the arguments, so only there
+    # do they need quoting.
+    return $^O eq 'MSWin32' ? ($args[0], map { quote_win32($_) } @args[1 .. $#args]) : @args;
 }
 
 # Run $command with both streams discarded.

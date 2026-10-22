@@ -17,6 +17,7 @@ BEGIN {
 use App::Actions;
 use App::Actions::Cache;
 use App::Actions::Check;
+use App::Actions::Error;
 use App::Actions::Logs;
 use App::Actions::Process ();
 use App::Actions::Schema;
@@ -504,28 +505,25 @@ exit $exit;
 sub _fail {
     my ($error) = @_;
 
-    print STDERR 'action-run: ', _error_text("$error"), "\n";
+    print STDERR 'action-run: ', _error_text($error), "\n";
+
+    my $caught = App::Actions::Error->caught($error);
 
     return App::Actions::Schema::invalid_exit()
-        if ref $error && eval { $error->isa('App::Actions::Schema::Invalid') };
+        if $caught && $caught->is('schema.invalid');
 
     return 2;
 }
 
 # A croak() carries the source location, which is useful in a stack trace and
-# noise in a message someone reads.  Only the final location is removed:
-# JSON::PP puts its own position, such as "at character offset 9", ahead of it,
-# and that is part of the diagnosis rather than noise.  The greedy prefix
-# makes the match start at the last " at ", and the file name may contain
-# spaces, as it does when the tool is installed under such a path.
+# noise in a message someone reads.  App::Actions::Error knows how to take it
+# off: an error object gives its message, and a string loses only its final
+# " at FILE line N." (JSON::PP's own "at character offset 9" stays, because it
+# is part of the diagnosis).
 sub _error_text {
     my ($error) = @_;
 
-    $error =~ s/\s+$//;
-    $error =~ s/\A(.*)\s+at\s+.+?\s+line\s+\d+\.?\z/$1/s;
-    $error =~ s/\s+$//;
-
-    return $error;
+    return App::Actions::Error->describe($error);
 }
 
 sub _parse_pairs {
@@ -1238,10 +1236,12 @@ not the host a CI job would otherwise repair.
 =head1 LIMITATIONS
 
 The per-job logs of a parallel run are kept until C<action-run logs --prune>
-removes them; nothing expires them by age.
+removes them, or C<action-run logs --prune --older-than DURATION> removes the
+old ones; nothing expires them on its own.
 
 Only Linux jobs are supported; macOS and Windows matrix entries are skipped.
-JavaScript actions cannot be executed.  C<actions/checkout> and
+Local JavaScript and composite actions are run (JavaScript ones need C<node>
+in the job image); remote actions are not fetched.  C<actions/checkout> and
 C<shogo82148/actions-setup-perl> become no-ops because the project is already
 mounted and the container image is chosen from the requested Perl version.
 Cache, artifact, and Codecov actions are also no-ops.  Unknown actions are

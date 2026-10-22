@@ -12,8 +12,9 @@ use App::Actions::Expression;
 use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Util qw(load_yaml_mapping mapping normalize_step stringify);
 
-BEGIN { $Sub::Private::config{mode} = 'enforce' }
-use Sub::Private;
+use Sub::Private ();
+
+use App::Actions::Access;
 
 our $VERSION = '0.01';
 
@@ -853,7 +854,7 @@ sub container_image {
 # Entry:       $self - a workflow object (a class name gets a fresh evaluator).
 # Exit status: Returns an App::Actions::Expression object.
 # Side effects: Creates and caches the evaluator on first use.
-sub _expression :Private {
+sub _expression {
 	my ($self) = @_;
 
 	# The evaluator holds no state between calls that matters here, so one
@@ -867,7 +868,7 @@ sub _expression :Private {
 #              $job - the job as parsed.
 # Exit status: Returns a hash reference; throws on a malformed job.
 # Side effects: None.
-sub _normalize_job :Private {
+sub _normalize_job {
 	my ($class, $id, $job) = @_;
 
 	$class->throw('workflow.job_not_mapping', { job => $id }) unless ref $job eq 'HASH';
@@ -906,7 +907,7 @@ sub _normalize_job :Private {
 #              for error messages ([key, args]).
 # Exit status: Returns a new hash reference.
 # Side effects: None.
-sub _defaults :Private {
+sub _defaults {
 	my ($value, $place) = @_;
 
 	my $copy = mapping($value, $place);
@@ -928,7 +929,7 @@ sub _defaults :Private {
 # Exit status: Returns an array reference of combination hashes; throws on a
 #              malformed matrix.
 # Side effects: None.
-sub _expand_matrix :Private {
+sub _expand_matrix {
 	my ($matrix) = @_;
 
 	# No matrix is a single run with no matrix values.
@@ -964,7 +965,7 @@ sub _expand_matrix :Private {
 # Exit status: Returns an array reference of combination hashes; throws when a
 #              dimension has no values.
 # Side effects: None.
-sub _cartesian_product :Private {
+sub _cartesian_product {
 	my ($matrix, $keys) = @_;
 
 	my @combinations = ({});
@@ -991,7 +992,7 @@ sub _cartesian_product :Private {
 # Exit status: Returns the array reference of combinations, with any include
 #              that matched nothing appended as a combination of its own.
 # Side effects: Adds keys to the combinations the includes match.
-sub _apply_includes :Private {
+sub _apply_includes {
 	my ($combinations, $includes, $original) = @_;
 
 	my @extra;
@@ -1017,7 +1018,7 @@ sub _apply_includes :Private {
 # Entry:       $value - anything.
 # Exit status: Returns an array reference (the original when it already is one).
 # Side effects: None.
-sub _as_list :Private {
+sub _as_list {
 	my ($value) = @_;
 
 	return !defined $value ? [] : ref $value eq 'ARRAY' ? $value : [$value];
@@ -1028,7 +1029,7 @@ sub _as_list :Private {
 # Entry:       $combination, $filter - hash references.
 # Exit status: Returns 1 or 0.
 # Side effects: None.
-sub _matches :Private {
+sub _matches {
 	my ($combination, $filter) = @_;
 
 	# An exclude names a subset of keys; every one must be present and equal.
@@ -1044,7 +1045,7 @@ sub _matches :Private {
 # Entry:       $left, $right - any values.
 # Exit status: Returns 1 when equal, else 0.
 # Side effects: None.
-sub _scalar_equal :Private {
+sub _scalar_equal {
 	my ($left, $right) = @_;
 
 	# Undef equals only undef; everything else is compared as the string the
@@ -1062,7 +1063,7 @@ sub _scalar_equal :Private {
 # Exit status: Returns the name: the job's name: with matrix values resolved,
 #              or "id (key=value, ...)".
 # Side effects: None.
-sub _job_display_name :Private {
+sub _job_display_name {
 	my ($job, $matrix, $expression) = @_;
 
 	# A name: that is not a string is ignored rather than printed as a
@@ -1082,7 +1083,7 @@ sub _job_display_name :Private {
 # Exit status: Returns the version with matrix values resolved, or undef when
 #              the job has no setup-perl step or the step names no version.
 # Side effects: None.
-sub _find_setup_perl_version :Private {
+sub _find_setup_perl_version {
 	my ($job, $matrix, $expression) = @_;
 
 	# Only the first setup-perl step counts, as it is the one that installs
@@ -1091,6 +1092,15 @@ sub _find_setup_perl_version :Private {
 	my $version = $step ? $step->{with}{'perl-version'} : undef;
 
 	return defined $version ? $expression->interpolate($version, { matrix => $matrix }) : undef;
+}
+
+# Every _name routine above may be called only from this package.
+# Sub::Private's mode is process-wide, so it is set to enforce for this one
+# call rather than for good, which would change how other modules' :Private
+# routines behave.
+BEGIN {
+	local $Sub::Private::config{mode} = 'enforce';
+	Sub::Private->import(@{ App::Actions::Access->private_names(__PACKAGE__) });
 }
 
 1;

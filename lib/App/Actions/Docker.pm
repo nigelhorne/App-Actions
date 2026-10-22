@@ -78,8 +78,7 @@ sub quiet   { return $_[0]->{quiet} }
 
 sub platform_args {
     my ($self) = @_;
-    return () unless defined $self->{platform} && length $self->{platform};
-    return ('--platform', $self->{platform});
+    return (defined $self->{platform} && length $self->{platform}) ? ('--platform', $self->{platform}) : ();
 }
 
 sub check {
@@ -106,9 +105,9 @@ sub check {
 sub image_exists {
     my ($self, $image) = @_;
 
-    return 1 if $self->{dry_run};
+    # A dry run starts nothing, so every image is as good as present.
+    my $rc = $self->{dry_run} ? 0 : ($self->capture_silent('image', 'inspect', '--format', '{{.Id}}', $image))[1];
 
-    my (undef, $rc) = $self->capture_silent('image', 'inspect', '--format', '{{.Id}}', $image);
     return $rc == 0 ? 1 : 0;
 }
 
@@ -282,9 +281,8 @@ sub container_log_text {
 sub container_exit_code {
     my ($self, $name) = @_;
 
-    return 0 if $self->{dry_run};
-
-    my $output = $self->_inspect_field($name, '{{.State.ExitCode}}');
+    # A dry run's containers all exit cleanly.
+    my $output = $self->{dry_run} ? '0' : $self->_inspect_field($name, '{{.State.ExitCode}}');
 
     return defined $output && $output =~ /\A-?\d+\z/ ? $output + 0 : undef;
 }
@@ -294,9 +292,8 @@ sub container_exit_code {
 sub container_status {
     my ($self, $name) = @_;
 
-    return 'running' if $self->{dry_run};
-
-    my $output = $self->_inspect_field($name, '{{.State.Status}}');
+    # A dry run's containers are all running.
+    my $output = $self->{dry_run} ? 'running' : $self->_inspect_field($name, '{{.State.Status}}');
 
     return defined $output && length $output ? $output : undef;
 }
@@ -306,9 +303,8 @@ sub container_status {
 sub container_restart_count {
     my ($self, $name) = @_;
 
-    return 0 if $self->{dry_run};
-
-    my $output = $self->_inspect_field($name, '{{.RestartCount}}');
+    # A dry run's containers never restart.
+    my $output = $self->{dry_run} ? '0' : $self->_inspect_field($name, '{{.RestartCount}}');
 
     return defined $output && $output =~ /\A\d+\z/ ? $output + 0 : undef;
 }
@@ -439,12 +435,13 @@ sub _display {
 sub _quote {
     my ($argument) = @_;
 
-    return q{''} unless defined $argument && length $argument;
-    return $argument if $argument =~ /^[A-Za-z0-9_@%+=:,.\/-]+$/;
+    # Empty becomes '', a safe word stays bare, and anything else is single
+    # quoted with each embedded quote closed, escaped and reopened.
+    my $copy = defined $argument ? $argument : '';
 
-    my $copy = $argument;
-    $copy =~ s/'/'\\''/g;
-    return "'$copy'";
+    return !length $copy ? q{''}
+        : $copy =~ /^[A-Za-z0-9_@%+=:,.\/-]+$/ ? $copy
+        : "'" . ($copy =~ s/'/'\\''/gr) . "'";
 }
 
 1;

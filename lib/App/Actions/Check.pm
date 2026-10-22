@@ -130,8 +130,6 @@ my $JSON_SCHEMA = <<'JSON';
 JSON
 
 sub json_schema {
-    my ($class) = @_;
-
     return JSON::PP->new->decode($JSON_SCHEMA);
 }
 
@@ -447,9 +445,12 @@ sub _check_mounts {
 sub _entry_count {
     my ($directory) = @_;
 
-    opendir my $handle, $directory or return undef;
-    my $count = grep { $_ ne '.' && $_ ne '..' } readdir $handle;
-    closedir $handle;
+    # An unreadable directory has no count, which is not the same as empty.
+    my $count;
+    if (opendir my $handle, $directory) {
+        $count = grep { $_ ne '.' && $_ ne '..' } readdir $handle;
+        closedir $handle;
+    }
 
     return $count;
 }
@@ -531,11 +532,11 @@ sub _is_windows {
 sub _trim {
     my ($value) = @_;
 
-    return '' unless defined $value;
-    $value =~ s/^\s+//;
-    $value =~ s/\s+$//;
+    my $trimmed = defined $value ? $value : '';
+    $trimmed =~ s/^\s+//;
+    $trimmed =~ s/\s+$//;
 
-    return $value;
+    return $trimmed;
 }
 
 1;

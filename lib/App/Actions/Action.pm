@@ -13,8 +13,9 @@ use Readonly;
 use App::Actions::I18N qw(throw validate_args);
 use App::Actions::Util qw(load_yaml_mapping normalize_step stringify);
 
-BEGIN { $Sub::Private::config{mode} = 'enforce' }
-use Sub::Private;
+use Sub::Private ();
+
+use App::Actions::Access;
 
 our $VERSION = '0.01';
 
@@ -388,7 +389,7 @@ sub is_javascript { return $_[0]->{kind} eq $KIND_JAVASCRIPT ? 1 : 0 }
 # Exit status: Returns (kind, steps arrayref); throws when a composite has no
 #              steps or a JavaScript action has no main.
 # Side effects: None.
-sub _kind_and_steps :Private {
+sub _kind_and_steps {
 	my ($class, $using, $runs, $file) = @_;
 
 	if ($using eq $KIND_COMPOSITE) {
@@ -416,7 +417,7 @@ sub _kind_and_steps :Private {
 # Exit status: Returns a hash reference of name to normalised declaration;
 #              throws when the section or an entry is not a mapping.
 # Side effects: None.
-sub _declarations :Private {
+sub _declarations {
 	my ($class, $section, $declared, $file) = @_;
 
 	my $rules = $DECLARATION{$section};
@@ -452,12 +453,21 @@ sub _declarations :Private {
 # Exit status: Returns 1 for a true boolean, a reference, or true/yes/1 in any
 #              case; otherwise 0.
 # Side effects: None.
-sub _boolean :Private {
+sub _boolean {
 	my ($value) = @_;
 
 	# stringify turns a YAML or JSON boolean into true/false, so one pattern
 	# covers booleans and the words people write.
 	return (defined $value && (ref $value && !JSON::PP::is_bool($value) || stringify($value) =~ $TRUE_WORD)) ? 1 : 0;
+}
+
+# Every _name routine above may be called only from this package.
+# Sub::Private's mode is process-wide, so it is set to enforce for this one
+# call rather than for good, which would change how other modules' :Private
+# routines behave.
+BEGIN {
+	local $Sub::Private::config{mode} = 'enforce';
+	Sub::Private->import(@{ App::Actions::Access->private_names(__PACKAGE__) });
 }
 
 1;

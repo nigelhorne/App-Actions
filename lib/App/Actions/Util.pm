@@ -13,8 +13,9 @@ use YAML::PP::Common qw(PRESERVE_ORDER);
 
 use App::Actions::I18N qw(throw validate_args);
 
-BEGIN { $Sub::Private::config{mode} = 'enforce' }
-use Sub::Private;
+use Sub::Private ();
+
+use App::Actions::Access;
 
 our $VERSION = '0.01';
 
@@ -516,7 +517,7 @@ sub trim {
 #              how "env of a step in job 'test'" is built from two keys.
 # Exit status: Returns the rendered string.
 # Side effects: None.
-sub _place_text :Private {
+sub _place_text {
 	my ($place) = @_;
 
 	# A string is accepted too, so a caller that already has the words can
@@ -531,6 +532,15 @@ sub _place_text :Private {
 	}
 
 	return $text;
+}
+
+# Every _name routine above may be called only from this package.
+# Sub::Private's mode is process-wide, so it is set to enforce for this one
+# call rather than for good, which would change how other modules' :Private
+# routines behave.
+BEGIN {
+	local $Sub::Private::config{mode} = 'enforce';
+	Sub::Private->import(@{ App::Actions::Access->private_names(__PACKAGE__) });
 }
 
 1;

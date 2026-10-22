@@ -136,8 +136,6 @@ my $JSON_SCHEMA = <<'JSON';
 JSON
 
 sub json_schema {
-    my ($class) = @_;
-
     return JSON::PP->new->decode($JSON_SCHEMA);
 }
 
@@ -168,9 +166,11 @@ sub base_directory {
 
 sub default_path {
     my $override = $ENV{ACTION_RUN_CACHE_FILE};
-    return $override if defined $override && length $override;
 
-    return File::Spec->catfile(base_directory(), 'action-run', 'cache.json');
+    # An empty variable is the same as an unset one.
+    return (defined $override && length $override)
+        ? $override
+        : File::Spec->catfile(base_directory(), 'action-run', 'cache.json');
 }
 
 sub new {
@@ -414,9 +414,7 @@ sub format_age {
     $seconds = 0 unless defined $seconds && $seconds =~ /\A-?\d+\z/;
     $seconds = 0 if $seconds < 0;
 
-    return 'just now' if $seconds < 60;
-
-    return format_span($seconds) . ' ago';
+    return $seconds < 60 ? 'just now' : format_span($seconds) . ' ago';
 }
 
 # The entries a threshold selects.  An image with no recorded last use cannot

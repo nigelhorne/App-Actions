@@ -293,12 +293,13 @@ sub _problem {
 
 # Only Windows needs advice: on Unix a broken daemon is a daemon problem.
 sub _hints {
-    return unless $^O eq 'MSWin32';
-
-    print "  hint      Docker Desktop must run Linux containers: right-click the\n";
-    print "            tray icon and choose \"Switch to Linux containers\".\n";
-    print "  hint      The directories above must be on a drive that Docker Desktop\n";
-    print "            shares; see Settings > Resources > File sharing.\n";
+    # Only Docker Desktop on Windows has these two ways of going wrong.
+    if ($^O eq 'MSWin32') {
+        print "  hint      Docker Desktop must run Linux containers: right-click the\n";
+        print "            tray icon and choose \"Switch to Linux containers\".\n";
+        print "  hint      The directories above must be on a drive that Docker Desktop\n";
+        print "            shares; see Settings > Resources > File sharing.\n";
+    }
 
     return;
 }
@@ -306,11 +307,11 @@ sub _hints {
 sub _trim {
     my ($value) = @_;
 
-    return '' unless defined $value;
-    $value =~ s/^\s+//;
-    $value =~ s/\s+$//;
+    my $trimmed = defined $value ? $value : '';
+    $trimmed =~ s/^\s+//;
+    $trimmed =~ s/\s+$//;
 
-    return $value;
+    return $trimmed;
 }
 
 __END__

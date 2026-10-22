@@ -12,9 +12,14 @@ use Params::Validate::Strict qw(validate_strict);
 use Readonly;
 use Return::Set qw(set_return);
 use Scalar::Util qw(blessed looks_like_number reftype);
+use Sub::Private ();
 
-BEGIN { $Sub::Private::config{mode} = 'enforce' }
-use Sub::Private;
+use App::Actions::Access;
+use App::Actions::Error;
+use App::Actions::I18N::de;
+use App::Actions::I18N::en;
+use App::Actions::I18N::fr;
+use App::Actions::I18N::zh;
 
 our $VERSION = '0.01';
 
@@ -24,6 +29,11 @@ our @EXPORT_OK = qw(i18n throw validate_args);
 # catalogue is written in, so every key has an English text and every other
 # language falls back to it.
 Readonly::Scalar my $DEFAULT_LANGUAGE => 'en';
+
+# The languages with a catalogue module under App::Actions::I18N.  A new
+# language needs a module, an entry here and, if it does not count like
+# English, a plural rule below.
+Readonly::Array my @LANGUAGES => qw(de en fr zh);
 
 # The environment variable that chooses the language of a whole run.  The
 # POSIX locale (LC_ALL, LANG) is deliberately not consulted: the messages are
@@ -82,439 +92,9 @@ our %config = (
 # other => ... } }) or by plural category ({ plural => { one => ..., other =>
 # ... } }); a gender branch may itself be a plural hash.  A key missing from a
 # language falls back to the English entry.
-my %CATALOGUE = (
-	en => {
-		'actions.workflow_file_required' => 'workflow_file is required',
-		'actions.workflow_file_missing' => "Workflow file '%(file)s' does not exist",
-		'actions.project_dir_required' => 'project_dir is required when the workflow is not inside .github/workflows',
-		'actions.project_dir_missing' => "Project directory '%(dir)s' does not exist",
-		'actions.document_required' => 'A document name is required',
-		'actions.document_unknown' => "Unknown document '%(name)s'; expected %(expected)s",
-		'actions.invalid_arguments' => 'Invalid arguments to %(routine)s: %(reason)s',
-		'list.or' => '%(head)s or %(last)s',
-
-		'workflow.file_required' => 'No workflow file given',
-		'workflow.file_missing' => "Workflow file '%(file)s' does not exist",
-		'workflow.parse_failed' => "Unable to parse workflow '%(file)s': %(error)s",
-		'workflow.empty' => "Workflow '%(file)s' is empty",
-		'workflow.not_mapping' => "Workflow '%(file)s' must contain a YAML mapping",
-		'workflow.no_jobs' => "Workflow '%(file)s' has no 'jobs' mapping",
-		'workflow.job_not_mapping' => "Job '%(job)s' must be a mapping",
-		'workflow.job_no_steps' => "Job '%(job)s' has no 'steps' list",
-		'workflow.container_invalid' => "Job '%(job)s' container must be a mapping or a string",
-		'workflow.services_invalid' => "Job '%(job)s' services must be a mapping",
-		'workflow.runs_on_invalid' => "'runs-on' must be a string or a list",
-		'workflow.matrix_not_mapping' => 'strategy.matrix must be a mapping',
-		'workflow.matrix_empty' => "Matrix key '%(key)s' must be a list with at least one value",
-		'workflow.exclude_invalid' => 'Each matrix exclude entry must be a mapping',
-		'workflow.include_invalid' => 'Each matrix include entry must be a mapping',
-		'workflow.defaults_run_invalid' => '%(where)s run must be a mapping',
-
-		'action.dir_required' => 'No action directory given',
-		'action.dir_missing' => "Action directory '%(dir)s' does not exist",
-		'action.no_metadata' => "No action.yml or action.yaml found in '%(dir)s'",
-		'action.file_required' => 'No action metadata file given',
-		'action.file_missing' => "Action metadata file '%(file)s' does not exist",
-		'action.parse_failed' => "Unable to parse action metadata '%(file)s': %(error)s",
-		'action.empty' => "Action metadata '%(file)s' is empty",
-		'action.not_mapping' => "Action metadata '%(file)s' must contain a YAML mapping",
-		'action.no_runs' => "Action metadata '%(file)s' has no 'runs' mapping",
-		'action.no_using' => "Action metadata '%(file)s' has no 'runs.using'",
-		'action.no_steps' => "Composite action '%(file)s' has no 'runs.steps' list",
-		'action.no_main' => "JavaScript action '%(file)s' has no 'runs.main'",
-		'action.inputs_invalid' => "The 'inputs' of '%(file)s' must be a mapping",
-		'action.input_invalid' => "Input '%(name)s' of '%(file)s' must be a mapping",
-		'action.outputs_invalid' => "The 'outputs' of '%(file)s' must be a mapping",
-		'action.output_invalid' => "Output '%(name)s' of '%(file)s' must be a mapping",
-
-		'step.not_mapping' => 'A step in %(where)s is not a mapping',
-		'step.field_not_string' => "Step field '%(field)s' in %(where)s must be a string",
-		'step.no_command' => "A step in %(where)s has neither 'run' nor 'uses'",
-		'mapping.invalid' => '%(where)s must be a mapping',
-
-		'where.job' => "job '%(job)s'",
-		'where.file' => "'%(file)s'",
-		'where.workflow_env' => 'workflow env',
-		'where.workflow_defaults' => 'workflow defaults',
-		'where.job_env' => "env of job '%(job)s'",
-		'where.job_defaults' => "defaults of job '%(job)s'",
-		'where.job_strategy' => "strategy of job '%(job)s'",
-		'where.step_env' => 'env of a step in %(where)s',
-		'where.step_with' => 'with of a step in %(where)s',
-
-		'i18n.unknown_key' => "No message is defined for '%(key)s'",
-		'i18n.unknown_language' => "Language '%(language)s' has no catalogue; using English",
-
-		'span.second' => { plural => { one => '%(count)d second', other => '%(count)d seconds' } },
-		'span.minute' => { plural => { one => '%(count)d minute', other => '%(count)d minutes' } },
-		'span.hour' => { plural => { one => '%(count)d hour', other => '%(count)d hours' } },
-		'span.day' => { plural => { one => '%(count)d day', other => '%(count)d days' } },
-		'span.month' => { plural => { one => '%(count)d month', other => '%(count)d months' } },
-		'span.year' => { plural => { one => '%(count)d year', other => '%(count)d years' } },
-
-		'cache.summary' => { plural => { one => '%(count)d image.', other => '%(count)d images.' } },
-		'cache.summary_sized' => {
-			plural => {
-				one => '%(count)d image, %(size)s on disk.',
-				other => '%(count)d images, %(size)s on disk.',
-			},
-		},
-		'cache.missing' => {
-			plural => {
-				one => '%(count)d image is no longer on the daemon.',
-				other => '%(count)d images are no longer on the daemon.',
-			},
-		},
-		'cache.removed' => {
-			plural => {
-				one => 'Removed %(count)d image, %(size)s freed.',
-				other => 'Removed %(count)d images, %(size)s freed.',
-			},
-		},
-		'cache.forgot' => {
-			plural => {
-				one => 'Forgot %(count)d image no longer on the daemon.',
-				other => 'Forgot %(count)d images no longer on the daemon.',
-			},
-		},
-		'cache.remove_failed' => {
-			plural => { one => 'Could not remove %(count)d image:', other => 'Could not remove %(count)d images:' },
-		},
-
-		'logs.summary' => {
-			plural => { one => '%(count)d log, %(size)s on disk.', other => '%(count)d logs, %(size)s on disk.' },
-		},
-		'logs.removed' => {
-			plural => { one => 'Removed %(count)d log, %(size)s freed.', other => 'Removed %(count)d logs, %(size)s freed.' },
-		},
-		'logs.remove_failed' => {
-			plural => { one => 'Could not remove %(count)d run:', other => 'Could not remove %(count)d runs:' },
-		},
-	},
-
-	fr => {
-		'actions.workflow_file_required' => 'workflow_file est obligatoire',
-		'actions.workflow_file_missing' => "Le fichier de workflow '%(file)s' n'existe pas",
-		'actions.project_dir_required' => "project_dir est obligatoire quand le workflow n'est pas dans .github/workflows",
-		'actions.project_dir_missing' => "Le répertoire de projet '%(dir)s' n'existe pas",
-		'actions.document_required' => 'Un nom de document est obligatoire',
-		'actions.document_unknown' => "Document inconnu '%(name)s' ; attendu : %(expected)s",
-		'actions.invalid_arguments' => 'Arguments invalides pour %(routine)s : %(reason)s',
-		'list.or' => '%(head)s ou %(last)s',
-
-		'workflow.file_required' => 'Aucun fichier de workflow fourni',
-		'workflow.file_missing' => "Le fichier de workflow '%(file)s' n'existe pas",
-		'workflow.parse_failed' => "Impossible d'analyser le workflow '%(file)s' : %(error)s",
-		'workflow.empty' => "Le workflow '%(file)s' est vide",
-		'workflow.not_mapping' => "Le workflow '%(file)s' doit contenir un mapping YAML",
-		'workflow.no_jobs' => "Le workflow '%(file)s' n'a pas de mapping 'jobs'",
-		'workflow.job_not_mapping' => "Le job '%(job)s' doit être un mapping",
-		'workflow.job_no_steps' => "Le job '%(job)s' n'a pas de liste 'steps'",
-		'workflow.container_invalid' => "Le container du job '%(job)s' doit être un mapping ou une chaîne",
-		'workflow.services_invalid' => "Les services du job '%(job)s' doivent être un mapping",
-		'workflow.runs_on_invalid' => "'runs-on' doit être une chaîne ou une liste",
-		'workflow.matrix_not_mapping' => 'strategy.matrix doit être un mapping',
-		'workflow.matrix_empty' => "La clé de matrice '%(key)s' doit être une liste d'au moins une valeur",
-		'workflow.exclude_invalid' => "Chaque entrée 'exclude' de la matrice doit être un mapping",
-		'workflow.include_invalid' => "Chaque entrée 'include' de la matrice doit être un mapping",
-		'workflow.defaults_run_invalid' => '%(where)s : run doit être un mapping',
-
-		'action.dir_required' => "Aucun répertoire d'action fourni",
-		'action.dir_missing' => "Le répertoire d'action '%(dir)s' n'existe pas",
-		'action.no_metadata' => "Aucun action.yml ni action.yaml trouvé dans '%(dir)s'",
-		'action.file_required' => "Aucun fichier de métadonnées d'action fourni",
-		'action.file_missing' => "Le fichier de métadonnées d'action '%(file)s' n'existe pas",
-		'action.parse_failed' => "Impossible d'analyser les métadonnées d'action '%(file)s' : %(error)s",
-		'action.empty' => "Les métadonnées d'action '%(file)s' sont vides",
-		'action.not_mapping' => "Les métadonnées d'action '%(file)s' doivent contenir un mapping YAML",
-		'action.no_runs' => "Les métadonnées d'action '%(file)s' n'ont pas de mapping 'runs'",
-		'action.no_using' => "Les métadonnées d'action '%(file)s' n'ont pas de 'runs.using'",
-		'action.no_steps' => "L'action composite '%(file)s' n'a pas de liste 'runs.steps'",
-		'action.no_main' => "L'action JavaScript '%(file)s' n'a pas de 'runs.main'",
-		'action.inputs_invalid' => "Les 'inputs' de '%(file)s' doivent être un mapping",
-		'action.input_invalid' => "L'entrée '%(name)s' de '%(file)s' doit être un mapping",
-		'action.outputs_invalid' => "Les 'outputs' de '%(file)s' doivent être un mapping",
-		'action.output_invalid' => "La sortie '%(name)s' de '%(file)s' doit être un mapping",
-
-		'step.not_mapping' => "Une étape dans %(where)s n'est pas un mapping",
-		'step.field_not_string' => "Le champ d'étape '%(field)s' dans %(where)s doit être une chaîne",
-		'step.no_command' => "Une étape dans %(where)s n'a ni 'run' ni 'uses'",
-		'mapping.invalid' => '%(where)s doit être un mapping',
-
-		'where.job' => "le job '%(job)s'",
-		'where.file' => "'%(file)s'",
-		'where.workflow_env' => 'env du workflow',
-		'where.workflow_defaults' => 'defaults du workflow',
-		'where.job_env' => "env du job '%(job)s'",
-		'where.job_defaults' => "defaults du job '%(job)s'",
-		'where.job_strategy' => "strategy du job '%(job)s'",
-		'where.step_env' => "env d'une étape dans %(where)s",
-		'where.step_with' => "with d'une étape dans %(where)s",
-
-		'i18n.unknown_key' => "Aucun message n'est défini pour '%(key)s'",
-		'i18n.unknown_language' => "La langue '%(language)s' n'a pas de catalogue ; utilisation de l'anglais",
-
-		'span.second' => { plural => { one => '%(count)d seconde', other => '%(count)d secondes' } },
-		'span.minute' => { plural => { one => '%(count)d minute', other => '%(count)d minutes' } },
-		'span.hour' => { plural => { one => '%(count)d heure', other => '%(count)d heures' } },
-		'span.day' => { plural => { one => '%(count)d jour', other => '%(count)d jours' } },
-		'span.month' => { plural => { one => '%(count)d mois', other => '%(count)d mois' } },
-		'span.year' => { plural => { one => '%(count)d an', other => '%(count)d ans' } },
-
-		'cache.summary' => { plural => { one => '%(count)d image.', other => '%(count)d images.' } },
-		'cache.summary_sized' => {
-			plural => {
-				one => '%(count)d image, %(size)s sur le disque.',
-				other => '%(count)d images, %(size)s sur le disque.',
-			},
-		},
-		'cache.missing' => {
-			plural => {
-				one => "%(count)d image n'est plus sur le démon.",
-				other => '%(count)d images ne sont plus sur le démon.',
-			},
-		},
-		'cache.removed' => {
-			plural => {
-				one => '%(count)d image supprimée, %(size)s libérés.',
-				other => '%(count)d images supprimées, %(size)s libérés.',
-			},
-		},
-		'cache.forgot' => {
-			plural => {
-				one => "%(count)d image oubliée, elle n'est plus sur le démon.",
-				other => "%(count)d images oubliées, elles ne sont plus sur le démon.",
-			},
-		},
-		'cache.remove_failed' => {
-			plural => {
-				one => 'Impossible de supprimer %(count)d image :',
-				other => 'Impossible de supprimer %(count)d images :',
-			},
-		},
-
-		'logs.summary' => {
-			plural => {
-				one => '%(count)d journal, %(size)s sur le disque.',
-				other => '%(count)d journaux, %(size)s sur le disque.',
-			},
-		},
-		'logs.removed' => {
-			plural => {
-				one => '%(count)d journal supprimé, %(size)s libérés.',
-				other => '%(count)d journaux supprimés, %(size)s libérés.',
-			},
-		},
-		'logs.remove_failed' => {
-			plural => {
-				one => "Impossible de supprimer %(count)d exécution :",
-				other => "Impossible de supprimer %(count)d exécutions :",
-			},
-		},
-	},
-
-	de => {
-		'actions.workflow_file_required' => 'workflow_file ist erforderlich',
-		'actions.workflow_file_missing' => "Die Workflow-Datei '%(file)s' existiert nicht",
-		'actions.project_dir_required' => 'project_dir ist erforderlich, wenn der Workflow nicht in .github/workflows liegt',
-		'actions.project_dir_missing' => "Das Projektverzeichnis '%(dir)s' existiert nicht",
-		'actions.document_required' => 'Ein Dokumentname ist erforderlich',
-		'actions.document_unknown' => "Unbekanntes Dokument '%(name)s'; erwartet: %(expected)s",
-		'actions.invalid_arguments' => 'Ungültige Argumente für %(routine)s: %(reason)s',
-		'list.or' => '%(head)s oder %(last)s',
-
-		'workflow.file_required' => 'Keine Workflow-Datei angegeben',
-		'workflow.file_missing' => "Die Workflow-Datei '%(file)s' existiert nicht",
-		'workflow.parse_failed' => "Der Workflow '%(file)s' kann nicht gelesen werden: %(error)s",
-		'workflow.empty' => "Der Workflow '%(file)s' ist leer",
-		'workflow.not_mapping' => "Der Workflow '%(file)s' muss ein YAML-Mapping enthalten",
-		'workflow.no_jobs' => "Der Workflow '%(file)s' hat kein 'jobs'-Mapping",
-		'workflow.job_not_mapping' => "Der Job '%(job)s' muss ein Mapping sein",
-		'workflow.job_no_steps' => "Der Job '%(job)s' hat keine 'steps'-Liste",
-		'workflow.container_invalid' => "Der Container des Jobs '%(job)s' muss ein Mapping oder eine Zeichenkette sein",
-		'workflow.services_invalid' => "Die Services des Jobs '%(job)s' müssen ein Mapping sein",
-		'workflow.runs_on_invalid' => "'runs-on' muss eine Zeichenkette oder eine Liste sein",
-		'workflow.matrix_not_mapping' => 'strategy.matrix muss ein Mapping sein',
-		'workflow.matrix_empty' => "Der Matrix-Schlüssel '%(key)s' muss eine Liste mit mindestens einem Wert sein",
-		'workflow.exclude_invalid' => "Jeder 'exclude'-Eintrag der Matrix muss ein Mapping sein",
-		'workflow.include_invalid' => "Jeder 'include'-Eintrag der Matrix muss ein Mapping sein",
-		'workflow.defaults_run_invalid' => '%(where)s: run muss ein Mapping sein',
-
-		'action.dir_required' => 'Kein Action-Verzeichnis angegeben',
-		'action.dir_missing' => "Das Action-Verzeichnis '%(dir)s' existiert nicht",
-		'action.no_metadata' => "Keine action.yml oder action.yaml in '%(dir)s' gefunden",
-		'action.file_required' => 'Keine Action-Metadatendatei angegeben',
-		'action.file_missing' => "Die Action-Metadatendatei '%(file)s' existiert nicht",
-		'action.parse_failed' => "Die Action-Metadaten '%(file)s' können nicht gelesen werden: %(error)s",
-		'action.empty' => "Die Action-Metadaten '%(file)s' sind leer",
-		'action.not_mapping' => "Die Action-Metadaten '%(file)s' müssen ein YAML-Mapping enthalten",
-		'action.no_runs' => "Die Action-Metadaten '%(file)s' haben kein 'runs'-Mapping",
-		'action.no_using' => "Die Action-Metadaten '%(file)s' haben kein 'runs.using'",
-		'action.no_steps' => "Die Composite-Action '%(file)s' hat keine 'runs.steps'-Liste",
-		'action.no_main' => "Die JavaScript-Action '%(file)s' hat kein 'runs.main'",
-		'action.inputs_invalid' => "Die 'inputs' von '%(file)s' müssen ein Mapping sein",
-		'action.input_invalid' => "Die Eingabe '%(name)s' von '%(file)s' muss ein Mapping sein",
-		'action.outputs_invalid' => "Die 'outputs' von '%(file)s' müssen ein Mapping sein",
-		'action.output_invalid' => "Die Ausgabe '%(name)s' von '%(file)s' muss ein Mapping sein",
-
-		'step.not_mapping' => 'Ein Schritt in %(where)s ist kein Mapping',
-		'step.field_not_string' => "Das Schrittfeld '%(field)s' in %(where)s muss eine Zeichenkette sein",
-		'step.no_command' => "Ein Schritt in %(where)s hat weder 'run' noch 'uses'",
-		'mapping.invalid' => '%(where)s muss ein Mapping sein',
-
-		'where.job' => "Job '%(job)s'",
-		'where.file' => "'%(file)s'",
-		'where.workflow_env' => 'env des Workflows',
-		'where.workflow_defaults' => 'defaults des Workflows',
-		'where.job_env' => "env des Jobs '%(job)s'",
-		'where.job_defaults' => "defaults des Jobs '%(job)s'",
-		'where.job_strategy' => "strategy des Jobs '%(job)s'",
-		'where.step_env' => 'env eines Schritts in %(where)s',
-		'where.step_with' => 'with eines Schritts in %(where)s',
-
-		'i18n.unknown_key' => "Für '%(key)s' ist keine Meldung definiert",
-		'i18n.unknown_language' => "Für die Sprache '%(language)s' gibt es keinen Katalog; Englisch wird verwendet",
-
-		'span.second' => { plural => { one => '%(count)d Sekunde', other => '%(count)d Sekunden' } },
-		'span.minute' => { plural => { one => '%(count)d Minute', other => '%(count)d Minuten' } },
-		'span.hour' => { plural => { one => '%(count)d Stunde', other => '%(count)d Stunden' } },
-		'span.day' => { plural => { one => '%(count)d Tag', other => '%(count)d Tage' } },
-		'span.month' => { plural => { one => '%(count)d Monat', other => '%(count)d Monate' } },
-		'span.year' => { plural => { one => '%(count)d Jahr', other => '%(count)d Jahre' } },
-
-		'cache.summary' => { plural => { one => '%(count)d Image.', other => '%(count)d Images.' } },
-		'cache.summary_sized' => {
-			plural => {
-				one => '%(count)d Image, %(size)s auf der Festplatte.',
-				other => '%(count)d Images, %(size)s auf der Festplatte.',
-			},
-		},
-		'cache.missing' => {
-			plural => {
-				one => '%(count)d Image ist nicht mehr auf dem Daemon.',
-				other => '%(count)d Images sind nicht mehr auf dem Daemon.',
-			},
-		},
-		'cache.removed' => {
-			plural => {
-				one => '%(count)d Image entfernt, %(size)s freigegeben.',
-				other => '%(count)d Images entfernt, %(size)s freigegeben.',
-			},
-		},
-		'cache.forgot' => {
-			plural => {
-				one => '%(count)d Image vergessen, das nicht mehr auf dem Daemon ist.',
-				other => '%(count)d Images vergessen, die nicht mehr auf dem Daemon sind.',
-			},
-		},
-		'cache.remove_failed' => {
-			plural => {
-				one => '%(count)d Image konnte nicht entfernt werden:',
-				other => '%(count)d Images konnten nicht entfernt werden:',
-			},
-		},
-
-		'logs.summary' => {
-			plural => {
-				one => '%(count)d Log, %(size)s auf der Festplatte.',
-				other => '%(count)d Logs, %(size)s auf der Festplatte.',
-			},
-		},
-		'logs.removed' => {
-			plural => {
-				one => '%(count)d Log entfernt, %(size)s freigegeben.',
-				other => '%(count)d Logs entfernt, %(size)s freigegeben.',
-			},
-		},
-		'logs.remove_failed' => {
-			plural => {
-				one => '%(count)d Lauf konnte nicht entfernt werden:',
-				other => '%(count)d Läufe konnten nicht entfernt werden:',
-			},
-		},
-	},
-
-	zh => {
-		'actions.workflow_file_required' => '必须提供 workflow_file',
-		'actions.workflow_file_missing' => "工作流文件 '%(file)s' 不存在",
-		'actions.project_dir_required' => '工作流不在 .github/workflows 目录中时必须提供 project_dir',
-		'actions.project_dir_missing' => "项目目录 '%(dir)s' 不存在",
-		'actions.document_required' => '必须提供文档名称',
-		'actions.document_unknown' => "未知文档 '%(name)s'；应为 %(expected)s",
-		'actions.invalid_arguments' => '%(routine)s 的参数无效：%(reason)s',
-		'list.or' => '%(head)s 或 %(last)s',
-
-		'workflow.file_required' => '未提供工作流文件',
-		'workflow.file_missing' => "工作流文件 '%(file)s' 不存在",
-		'workflow.parse_failed' => "无法解析工作流 '%(file)s'：%(error)s",
-		'workflow.empty' => "工作流 '%(file)s' 为空",
-		'workflow.not_mapping' => "工作流 '%(file)s' 必须包含一个 YAML 映射",
-		'workflow.no_jobs' => "工作流 '%(file)s' 没有 'jobs' 映射",
-		'workflow.job_not_mapping' => "作业 '%(job)s' 必须是一个映射",
-		'workflow.job_no_steps' => "作业 '%(job)s' 没有 'steps' 列表",
-		'workflow.container_invalid' => "作业 '%(job)s' 的 container 必须是映射或字符串",
-		'workflow.services_invalid' => "作业 '%(job)s' 的 services 必须是映射",
-		'workflow.runs_on_invalid' => "'runs-on' 必须是字符串或列表",
-		'workflow.matrix_not_mapping' => 'strategy.matrix 必须是映射',
-		'workflow.matrix_empty' => "矩阵键 '%(key)s' 必须是至少包含一个值的列表",
-		'workflow.exclude_invalid' => "矩阵的每个 'exclude' 条目必须是映射",
-		'workflow.include_invalid' => "矩阵的每个 'include' 条目必须是映射",
-		'workflow.defaults_run_invalid' => '%(where)s 的 run 必须是映射',
-
-		'action.dir_required' => '未提供 action 目录',
-		'action.dir_missing' => "action 目录 '%(dir)s' 不存在",
-		'action.no_metadata' => "在 '%(dir)s' 中找不到 action.yml 或 action.yaml",
-		'action.file_required' => '未提供 action 元数据文件',
-		'action.file_missing' => "action 元数据文件 '%(file)s' 不存在",
-		'action.parse_failed' => "无法解析 action 元数据 '%(file)s'：%(error)s",
-		'action.empty' => "action 元数据 '%(file)s' 为空",
-		'action.not_mapping' => "action 元数据 '%(file)s' 必须包含一个 YAML 映射",
-		'action.no_runs' => "action 元数据 '%(file)s' 没有 'runs' 映射",
-		'action.no_using' => "action 元数据 '%(file)s' 没有 'runs.using'",
-		'action.no_steps' => "组合 action '%(file)s' 没有 'runs.steps' 列表",
-		'action.no_main' => "JavaScript action '%(file)s' 没有 'runs.main'",
-		'action.inputs_invalid' => "'%(file)s' 的 'inputs' 必须是映射",
-		'action.input_invalid' => "'%(file)s' 的输入 '%(name)s' 必须是映射",
-		'action.outputs_invalid' => "'%(file)s' 的 'outputs' 必须是映射",
-		'action.output_invalid' => "'%(file)s' 的输出 '%(name)s' 必须是映射",
-
-		'step.not_mapping' => '%(where)s 中的一个步骤不是映射',
-		'step.field_not_string' => "%(where)s 中的步骤字段 '%(field)s' 必须是字符串",
-		'step.no_command' => "%(where)s 中的一个步骤既没有 'run' 也没有 'uses'",
-		'mapping.invalid' => '%(where)s 必须是映射',
-
-		'where.job' => "作业 '%(job)s'",
-		'where.file' => "'%(file)s'",
-		'where.workflow_env' => '工作流的 env',
-		'where.workflow_defaults' => '工作流的 defaults',
-		'where.job_env' => "作业 '%(job)s' 的 env",
-		'where.job_defaults' => "作业 '%(job)s' 的 defaults",
-		'where.job_strategy' => "作业 '%(job)s' 的 strategy",
-		'where.step_env' => '%(where)s 中某个步骤的 env',
-		'where.step_with' => '%(where)s 中某个步骤的 with',
-
-		'i18n.unknown_key' => "没有为 '%(key)s' 定义消息",
-		'i18n.unknown_language' => "语言 '%(language)s' 没有消息目录；改用英语",
-
-		'span.second' => { plural => { other => '%(count)d 秒' } },
-		'span.minute' => { plural => { other => '%(count)d 分钟' } },
-		'span.hour' => { plural => { other => '%(count)d 小时' } },
-		'span.day' => { plural => { other => '%(count)d 天' } },
-		'span.month' => { plural => { other => '%(count)d 个月' } },
-		'span.year' => { plural => { other => '%(count)d 年' } },
-
-		'cache.summary' => { plural => { other => '%(count)d 个镜像。' } },
-		'cache.summary_sized' => { plural => { other => '%(count)d 个镜像，占用磁盘 %(size)s。' } },
-		'cache.missing' => { plural => { other => '%(count)d 个镜像已不在守护进程中。' } },
-		'cache.removed' => { plural => { other => '已删除 %(count)d 个镜像，释放 %(size)s。' } },
-		'cache.forgot' => { plural => { other => '已遗忘 %(count)d 个不在守护进程中的镜像。' } },
-		'cache.remove_failed' => { plural => { other => '无法删除 %(count)d 个镜像：' } },
-
-		'logs.summary' => { plural => { other => '%(count)d 个日志，占用磁盘 %(size)s。' } },
-		'logs.removed' => { plural => { other => '已删除 %(count)d 个日志，释放 %(size)s。' } },
-		'logs.remove_failed' => { plural => { other => '无法删除 %(count)d 次运行：' } },
-	},
-);
+my %CATALOGUE = map {
+	$_ => "App::Actions::I18N::$_"->messages
+} @LANGUAGES;
 
 # The schema shared by every routine that takes a message key and its
 # arguments, so the routines cannot disagree about what a key is.
@@ -1246,13 +826,24 @@ sub throw {
 	my $text = _translator_for($self)->message($key, $args);
 
 	# Carp skips a frame whose two packages trust each other.  Trusting the
-	# module that called throw, for this call only, makes croak report the
+	# module that called throw, for this call only, makes the location the
 	# line that called that module - where its own croak would have pointed -
 	# so moving a croak into the catalogue does not move the line a user sees.
 	local our @CARP_NOT = (scalar caller);
 
-	confess($text) if $args && $args->{trace};
-	croak($text);
+	# A message that is advice rather than a fault in the code names no
+	# place, as die "...\n" did; one raised with a trace carries the stack.
+	my %options = %{ $args || {} };
+	my $location = (exists $options{location} && !$options{location}) ? "\n"
+		: $options{trace} ? Carp::longmess('')
+		: Carp::shortmess('');
+
+	die App::Actions::Error->new(
+		code => $key,
+		message => $text,
+		args => $args || {},
+		location => $location,
+	);
 }
 
 # _translator_for
@@ -1260,7 +851,7 @@ sub throw {
 # Entry:       $invocant - an object, a class name, or undef.
 # Exit status: Returns an App::Actions::I18N object; never fails.
 # Side effects: May create the shared default translator.
-sub _translator_for :Private {
+sub _translator_for {
 	my ($invocant) = @_;
 
 	# Only a hash-based object can carry a translator of its own; a class
@@ -1275,7 +866,7 @@ sub _translator_for :Private {
 # Entry:       $params - the validated arguments of new().
 # Exit status: Returns a lower-case base language code (e.g. 'de').
 # Side effects: None.
-sub _wanted_language :Private {
+sub _wanted_language {
 	my ($params) = @_;
 
 	# The first source that says anything wins; a country that maps to no
@@ -1301,7 +892,7 @@ sub _wanted_language :Private {
 #              $args  - the message arguments (gender, count).
 # Exit status: Returns a template string ('' for a malformed entry).
 # Side effects: None.
-sub _select :Private {
+sub _select {
 	my ($self, $entry, $args) = @_;
 
 	# Gender is resolved before number because a gendered form may still
@@ -1327,7 +918,7 @@ sub _select :Private {
 # Entry:       $count - any value; non-numbers count as 0.
 # Exit status: Returns 'one' or 'other'.
 # Side effects: None.
-sub _plural_category :Private {
+sub _plural_category {
 	my ($self, $count) = @_;
 
 	# A count that is not a number is treated as zero, so a missing count
@@ -1343,7 +934,7 @@ sub _plural_category :Private {
 # Entry:       $template - the text; $args - name to value.
 # Exit status: Returns the rendered string.
 # Side effects: None (warnings from sprintf are suppressed by supplying defaults).
-sub _render :Private {
+sub _render {
 	my ($template, $args) = @_;
 
 	# Each placeholder is formatted on its own, so a translation that drops
@@ -1472,6 +1063,15 @@ sub validate_args {
 	croak(shared()->message('actions.invalid_arguments', { routine => $routine, reason => $reason }));
 }
 
+# Every _name routine above may be called only from this package.
+# Sub::Private's mode is process-wide, so it is set to enforce for this one
+# call rather than for good, which would change how other modules' :Private
+# routines behave.
+BEGIN {
+	local $Sub::Private::config{mode} = 'enforce';
+	Sub::Private->import(@{ App::Actions::Access->private_names(__PACKAGE__) });
+}
+
 1;
 
 __END__
@@ -1482,9 +1082,10 @@ __END__
 
 =item * Coverage is partial.  The catalogue holds the messages of
 L<App::Actions>, L<App::Actions::Workflow>, L<App::Actions::Action>,
-L<App::Actions::Util> and the counted phrases of L<App::Actions::Cache> and
-L<App::Actions::Logs>.  L<App::Actions::Runner>, L<App::Actions::Check>,
-L<App::Actions::Docker> and the command-line scripts still print English
+L<App::Actions::Util>, L<App::Actions::Runner> and its parts, and the counted
+phrases of L<App::Actions::Cache> and L<App::Actions::Logs>.
+L<App::Actions::Check>, L<App::Actions::Docker>, L<App::Actions::Expression>,
+L<App::Actions::Process> and the command-line scripts still print English
 literals, so a non-English run prints a mixture.
 
 =item * The POSIX locale is ignored on purpose.  Error text is matched by
@@ -1504,10 +1105,6 @@ language added with L</add_messages> uses the English rule.
 =item * The catalogue is process-wide.  L</add_messages> affects every
 translator, so two threads of a program that want different entries for the
 same key cannot both have them.
-
-=item * Setting C<$Sub::Private::config{mode}> to C<enforce> is global to the
-process: any other module loaded afterwards that uses L<Sub::Private> in its
-default mode is switched to enforce mode too.
 
 =item * The French, German and Chinese texts were written without review by
 a native speaker.

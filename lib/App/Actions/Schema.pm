@@ -5,6 +5,8 @@ use warnings;
 use Exporter qw(import);
 use JSON::PP ();
 
+use App::Actions::Error;
+
 our $VERSION = '0.01';
 
 our @EXPORT_OK = qw(validate assert_valid describe_errors);
@@ -121,15 +123,17 @@ sub invalid_exit { return 70 }
 
 package App::Actions::Schema::Invalid;
 
-use overload '""' => sub { $_[0]->{message} }, fallback => 1;
+# An App::Actions::Error with the code schema.invalid, so a caller can ask
+# either "is it an Invalid?" or "is it the error schema.invalid?".  It reports
+# a document rather than a place in the code, so it has no location, and the
+# message is the whole text, which keeps message and stringification equal.
+use parent -norequire, 'App::Actions::Error';
 
 sub new {
     my ($class, $message) = @_;
 
-    return bless { message => $message }, $class;
+    return $class->SUPER::new(code => 'schema.invalid', message => $message, location => '');
 }
-
-sub message { return $_[0]->{message} }
 
 package App::Actions::Schema;
 
@@ -153,10 +157,12 @@ sub _is_type {
 sub _same {
     my ($one, $other) = @_;
 
-    return 1 if !defined $one && !defined $other;
-    return 0 if !defined $one || !defined $other || ref $one || ref $other;
-
-    return $one eq $other ? 1 : 0;
+    # Two nulls are the same; a null and a value, or anything structured, are
+    # not; two scalars are compared as strings, as JSON compares them.
+    return (!defined $one && !defined $other) ? 1
+        : (!defined $one || !defined $other || ref $one || ref $other) ? 0
+        : $one eq $other ? 1
+        : 0;
 }
 
 # How a value is shown in a message: a string is quoted, a number and a JSON
@@ -165,12 +171,12 @@ sub _same {
 sub _show {
     my ($value) = @_;
 
-    return 'null' unless defined $value;
-    return $value ? 'true' : 'false' if JSON::PP::is_bool($value);
-    return ref $value if ref $value;
-    return $value if $value =~ /\A-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?\z/;
-
-    return "'$value'";
+    # A value as the JSON document spells it: a number bare, a string quoted.
+    return !defined $value ? 'null'
+        : JSON::PP::is_bool($value) ? ($value ? 'true' : 'false')
+        : ref $value ? ref $value
+        : $value =~ /\A-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?\z/ ? $value
+        : "'$value'";
 }
 
 1;
@@ -247,14 +253,20 @@ can tell a broken document from a host it has to repair.
 
 =head2 App::Actions::Schema::Invalid
 
-What L</assert_valid> dies with.  It stringifies to the message, so C<die> and
-C<warn> read as they did before, and it also offers:
+What L</assert_valid> dies with.  It is an L<App::Actions::Error> whose code
+is C<schema.invalid> and whose location is empty, so it stringifies to its
+message, newline included, and C<die> and C<warn> read as they did before.  It
+offers everything an L<App::Actions::Error> does; in particular:
 
 =over 4
 
 =item C<message>
 
 The same text, without relying on stringification.
+
+=item C<is('schema.invalid')>
+
+True, as for any error with that code.
 
 =back
 

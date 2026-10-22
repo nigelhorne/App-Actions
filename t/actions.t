@@ -72,7 +72,9 @@ subtest 'the options reach the runner' => sub {
 		verbose => 1,
 	);
 
-	# White-box: the runner is what every public method builds.
+	# White-box: the runner is what every public method builds.  _runner is
+	# protected, so outside a harness the bypass has to be asked for.
+	local $Sub::Protected::BYPASS = 1;
 	my $runner = $actions->_runner({});
 	is($runner->{cache_file}, $cache, 'cache_file is forwarded (it used to be dropped)');
 	is($runner->{log_dir}, $project, 'log_dir is forwarded');

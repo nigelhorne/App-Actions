@@ -105,7 +105,20 @@ subtest 'every catalogue agrees with English' => sub {
 		is_deeply(\@missing, [], "$language has every English key");
 	}
 
-	my %args = map { $_ => "<$_>" } qw(file dir job key where name field error routine reason expected head last language size what);
+	# Every placeholder the English texts use, found in the texts themselves,
+	# so that a new message cannot slip past with an argument nobody checks.
+	# A plural or gender choice is a hash of texts, which is searched too.
+	my @texts = values %{ App::Actions::I18N::en->messages };
+	my %placeholders;
+	while (defined(my $text = shift @texts)) {
+		if (ref $text eq 'HASH') {
+			push @texts, values %{$text};
+			next;
+		}
+		$placeholders{$1} = 1 while $text =~ /%\((\w+)\)/g;
+	}
+	ok(scalar(keys %placeholders) > 20, 'the English texts name their placeholders');
+	my %args = map { $_ => "<$_>" } keys %placeholders;
 	$args{count} = 2;
 	for my $language (@{ App::Actions::I18N->languages }) {
 		my $translator = App::Actions::I18N->new(language => $language);

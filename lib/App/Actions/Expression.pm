@@ -149,7 +149,7 @@ sub condition {
 }
 
 sub _tokenize {
-    my ($self, $text) = @_;
+    my (undef, $text) = @_;
 
     my @tokens;
     my $length = length($text);
@@ -323,12 +323,11 @@ sub _parse_relational {
 sub _parse_unary {
     my ($self) = @_;
 
-    if ($self->_peek_value eq '!') {
-        $self->_next;
-        return _truthy($self->_parse_unary) ? 0 : 1;
-    }
+    # "!" binds tighter than any operator, and may be repeated.
+    my $negated = $self->_peek_value eq '!';
+    $self->_next if $negated;
 
-    return $self->_parse_primary;
+    return $negated ? (_truthy($self->_parse_unary) ? 0 : 1) : $self->_parse_primary;
 }
 
 sub _parse_primary {
@@ -541,22 +540,21 @@ sub _equal {
 sub _compare {
     my ($left, $right) = @_;
 
-    if (_is_number($left) && _is_number($right)) {
-        return $left <=> $right;
-    }
-
-    return lc(_stringify($left)) cmp lc(_stringify($right));
+    # Numbers compare as numbers; anything else as text, ignoring case.
+    return (_is_number($left) && _is_number($right))
+        ? $left <=> $right
+        : lc(_stringify($left)) cmp lc(_stringify($right));
 }
 
 sub _is_number {
     my ($value) = @_;
-    return 0 unless defined $value;
     # GitHub compares a boolean with a number as 1 or 0, which is what lets
     # "matrix.debug == false" match a matrix value of false.
-    return 1 if JSON::PP::is_bool($value);
-    return 0 if ref $value;
-    return 0 if $value eq '';
-    return looks_like_number($value) ? 1 : 0;
+    return !defined $value ? 0
+        : JSON::PP::is_bool($value) ? 1
+        : (ref $value || $value eq '') ? 0
+        : looks_like_number($value) ? 1
+        : 0;
 }
 
 # The string a workflow sees for a value: one definition for the whole
