@@ -217,6 +217,33 @@ sub entries {
     return \@runs;
 }
 
+# The logs a threshold selects, grouped by the run they belong to.  A log is
+# always stamped with its own modification time, so unlike an image it has no
+# unknown age; the comparison still leaves a clock that is ahead out of a
+# positive threshold rather than guessing that it is old.  A run with no
+# selected log is left out, so a prune never touches a run it was not asked
+# about.
+sub _selected_runs {
+    my ($self, %args) = @_;
+
+    my $runs = $self->entries;
+    return $runs unless defined $args{older_than};
+
+    my $now = defined $args{now} ? $args{now} : time;
+    my @selected;
+
+    for my $run (@$runs) {
+        my @logs = grep {
+            $now - $_->{mtime} >= $args{older_than}
+        } @{ $run->{logs} };
+
+        next unless @logs;
+        push @selected, { %$run, logs => \@logs };
+    }
+
+    return \@selected;
+}
+
 # The words are shared with the cache listing, which reports an image's age
 # the same way.  The largest whole unit is used, so 90 minutes is an hour ago
 # and 23 hours is still hours rather than a day.
@@ -230,8 +257,11 @@ sub format_age {
 sub report {
     my ($self, %args) = @_;
 
-    my $now  = defined $args{now} ? $args{now} : time;
-    my $runs = $self->entries;
+    my $now = defined $args{now} ? $args{now} : time;
+    my $older_than = $args{older_than};
+    my $runs = $self->_selected_runs(
+        older_than => $older_than, now => $now,
+    );
 
     my $out = "Logs directory: $self->{directory}\n";
 
@@ -243,7 +273,18 @@ sub report {
         }
     }
 
-    return $out . "No job logs have been kept yet.\n" unless @rows;
+    unless (@rows) {
+        if (defined $older_than && @{ $self->entries }) {
+            return $out . 'No job logs are older than '
+                . App::Actions::Cache::format_span($older_than) . ".\n";
+        }
+
+        return $out . "No job logs have been kept yet.\n";
+    }
+
+    $out .= 'Only job logs older than '
+        . App::Actions::Cache::format_span($older_than) . ".\n"
+        if defined $older_than;
 
     my ($run_width, $log_width) = (3, 3);
     for my $row (@rows) {
@@ -278,18 +319,34 @@ sub report {
     return $out;
 }
 
-# Remove every kept log, and the run directory once that is empty.  Only a
+# Remove every selected log, and the run directory once that is empty.  Only a
 # file that matched the listing is unlinked, so a note left in a run directory
-# survives; a directory named another way is never touched.  A removal that
-# fails is reported and leaves the rest of the prune to carry on, with exit 1.
+# survives, and a newer log keeps its run directory even when the older logs
+# beside it went.  A directory named another way is never touched.  A removal
+# that fails is reported and leaves the rest of the prune to carry on, with
+# exit 1.
 sub prune {
-    my ($self) = @_;
+    my ($self, %args) = @_;
 
-    my $runs = $self->entries;
-    my $out  = "Logs directory: $self->{directory}\n";
+    my $now = defined $args{now} ? $args{now} : time;
+    my $older_than = $args{older_than};
+    my $runs = $self->_selected_runs(
+        older_than => $older_than, now => $now,
+    );
+    my $out = "Logs directory: $self->{directory}\n";
 
     unless (@$runs) {
         my $data = { removed => 0, freed => 0, failed => [] };
+
+        if (defined $older_than && @{ $self->entries }) {
+            return (
+                $out . 'No job logs are older than '
+                    . App::Actions::Cache::format_span($older_than) . ".\n",
+                0,
+                $data,
+            );
+        }
+
         return ($out . "No job logs have been kept yet.\n", 0, $data);
     }
 
@@ -355,8 +412,10 @@ sub prune {
 sub document {
     my ($self, %args) = @_;
 
-    my $now  = defined $args{now} ? $args{now} : time;
-    my $runs = $self->entries;
+    my $now = defined $args{now} ? $args{now} : time;
+    my $runs = $self->_selected_runs(
+        older_than => $args{older_than}, now => $now,
+    );
     my @logs;
     my ($count, $size) = (0, 0);
 
@@ -467,25 +526,37 @@ the names this tool writes is ignored.
 
 The listing C<action-run logs> prints: one row per kept log naming the run,
 the file, its size and its age, then the number of logs and the disk they
-take.  C<now> (epoch seconds) can be passed for a fixed clock in a test.
+take.  C<older_than> (seconds) restricts the rows and totals to logs at least
+that old, so a run with only newer logs is not listed.  C<now> (epoch seconds)
+can be passed for a fixed clock in a test.
 
 =head2 prune
 
-    my ($report, $exit, $pruned) = $logs->prune;
+    my ($report, $exit, $pruned) = $logs->prune(
+        older_than => 2 * 24 * 60 * 60,  # optional
+        now        => time,               # optional, for a fixed clock
+    );
 
-Remove every kept log and return what was printed with the exit status: 0
-when every log went, 1 when one could not be removed and was reported.  The
-run directory is removed too once it is empty; a directory that does not
-match the name this tool writes, or that holds anything else, is left alone.
+Remove the selected logs and return what was printed with the exit status: 0
+when every selected log went, 1 when one could not be removed and was
+reported.  Without C<older_than> every kept log is selected; with it only
+logs at least that old are removed, so newer logs stay in their run.  The run
+directory is removed too once it is empty; a directory that does not match
+the name this tool writes, or that holds anything else, is left alone.
 C<$pruned> is the C<prune> object of the JSON document, with the counts the
 report says in words and the runs that stayed.
 
 =head2 document
 
-    my $document = $logs->document(prune => $pruned);
+    my $document = $logs->document(
+        older_than => 2 * 24 * 60 * 60,  # optional
+        prune      => $pruned,            # optional, from prune()
+        now        => time,               # optional, for a fixed clock
+    );
 
 Returns the document C<action-run logs --json> prints, described under
-L</JSON OUTPUT>.  C<prune> is omitted for a listing and is the value
+L</JSON OUTPUT>.  C<older_than> restricts C<logs> and C<totals> to the logs
+the listing selected.  C<prune> is omitted for a listing and is the value
 L</prune> returned after a prune.  C<now> (epoch seconds) can be passed for a
 fixed clock in a test; it becomes the document's C<generated_at>.  The
 document is checked against
@@ -533,10 +604,12 @@ epoch second the log was last written and C<age> the seconds between them.
 C<age> is C<generated_at> minus C<mtime>, so a caller can use it without
 subtracting from its own clock or parsing a phrase; it is 0 when the log's
 clock is ahead of C<generated_at>, as the text report shows such a log as
-C<just now>.  C<totals> counts the runs, logs and bytes the listing found.  C<prune> is C<null> for a listing and an object after
-C<--prune>, carrying C<removed>, C<freed> and the C<failed> runs that stayed,
-each with its C<run> name and C<error>.  The document is printed even when a
-removal failed, and the exit status is 1.
+C<just now>.  C<totals> counts the runs, logs and bytes the listing found.
+With C<older_than> only the selected logs are in C<logs>, and the totals count
+only them.  C<prune> is C<null> for a listing and an object after C<--prune>,
+carrying C<removed>, C<freed> and the C<failed> runs that stayed, each with
+its C<run> name and C<error>.  The document is printed even when a removal
+failed, and the exit status is 1.
 
 C<schema_version> names the shape of the document; it is the number
 L</json_schema_version> returns.  The schema is what C<action-run schema

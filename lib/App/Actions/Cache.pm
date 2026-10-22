@@ -376,7 +376,7 @@ sub parse_duration {
     return $amount * $DURATION_SECONDS{$unit};
 }
 
-sub _format_span {
+sub format_span {
     my ($seconds) = @_;
 
     $seconds = 0 unless defined $seconds && $seconds =~ /\A-?\d+\z/;
@@ -414,7 +414,7 @@ sub format_age {
 
     return 'just now' if $seconds < 60;
 
-    return _format_span($seconds) . ' ago';
+    return format_span($seconds) . ' ago';
 }
 
 # The entries a threshold selects.  An image with no recorded last use cannot
@@ -466,13 +466,13 @@ sub report {
     if (!@$entries) {
         if (defined $older_than && @{ $self->entries }) {
             return $out . 'No cached images are older than '
-                . _format_span($older_than) . ".\n";
+                . format_span($older_than) . ".\n";
         }
 
         return $out . "No images have been cached yet.\n";
     }
 
-    $out .= 'Only images older than ' . _format_span($older_than) . ".\n"
+    $out .= 'Only images older than ' . format_span($older_than) . ".\n"
         if defined $older_than;
 
     my $width = 5;
@@ -558,7 +558,7 @@ sub prune {
         if (defined $older_than && @{ $self->entries }) {
             return (
                 $out . 'No cached images are older than '
-                    . _format_span($older_than) . ".\n",
+                    . format_span($older_than) . ".\n",
                 0,
                 $data,
             );
@@ -772,6 +772,14 @@ the 30- and 365-day spans the age column uses, so a threshold and the ages it
 filters cannot disagree about what C<2 months> means.  An unknown unit, a
 negative number or a number without a unit returns C<undef> instead of a
 quietly wrong threshold.
+
+=head2 format_span
+
+    my $words = App::Actions::Cache::format_span(2 * 24 * 60 * 60);
+
+How many seconds read when they name a threshold rather than an age: C<2
+days>, C<1 hour>, C<1 year>.  The largest whole unit is used, without the
+C<ago> an age adds, so a filter can say what it selected.
 
 =head2 forget
 

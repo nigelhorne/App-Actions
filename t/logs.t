@@ -163,6 +163,39 @@ my $logs = App::Actions::Logs->new(directory => $logs_dir);
 }
 
 {
+    # The threshold selects logs individually, by their own modification time.
+    # The old run's log is two days old and the newer run's two are two hours
+    # old, so a one-day threshold takes one row rather than a whole run.
+    my $out = $logs->report(now => $now, older_than => 86400);
+
+    like($out, qr/^Only job logs older than 1 day\.$/m,
+        'the filtered listing says what it selected');
+    like($out, qr/^  \Q20261020-090000-def456\E\s+job-1-test_n_one\.log\s+4\.0 KB\s+2 days ago$/m,
+        'the log older than the threshold is listed');
+    unlike($out, qr/^  \Q20261021-120000-abc123\E\b/m,
+        'a run whose logs are all newer is left out');
+    like($out, qr/^1 log, 4\.0 KB on disk\.$/m,
+        'the filtered listing totals only the selected logs');
+
+    my $document = $logs->document(now => $now, older_than => 86400);
+    is_deeply(
+        [ map { [ $_->{run}, $_->{name} ] } @{ $document->{logs} } ],
+        [ [ '20261020-090000-def456', 'job-1-test_n_one.log' ] ],
+        'the filtered document holds only the logs older than the threshold',
+    );
+    is($document->{totals}{runs}, 1,
+        'the filtered document counts the selected run');
+    is($document->{totals}{logs}, 1,
+        'the filtered document counts the selected logs');
+    is($document->{totals}{size}, 4096,
+        'the filtered document totals the selected bytes');
+
+    $out = $logs->report(now => $now, older_than => 365 * 86400);
+    like($out, qr/^No job logs are older than 1 year\.$/m,
+        'a threshold no log reaches says why the listing is empty');
+}
+
+{
     # A removal that fails is reported and leaves the logs for a second try.
     no warnings 'redefine';
     local *App::Actions::Logs::_unlink = sub {
@@ -249,6 +282,81 @@ my $logs = App::Actions::Logs->new(directory => $logs_dir);
 }
 
 {
+    local $ENV{ACTION_RUN_LOG_DIR} = File::Spec->catdir(
+        tempdir(CLEANUP => 1), 'logs',
+    );
+    my $new_run = File::Spec->catdir(
+        $ENV{ACTION_RUN_LOG_DIR}, '20261021-140000-abc123',
+    );
+    my $old_run = File::Spec->catdir(
+        $ENV{ACTION_RUN_LOG_DIR}, '20261018-090000-def456',
+    );
+    make_path($new_run, $old_run);
+
+    my $new_log = File::Spec->catfile($new_run, 'job-1-test.log');
+    my $old_log = File::Spec->catfile($old_run, 'job-1-test.log');
+    write_file($new_log, 'a' x 1024);
+    write_file($old_log, 'b' x 4096);
+
+    my $now = time;
+    utime($now - 3600, $now - 3600, $new_log);
+    utime($now - 3 * 86400, $now - 3 * 86400, $old_log);
+
+    my ($out, $err, $exit) = run_cli('logs', '--older-than', '1d');
+    is($exit, 0, 'logs --older-than exits 0');
+    is($err, '', 'logs --older-than writes nothing to standard error');
+    like($out, qr/^Only job logs older than 1 day\.$/m,
+        'the command says what it filtered');
+    like($out, qr/\Q20261018-090000-def456\E\s+job-1-test\.log\s+4\.0 KB/,
+        'the command lists the old log');
+    unlike($out, qr/\Q20261021-140000-abc123\E/,
+        'the command leaves out the newer log');
+    like($out, qr/^1 log, 4\.0 KB on disk\.$/m,
+        'the command totals only the logs it selected');
+
+    ($out, $err, $exit) = run_cli('logs', '--json', '--older-than', '1d');
+    is($exit, 0, 'logs --json --older-than exits 0');
+    my $document = eval { JSON::PP->new->decode($out) };
+    ok($document, 'the filtered document decodes') or diag "stderr: $err";
+    is_deeply(
+        [ map { $_->{name} } @{ $document->{logs} } ],
+        ['job-1-test.log'],
+        'the document holds only the old log',
+    );
+    is($document->{totals}{logs}, 1,
+        'the document totals only the selected log');
+    is($document->{totals}{size}, 4096,
+        'the document totals only the selected bytes');
+
+    ($out, $err, $exit) = run_cli('logs', '--prune', '--older-than', '1d');
+    is($exit, 0, 'logs --prune --older-than exits 0');
+    is($err, '', 'logs --prune --older-than writes nothing to standard error');
+    like($out, qr/^Removed 1 log, 4\.0 KB freed\.$/m,
+        'the filtered prune removes only the old log');
+    ok(!-e $old_log, 'the old log is gone');
+    ok(!-e $old_run, 'the run directory that held only the old log is gone');
+    ok(-e $new_log, 'the newer log is still there');
+    ok(-d $new_run, 'the run directory holding the newer log is still there');
+
+    # As with the cache, a filtered prune document shows the whole record that
+    # remains, not just the filter's empty selection the second time.
+    ($out, $err, $exit) = run_cli(
+        'logs', '--prune', '--json', '--older-than', '1d',
+    );
+    is($exit, 0, 'a filtered prune with nothing left to remove exits 0');
+    my $prune_document = eval { JSON::PP->new->decode($out) };
+    ok($prune_document, 'the filtered prune document decodes')
+        or diag "stderr: $err";
+    is($prune_document->{prune}{removed}, 0,
+        'the filtered prune removed nothing the second time');
+    is_deeply(
+        [ map { $_->{name} } @{ $prune_document->{logs} } ],
+        ['job-1-test.log'],
+        'the prune document lists the newer log it kept',
+    );
+}
+
+{
     # The machine-readable form is the same listing with raw sizes and times,
     # and with the prune report the text only summarises.
     local $ENV{ACTION_RUN_LOG_DIR} = File::Spec->catdir(
@@ -325,8 +433,21 @@ my $logs = App::Actions::Logs->new(directory => $logs_dir);
 {
     my ($out, $err, $exit) = run_cli('logs', 'extra');
     is($exit, 2, 'logs takes no arguments');
-    like($err, qr/Usage: action-run \[options\] logs \[--prune\] \[--json\]/,
-        'the usage line says how to invoke logs');
+    like(
+        $err,
+        qr/Usage: action-run \[options\] logs \[--prune\] \[--older-than DURATION\] \[--json\]/,
+        'the usage line says how to invoke logs',
+    );
+}
+
+{
+    my (undef, $err, $exit) = run_cli('logs', '--older-than', 'fortnight');
+    is($exit, 2, 'an unknown duration is a usage error for logs');
+    like(
+        $err,
+        qr/--older-than must be a duration such as 30d, 12h or 90m, not 'fortnight'/,
+        'the logs error says what a duration looks like',
+    );
 }
 
 {

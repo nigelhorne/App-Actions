@@ -17,7 +17,7 @@ WriteMakefile(
     VERSION_FROM   => 'lib/App/Actions.pm',
     AUTHOR         => 'Nigel Horne (njh@nigelhorne.com)',
     ((defined($ExtUtils::MakeMaker::VERSION) && ($ExtUtils::MakeMaker::VERSION >= 6.3002))
-        ? ('LICENSE' => 'GPL')
+        ? ('LICENSE' => 'gpl_2')
         : ()),
     EXE_FILES      => [ 'bin/action-run', 'bin/action-run-smoke' ],
     PREREQ_PM      => {

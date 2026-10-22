@@ -234,7 +234,9 @@ defaults to C<ACTION_RUN_LOG_DIR>, then to C<action-run/logs> under that same
 cache directory.  C<action-run logs> reads that directory, with the sizes and
 ages of the logs, C<action-run logs --json> prints them, with the clock their
 ages are measured from, as a versioned document, and
-C<action-run logs --prune> removes them.
+C<action-run logs --prune> removes them.  C<--older-than> filters that listing,
+and with C<--prune> removes only logs at least that old; a log is selected on
+its own modification time, so newer logs in the same run stay.
 
 C<explain> is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per
@@ -433,11 +435,16 @@ parent's handles with the child.
 
 =head1 AUTHOR
 
-Nigel Horne, C<njh@nigelhorne.com>
+Nigel Horne, C<< <njh at nigelhorne.com> >>
 
-=head1 LICENSE
+=head1 LICENCE AND COPYRIGHT
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+Copyright 2010-2026 Nigel Horne.
+
+Usage is subject to the GPL2 licence terms.
+If you use it,
+please let me know.
 
 =cut
+
+1;

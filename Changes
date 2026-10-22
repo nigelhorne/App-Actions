@@ -213,7 +213,9 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       without editing a list in t/schema.t.  A test copies the fixtures
       directory, drops one more document into the copy and checks that the
       walk discovers and groups it, so a newly added fixture cannot be
-      silently left out of the coverage.
+      silently left out of the coverage.  The same copy also gets a damaged
+      document, which the walk names and reports as invalid instead of
+      dying on the parse and hiding the fixtures it had already read.
     - Run step scripts for real in the fake Docker.  It maps the paths docker
       exec was given back to the host and runs the script with the host's
       shell, so what a step prints and what it writes to GITHUB_ENV and
@@ -281,9 +283,9 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       and "make check-worktree" against the working tree, unstaged edits and
       untracked files included, so a developer can ask what the hook would
       say before writing a commit message.  t/hooks.t runs both targets
-      against passing and failing snapshots, including a staged live-knob
-      change, so the target is shown to reach the hook's second check and not
-      only the schema check.
+      against passing and failing snapshots, including staged live-knob
+      changes with and without the prefix, so the target is shown to reach the
+      hook's second check and agree with it in both directions.
     - Hold each shipped schema to itself before any document is read: the
       schema's own version, the const its schema_version property promises
       and the constant the module reports have to agree, and the failure
@@ -437,3 +439,10 @@ Revision history for App-Actions - run GitHub Actions workflows locally
       image with no recorded last use is not guessed to be old enough, so it
       is left out of a filtered listing and kept by a filtered prune.  An
       unreadable duration is a usage error rather than an unfiltered prune.
+    - Add "action-run logs --older-than <duration>", using the same durations
+      and wording as the cache filter.  The text and JSON listings show only
+      the logs at least that old, and --prune removes only those logs, leaving
+      newer logs in a run directory that still holds them.  A log is selected
+      on its own modification time rather than its run's, so a run with a mix
+      of ages is filtered log by log.  A filtered prune document lists the
+      whole remaining record, as the cache one does.

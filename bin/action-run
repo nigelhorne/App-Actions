@@ -127,11 +127,11 @@ if ($prune && $command ne 'cache' && $command ne 'logs') {
     );
 }
 
-if (defined $older_than && $command ne 'cache') {
+if (defined $older_than && $command ne 'cache' && $command ne 'logs') {
     pod2usage(
         -exitval => 2,
         -verbose => 0,
-        -message => "--older-than is only used by the cache command\n",
+        -message => "--older-than is only used by the cache and logs commands\n",
     );
 }
 
@@ -350,14 +350,26 @@ if ($command eq 'logs') {
         pod2usage(
             -exitval => 2,
             -verbose => 0,
-            -message => "Usage: action-run [options] logs [--prune] [--json]\n",
+            -message => "Usage: action-run [options] logs [--prune] [--older-than DURATION] [--json]\n",
         );
+    }
+
+    my $age_limit;
+    if (defined $older_than) {
+        $age_limit = App::Actions::Cache::parse_duration($older_than);
+        if (!defined $age_limit) {
+            print STDERR 'action-run: --older-than must be a duration such as '
+                . "30d, 12h or 90m, not '$older_than'\n";
+            exit 2;
+        }
     }
 
     my $logs = App::Actions::Logs->new;
 
     if ($prune) {
-        my ($text, $exit, $data) = eval { $logs->prune };
+        my ($text, $exit, $data) = eval {
+            $logs->prune(older_than => $age_limit)
+        };
         if (my $error = $@) {
             print STDERR 'action-run: cannot prune the job logs: ',
                 _error_text($error), "\n";
@@ -381,7 +393,9 @@ if ($command eq 'logs') {
     }
 
     if ($json) {
-        my $document = eval { $logs->document };
+        my $document = eval {
+            $logs->document(older_than => $age_limit)
+        };
         if (my $error = $@) {
             exit _fail($error);
         }
@@ -389,7 +403,7 @@ if ($command eq 'logs') {
         exit 0;
     }
 
-    my $text = eval { $logs->report };
+    my $text = eval { $logs->report(older_than => $age_limit) };
     if (my $error = $@) {
         print STDERR 'action-run: cannot list the job logs: ',
             _error_text($error), "\n";
@@ -543,7 +557,7 @@ action-run - run a GitHub Actions workflow locally with Docker
     action-run [options] schema <check|preflight|cache|logs>
     action-run [options] validate <check|preflight|cache|logs> <document.json>
     action-run [options] cache [--prune] [--older-than DURATION] [--json]
-    action-run [options] logs [--prune] [--json]
+    action-run [options] logs [--prune] [--older-than DURATION] [--json]
 
 =head1 DESCRIPTION
 
@@ -574,7 +588,8 @@ C<--quiet> suppresses the note without suppressing the files.  The default
 directory is F<$XDG_CACHE_HOME/action-run/logs>, or
 F<~/.cache/action-run/logs> when that is not set, and
 C<ACTION_RUN_LOG_DIR> moves it.  C<action-run logs> lists those copies with
-their sizes and ages, and C<action-run logs --prune> removes them.
+their sizes and ages, and C<action-run logs --prune> removes them;
+C<--older-than> shows or removes only logs at least that old.
 
 The project directory is optional when the workflow lives inside a
 C<.github/workflows> directory; the repository root is inferred in that case.
@@ -903,7 +918,7 @@ C<App::Actions::Cache-E<gt>json_schema_version>.
 
 =head2 logs
 
-    action-run [options] logs [--prune] [--json]
+    action-run [options] logs [--prune] [--older-than DURATION] [--json]
 
 Lists the per-job logs that parallel runs have kept, with the size each one
 takes and how long ago the run wrote it, and with C<--prune> removes them:
@@ -923,14 +938,21 @@ not the run's start, and is shown in the largest whole unit: minutes, hours,
 days, months or years.  A log deleted outside C<action-run> simply stops
 being listed.
 
-C<--prune> removes every log it listed and the run directory once that is
-empty, which is what the listing's "Remove them with" line names.  Only a file
-that matched the listing is unlinked, so a note left in a run directory
-survives; only a directory named the way C<action-run> writes one - a
-timestamp followed by the run id - is considered, so a directory that
+C<--older-than> restricts the listing to logs at least as old as its duration
+and makes C<--prune> remove only those logs.  The duration is a number and a
+unit: C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo> or C<1y>, with the unit
+optionally spelled out, using the same 30- and 365-day spans as C<AGE>.  A log
+is selected on its own modification time, so a run with only newer logs is
+left alone.  C<--prune> removes every selected log and the run directory once
+that is empty, which is what the listing's "Remove them with" line names.
+Only a file that matched the listing is unlinked, so a note left in a run
+directory survives; only a directory named the way C<action-run> writes one -
+a timestamp followed by the run id - is considered, so a directory that
 C<ACTION_RUN_LOG_DIR> shares with other things is not emptied.  A removal
 that fails is reported, the rest of the prune carries on, and the command
-exits 1 so a second attempt still sees it.
+exits 1 so a second attempt still sees it.  A filtered prune document lists
+the whole remaining record, because the filter chose what the prune attempted
+rather than what is left.
 
 With C<--json> the listing is a single versioned object instead of the text
 report, for a CI job to assert on:
@@ -953,10 +975,11 @@ epoch second the log was last written and C<age> the seconds between them.
 C<age> is C<generated_at> minus C<mtime>, so a caller can use it without
 subtracting from its own clock or parsing a phrase; it is 0 when the log's
 clock is ahead of C<generated_at>.  C<totals> counts the runs, logs and bytes
-the listing found.  After C<--prune> the C<prune> key is an object rather than
-C<null>, holding C<removed>, C<freed> and the C<failed> runs that stayed, each
-with its C<run> name and C<error>; the document is printed even when a removal
-failed, and the exit status is 1.
+the listing found.  With C<--older-than> the C<logs> array and C<totals> count
+only the selected logs.  After C<--prune> the C<prune> key is an object rather
+than C<null>, holding C<removed>, C<freed> and the C<failed> runs that stayed,
+each with its C<run> name and C<error>; the document is printed even when a
+removal failed, and the exit status is 1.
 
 The document is checked against its schema before it is printed, so a key that
 was added, removed or retyped without the schema changing exits 70 with a
@@ -1041,15 +1064,17 @@ List the expanded jobs and exit.
 =item B<--prune>
 
 With C<cache>, remove the images a run kept and forget them; with C<logs>,
-remove the kept job logs.  It is rejected by every other command.
+remove the kept job logs.  With C<--older-than> only those at least that old
+are removed.  It is rejected by every other command.
 
 =item B<--older-than> I<duration>
 
-With C<cache>, show only the images at least as old as I<duration>, and make
-C<--prune> remove only those.  A duration is a number and a unit such as
-C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo> or C<1y>; the unit may be spelled
-out.  An image with no recorded last use is not selected, because its age is
-unknown.  It is rejected by every other command.
+With C<cache> or C<logs>, show only the entries at least as old as I<duration>,
+and make C<--prune> remove only those.  A duration is a number and a unit such
+as C<30s>, C<15m>, C<12h>, C<7d>, C<2w>, C<3mo> or C<1y>; the unit may be
+spelled out.  An image with no recorded last use is not selected, because its
+age is unknown; a log always has the modification time it is filtered on.  It
+is rejected by every other command.
 
 =item B<--keep>, B<-k>
 
@@ -1180,6 +1205,10 @@ record.
     action-run schema cache | jq '.version'
 
     action-run logs
+
+    action-run logs --older-than 30d
+
+    action-run logs --prune --older-than 7d
 
     action-run logs --prune
 

@@ -289,8 +289,9 @@ unlink $untracked_fixture
 # targets are run on a passing and a failing snapshot: check-staged reads the
 # index, including a bad untracked file only for check-worktree to reject, and
 # check-worktree rejects an untracked file that the staged run cannot see.
-# A staged live-knob change also fails through check-staged, so the target is
-# shown to reach the hook's second check as well as its schema check.
+# A staged live-knob change fails through check-staged when its knob lacks the
+# prefix and passes when it keeps one, so the target is shown to reach the
+# hook's second check and agree with it in both directions.
 {
     my ($configure_out, $configure_status) = run_in_repository($^X, 'Makefile.PL');
     is($configure_status, 0,
@@ -298,7 +299,7 @@ unlink $untracked_fixture
         or diag $configure_out;
 
     SKIP: {
-        skip 'the generated Makefile is not available', 15
+        skip 'the generated Makefile is not available', 16
             unless $configure_status == 0;
 
         my $makefile = slurp(File::Spec->catfile($repository, 'Makefile'));
@@ -309,7 +310,7 @@ unlink $untracked_fixture
 
         my $make = $Config{make};
         my (undef, $make_status) = run_in_repository($make, '-n', 'check-staged');
-        skip "the configured make command '$make' cannot run the target", 13
+        skip "the configured make command '$make' cannot run the target", 14
             unless $make_status == 0;
 
         my ($worktree_out, $worktree_status) = run_in_repository(
@@ -407,6 +408,24 @@ unlink $untracked_fixture
             qr/live knobs/,
             'the staged target reports the live-knob check',
         );
+
+        in_repository([ 'reset', '-q', '--', 't/real-docker.t' ]);
+
+        # The same target has to accept a live-knob edit that keeps the
+        # prefix.  It is staged while the working tree is left valid, so the
+        # verdict comes from the index the commit would carry.
+        my $prefixed = "my \$staged_knob = \$ENV{LIVE_TESTING_IMAGE};\n"
+            . $live_source;
+        spew($live_test, $prefixed);
+        in_repository([ 'add', 't/real-docker.t' ]);
+        spew($live_test, $live_source);
+
+        my ($live_staged_pass_out, $live_staged_pass_status) = run_in_repository(
+            $make, 'check-staged',
+        );
+        is($live_staged_pass_status, 0,
+            'make check-staged accepts a live knob staged with its prefix')
+            or diag $live_staged_pass_out;
 
         in_repository([ 'reset', '-q', '--', 't/real-docker.t' ]);
     }

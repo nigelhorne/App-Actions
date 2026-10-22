@@ -88,19 +88,14 @@ value removes the ones the run itself pulled when it finishes.  The kept
 images are recorded by [App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache), which is what
 `action-run cache` lists and `action-run cache --prune` removes; the record
 lives in the user's cache directory, and `ACTION_RUN_CACHE_FILE` moves it.
-The text listing carries an `AGE` column, and `action-run cache --json` prints
-the same record as a versioned document with a `generated_at` clock and an
-explicit `age` for each image, held to a schema that
-`action-run schema cache` prints.  `--older-than` filters the listing, and
-with `--prune` removes only the images that old: a number and a unit such as
-`30s`, `12h`, `7d`, `3mo` or `1y`, with the unit optionally spelled out.
-Images with no recorded last use are left out of the filter and the prune.
 `log_dir` says where the per-job logs of a parallel run are kept; it
 defaults to `ACTION_RUN_LOG_DIR`, then to `action-run/logs` under that same
 cache directory.  `action-run logs` reads that directory, with the sizes and
 ages of the logs, `action-run logs --json` prints them, with the clock their
-ages are measured from, as a versioned document held to a schema that
-`action-run schema logs` prints, and `action-run logs --prune` removes them.
+ages are measured from, as a versioned document, and
+`action-run logs --prune` removes them.  `--older-than` filters that listing,
+and with `--prune` removes only logs at least that old; a log is selected on
+its own modification time, so newer logs in the same run stay.
 
 `explain` is a dry run whose output is the containers rather than the Docker
 commands: nothing is started and no daemon is contacted, and one block per
@@ -184,10 +179,10 @@ my $schema = App::Actions->json_schema('logs');
 
 Returns the JSON schema of one of the machine-readable documents as a hash,
 which is what `action-run schema` prints.  The name is `check`, `preflight`,
-`cache` or `logs`; anything else is an error naming the four that exist.  The
-schemas live in [App::Actions::Check](https://metacpan.org/pod/App%3A%3AActions%3A%3ACheck), [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner),
-[App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache) and [App::Actions::Logs](https://metacpan.org/pod/App%3A%3AActions%3A%3ALogs), so the contract is available from an
-installed distribution.
+`cache` or `logs`; anything else is an error naming the four that exist.
+The schemas live in [App::Actions::Check](https://metacpan.org/pod/App%3A%3AActions%3A%3ACheck), [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner),
+[App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache) and [App::Actions::Logs](https://metacpan.org/pod/App%3A%3AActions%3A%3ALogs), so the contract is available
+from an installed distribution.
 
 ### List\_Jobs
 
@@ -213,16 +208,6 @@ holds exactly what the distribution ships and a test that reads a new file
 finds it there as soon as that file is listed.  That doubles the running time;
 set `SPACE_PATH=0` to skip it, or run just that check with
 `prove -l t/space-path.t`.
-
-The archive test copies the files `MANIFEST` ships, makes that copy a CRLF
-checkout, builds a distribution with `make dist` and audits the unpacked
-tarball.  The audit compares the files it finds with the names `MANIFEST`
-lists, so a missing or extra file fails as well as a line ending that changed.
-It then rebuilds the archive with one source file normalised to LF and checks
-that the audit rejects it, so the passing case is not the only one exercised.
-A `tar` or `gzip` step that normalises line endings is caught without waiting
-for the CRLF CI job.  The test skips when `make`, `tar` or `gzip` is not
-available.
 
 The repository ships a pre-commit hook in `.githooks/` that runs the schema
 checks and the live-knob check against the files a commit stages, so a version
@@ -281,12 +266,12 @@ started it.  All four sets are discovered from `t/fixtures/check*.json`,
 `t/fixtures/logs*.json` rather than listed by name, so a new one is validated
 without editing the workflow.  That image gets
 the tool's dependencies only when it does not have them, so the fake run
-stays off the network.  It is named by digest rather than by the `perl:5.38`
-tag, so the live job pulls the same image every time instead of whatever that
-tag points at on the day it runs.  The test says which half it ran: with
-`LIVE_TESTING=1` it reports that the workflow is in a real container, and
-without it that the steps ran against the fake and the container path was not
-exercised.
+stays off the network.  It is named by digest rather than by the
+`perl:5.38` tag, so the live job pulls the same image every time instead of
+whatever that tag points at on the day it runs.  The test says which half it
+ran: with `LIVE_TESTING=1` it reports that the workflow is in a real
+container, and without it that the steps ran against the fake and the
+container path was not exercised.
 
 The live tests read two variables and both carry the `LIVE_TESTING`
 prefix, so there is one name to remember: `LIVE_TESTING` turns them on and
@@ -321,9 +306,12 @@ parent's handles with the child.
 
 ## Author
 
-Nigel Horne, `njh@nigelhorne.com`
+Nigel Horne, `<njh at nigelhorne.com>`
 
-## License
+## Licence and Copyright
 
-This library is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself.
+Copyright 2010-2026 Nigel Horne.
+
+Usage is subject to the GPL2 licence terms.
+If you use it,
+please let me know.

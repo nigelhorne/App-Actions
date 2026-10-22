@@ -573,9 +573,9 @@ close $workflow_handle;
 }
 
 {
-    my (undef, $err, $exit) = run_cli('--older-than', '2d', 'logs');
+    my (undef, $err, $exit) = run_cli('--older-than', '2d', 'check');
     is($exit, 2, '--older-than with another command is a usage error');
-    like($err, qr/--older-than is only used by the cache command/,
+    like($err, qr/--older-than is only used by the cache and logs commands/,
         'the error says where --older-than belongs');
 }
 

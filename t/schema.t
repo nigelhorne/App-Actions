@@ -450,7 +450,17 @@ sub discover_examples {
 
     my (%examples, @problems);
     for my $name (@names) {
-        my $example = load_json(File::Spec->catfile($directory, $name));
+        my $example = eval { load_json(File::Spec->catfile($directory, $name)) };
+        if (my $error = $@) {
+            $error =~ s/\s+\z//;
+            push @problems, "$name is not valid JSON: $error";
+            next;
+        }
+
+        if (ref $example ne 'HASH') {
+            push @problems, "$name is not a JSON object";
+            next;
+        }
 
         my $document = exists $example->{cache_file}
             ? 'cache'
@@ -566,6 +576,31 @@ for my $document (sort keys %shipped_schema) {
         $problems,
         [],
         'the dropped fixture carries the schema version the command ships',
+    );
+
+    # Discovery has to survive a damaged file as well: a fixture that cannot be
+    # parsed must be named and rejected, not end the walk before it reports the
+    # checked-in examples it was meant to check.
+    my $malformed = 'zz-temporary-malformed-check.json';
+    write_file(File::Spec->catfile($copied, $malformed), "{ not JSON\n");
+
+    my ($walked, $grouped, $rejected) = discover_examples($copied);
+
+    is_deeply(
+        $walked,
+        [ sort(@$fixture_files, $temporary, $malformed) ],
+        'the coverage walk finds the malformed fixture too',
+    );
+    my @grouped = map { @{ $grouped->{$_} || [] } } sort keys %$grouped;
+    ok(
+        !grep { $_ eq $malformed } @grouped,
+        'the malformed fixture is not grouped as an example',
+    );
+    is(scalar @$rejected, 1, 'the malformed fixture is rejected');
+    like(
+        $rejected->[0],
+        qr/^\Q$malformed\E is not valid JSON/,
+        'the rejection names the malformed fixture',
     );
 }
 
