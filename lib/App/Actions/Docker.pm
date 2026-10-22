@@ -27,7 +27,7 @@ my $CLIENT_VARIABLE = qr/
 # A name a process environment can carry on every platform.
 my $VARIABLE_NAME = qr/\A[A-Za-z_][A-Za-z0-9_]*\z/;
 
-our $VERSION = '0.001.0';
+our $VERSION = '0.002.0';
 
 sub new {
 	my ($class, %args) = @_;

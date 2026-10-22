@@ -12,7 +12,7 @@ use JSON::PP ();
 use App::Actions::I18N qw(i18n);
 use App::Actions::Schema ();
 
-our $VERSION = '0.001.0';
+our $VERSION = '0.002.0';
 
 # The images action-run keeps are a cache: a run records what it pulled, so a
 # later command can list the images and say how much disk they take, and

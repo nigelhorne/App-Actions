@@ -17,7 +17,7 @@ use App::Actions::Runner::Support qw(
 	local_action_dir redact resolve_env status_flags write_container_file
 );
 
-our $VERSION = '0.001.0';
+our $VERSION = '0.002.0';
 
 # Where the project and the runner directory appear inside the container.
 Readonly::Scalar my $WORKSPACE => '/github/workspace';

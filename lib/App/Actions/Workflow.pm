@@ -16,7 +16,7 @@ use Sub::Private ();
 
 use App::Actions::Access;
 
-our $VERSION = '0.001.0';
+our $VERSION = '0.002.0';
 
 # An error in a workflow is reported where the workflow was asked for, which
 # is usually the App::Actions or Runner call the user made, not a line here.

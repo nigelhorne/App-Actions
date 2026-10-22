@@ -8,7 +8,7 @@ use File::Temp ();
 use IO::Handle ();
 use POSIX ();
 
-our $VERSION = '0.001.0';
+our $VERSION = '0.002.0';
 
 # Turn Perl's $? into an exit code.  Windows reports $? in the same
 # POSIX-compatible form as Unix, so no platform check is needed.

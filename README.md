@@ -4,7 +4,7 @@ App::Actions - run GitHub Actions workflows locally
 
 ## Version
 
-0.001.0
+0.002.0
 
 ## Synopsis
 

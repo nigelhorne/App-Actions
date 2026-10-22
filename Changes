@@ -1,4 +1,14 @@
 Revision history for App-Actions - run GitHub Actions workflows locally
 
+0.002.0
+	- The test that walks t/fixtures now checks each example against its
+	  schema as it reads it, so a fixture with the wrong shape is named
+	  and rejected there, like one that is not valid JSON, and does not
+	  count towards the schema coverage check.
+	- make check-staged and make check-worktree now list each check they
+	  ran, as passed (with its test count) or failed, and each they skipped,
+	  so a clean run shows that the live-knob check ran rather than only
+	  that nothing failed.  A commit that passes the hook is still silent.
+
 0.001.0	Thu Oct 22 12:40:02 PM EDT 2026
 	- First release

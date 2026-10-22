@@ -13,7 +13,7 @@ use App::Actions::Error;
 use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Runner::Support qw(env_args resolve_env);
 
-our $VERSION = '0.001.0';
+our $VERSION = '0.002.0';
 
 # Where the project and the runner directory appear inside every container.
 Readonly::Scalar my $WORKSPACE => '/github/workspace';
