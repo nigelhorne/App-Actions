@@ -8,6 +8,7 @@ use File::Path qw(make_path);
 use File::Spec;
 use JSON::PP ();
 
+use App::Actions::I18N qw(i18n);
 use App::Actions::Schema ();
 
 our $VERSION = '0.01';
@@ -400,8 +401,9 @@ sub format_span {
         $amount = int($seconds / $units[$next][0]);
     }
 
-    my $label = $units[$index][1];
-    return sprintf('%d %s%s', $amount, $label, $amount == 1 ? '' : 's');
+    # The catalogue holds the singular and plural of each unit, so another
+    # language's plural rule decides the form rather than an English "s".
+    return __PACKAGE__->i18n("span.$units[$index][1]", { count => $amount });
 }
 
 # How old a kept image is, in the words a reader expects rather than a second
@@ -515,20 +517,15 @@ sub report {
     );
     $out .= "$_\n" for @lines;
 
-    my $count = @$entries;
-    $out .= sprintf(
-        "\n%d image%s%s.\n",
-        $count, $count == 1 ? '' : 's',
-        $sized ? ', ' . format_size($total) . ' on disk' : '',
-    );
+    $out .= "\n" . __PACKAGE__->i18n(
+        $sized ? 'cache.summary_sized' : 'cache.summary',
+        { count => scalar @$entries, size => format_size($total) },
+    ) . "\n";
 
     if (!$docker) {
         $out .= "The Docker daemon is not reachable, so the sizes are unknown.\n";
     } elsif ($missing) {
-        $out .= sprintf(
-            "%d image%s no longer on the daemon.\n",
-            $missing, $missing == 1 ? ' is' : 's are',
-        );
+        $out .= __PACKAGE__->i18n('cache.missing', { count => $missing }) . "\n";
     }
 
     $out .= "Remove them with \"action-run cache --prune\".\n" if $sized;
@@ -602,21 +599,12 @@ sub prune {
         failed    => [ @failed ],
     };
 
-    $out .= sprintf(
-        "Removed %d image%s, %s freed.\n",
-        $removed, $removed == 1 ? '' : 's', format_size($freed),
-    ) if $removed;
-
-    $out .= sprintf(
-        "Forgot %d image%s no longer on the daemon.\n",
-        $gone, $gone == 1 ? '' : 's',
-    ) if $gone;
+    $out .= __PACKAGE__->i18n('cache.removed', { count => $removed, size => format_size($freed) }) . "\n"
+        if $removed;
+    $out .= __PACKAGE__->i18n('cache.forgot', { count => $gone }) . "\n" if $gone;
 
     if (@failed) {
-        $out .= sprintf(
-            "Could not remove %d image%s:\n",
-            scalar @failed, @failed == 1 ? '' : 's',
-        );
+        $out .= __PACKAGE__->i18n('cache.remove_failed', { count => scalar @failed }) . "\n";
         $out .= "  $_\n" for @failed;
         return ($out, 1, $data);
     }

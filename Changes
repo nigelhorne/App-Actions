@@ -1,5 +1,33 @@
 Revision history for App-Actions - run GitHub Actions workflows locally
 
+0.02    Unreleased
+    - Fix: boolean matrix values (true/false) were shown and interpolated as
+      1 and the empty string on Perl 5.36+, so "${{ matrix.debug }}" gave ""
+      where GitHub gives "false", and "matrix.debug == false" was false.
+    - Fix: App::Actions::Action->load('action.yml') reported the directory as
+      'action.yml'; it now uses File::Basename::dirname.
+    - Fix: a secret contained in another secret left part of the longer one
+      unredacted in printed commands.
+    - Fix: App::Actions dropped the cache_file option on its way to the runner.
+    - Fix: a JSON false in an action input's required: was read as true.
+    - Fix: action-run left " at FILE line N" on its error messages when it was
+      installed under a path containing a space.
+    - Fix: perl_image_for_version no longer passes the template to sprintf, so
+      a literal % or a second %s in it works without a warning.
+    - Unknown options to App::Actions->new, run, preflight and list_jobs are
+      now an error instead of being silently ignored.
+    - An empty matrix dimension now says it needs at least one value.
+    - New App::Actions::I18N: the messages of App::Actions, Workflow, Action
+      and the counted phrases of the cache and logs reports are in a
+      catalogue with English, French, German and Chinese texts, chosen by
+      ACTION_RUN_LANG (never by the POSIX locale).
+    - New App::Actions::Util: the YAML loading, step checks and value
+      stringification Workflow, Action, Expression and Runner each had a copy
+      of are in one place.
+    - Requires Perl 5.14 (Sub::Private), and Params::Get,
+      Params::Validate::Strict, Readonly, Return::Set, Sub::Private,
+      Sub::Protected and IPC::System::Simple.
+
 0.01    2026-10-19
     - Initial release.
     - Load GitHub Actions workflow files with YAML::PP.

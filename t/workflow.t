@@ -5,6 +5,7 @@ use Test::Exception;
 use File::Spec;
 use File::Temp qw(tempdir);
 
+use App::Actions::Expression;
 use App::Actions::Workflow;
 
 sub load_workflow {
@@ -137,5 +138,49 @@ throws_ok {
 throws_ok {
     load_workflow("name: Bad\non: push\njobs: [not, a, mapping]\n");
 } qr/no 'jobs' mapping/, 'invalid jobs is rejected';
+
+# Boolean matrix values are YAML booleans, which on Perl 5.36 and later are
+# core booleans; they used to be written as 1 and the empty string, so a step
+# saw "debug=" where GitHub gives "debug=false".
+SKIP: {
+    skip 'core booleans need Perl 5.36', 3 if $] < 5.036;
+
+    my $booleans = load_workflow(<<'YAML');
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        debug: [true, false]
+    steps:
+      - run: echo "debug=${{ matrix.debug }}"
+YAML
+    my $jobs = $booleans->expand_jobs;
+    is_deeply([ map { $_->{display_name} } @$jobs ], [ 'test (debug=true)', 'test (debug=false)' ],
+        'boolean matrix values are named true and false');
+    my $expression = App::Actions::Expression->new;
+    is($expression->interpolate($jobs->[1]{steps}[0]{run}, { matrix => $jobs->[1]{matrix} }),
+        'echo "debug=false"', 'a false matrix value interpolates as false');
+    ok($expression->condition('matrix.debug == false', { matrix => $jobs->[1]{matrix} }),
+        'a false matrix value equals the literal false');
+}
+
+throws_ok {
+    load_workflow("jobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        perl: []\n    steps:\n      - run: echo\n")->expand_jobs;
+} qr/Matrix key 'perl' must be a list with at least one value/, 'an empty matrix dimension says what is wrong';
+
+is($workflow->perl_image_for_version('5.38', 'reg.example/100%/perl:%s'), 'reg.example/100%/perl:5.38',
+    'a literal % in the image template is kept');
+is($workflow->perl_image_for_version('5.38', 'perl:%s-%s'), 'perl:5.38-5.38',
+    'every %s in the template is replaced, without a sprintf warning');
+is($workflow->perl_image_for_version('DEV'), 'perl:latest', 'dev means latest whatever its case');
+
+my @none = $workflow->job_by_id('no-such-job');
+is_deeply(\@none, [ undef ], 'job_by_id returns one undef for a missing job, also in list context');
+
+throws_ok { $workflow->runs_on_text({ group => 'big' }) } qr/'runs-on' must be a string or a list/,
+    'a runner group is refused with a sentence';
+throws_ok { $workflow->container_image('not a job') } qr/Invalid arguments to App::Actions::Workflow::container_image/,
+    'container_image refuses a job that is not a hash';
 
 done_testing;

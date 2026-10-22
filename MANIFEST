@@ -13,10 +13,12 @@ lib/App/Actions/Cache.pm
 lib/App/Actions/Check.pm
 lib/App/Actions/Docker.pm
 lib/App/Actions/Expression.pm
+lib/App/Actions/I18N.pm
 lib/App/Actions/Logs.pm
 lib/App/Actions/Process.pm
 lib/App/Actions/Runner.pm
 lib/App/Actions/Schema.pm
+lib/App/Actions/Util.pm
 lib/App/Actions/Workflow.pm
 LICENSE
 Makefile.PL
@@ -25,6 +27,7 @@ MANIFEST.SKIP
 README.md
 t/00-load.t
 t/action.t
+t/actions.t
 t/archive-crlf.t
 t/bin/check-archive-crlf
 t/bin/fake-docker
@@ -51,10 +54,12 @@ t/fixtures/preflight-unready.json
 t/fixtures/preflight-unreachable.json
 t/fixtures/preflight.json
 t/hooks.t
+t/i18n.t
 t/lib/App/Actions/FakeDocker.pm
 t/lib/self_test.yml
 t/lib/self_test_cli.yml
 t/live-knobs.t
+t/locales.t
 t/logs.t
 t/matrix.t
 t/process.t
@@ -65,4 +70,5 @@ t/schema.t
 t/self_test.t
 t/smoke.t
 t/space-path.t
+t/util.t
 t/workflow.t

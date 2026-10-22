@@ -27,7 +27,10 @@ jobs:
     steps:
       - name: Make the tool's dependencies available
         run: |
-          perl -MYAML::PP -e 1 2>/dev/null || cpanm --notest --quiet YAML::PP
+          for module in YAML::PP Readonly Params::Get Params::Validate::Strict \
+              Return::Set Sub::Private Sub::Protected IPC::System::Simple; do
+            perl -M"$module" -e 1 2>/dev/null || cpanm --notest --quiet "$module"
+          done
           echo "the dependencies the tool needs are available"
       - name: Print the contract
         run: |

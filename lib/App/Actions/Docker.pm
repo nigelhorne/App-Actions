@@ -93,7 +93,7 @@ sub check {
     }
     print $version if $self->{verbose} && !$self->{quiet} && length $version;
 
-    my ($info, $rc) = $self->{quiet}
+    my (undef, $rc) = $self->{quiet}
         ? $self->capture_silent('info', '--format', '{{.ServerVersion}}')
         : $self->capture('info', '--format', '{{.ServerVersion}}');
     if ($rc != 0) {
@@ -284,15 +284,9 @@ sub container_exit_code {
 
     return 0 if $self->{dry_run};
 
-    my ($output, $rc) = $self->capture_silent(
-        'inspect', '--format', '{{.State.ExitCode}}', $name,
-    );
-    return undef if $rc != 0;
+    my $output = $self->_inspect_field($name, '{{.State.ExitCode}}');
 
-    $output = '' unless defined $output;
-    $output =~ s/\s+//g;
-
-    return $output =~ /\A-?\d+\z/ ? $output + 0 : undef;
+    return defined $output && $output =~ /\A-?\d+\z/ ? $output + 0 : undef;
 }
 
 # The state the daemon reports for the container: running, restarting,
@@ -302,15 +296,9 @@ sub container_status {
 
     return 'running' if $self->{dry_run};
 
-    my ($output, $rc) = $self->capture_silent(
-        'inspect', '--format', '{{.State.Status}}', $name,
-    );
-    return undef if $rc != 0;
+    my $output = $self->_inspect_field($name, '{{.State.Status}}');
 
-    $output = '' unless defined $output;
-    $output =~ s/\s+//g;
-
-    return length $output ? $output : undef;
+    return defined $output && length $output ? $output : undef;
 }
 
 # How many times the restart policy has restarted the container, or undef when
@@ -320,15 +308,28 @@ sub container_restart_count {
 
     return 0 if $self->{dry_run};
 
-    my ($output, $rc) = $self->capture_silent(
-        'inspect', '--format', '{{.RestartCount}}', $name,
-    );
-    return undef if $rc != 0;
+    my $output = $self->_inspect_field($name, '{{.RestartCount}}');
 
-    $output = '' unless defined $output;
-    $output =~ s/\s+//g;
+    return defined $output && $output =~ /\A\d+\z/ ? $output + 0 : undef;
+}
 
-    return $output =~ /\A\d+\z/ ? $output + 0 : undef;
+# _inspect_field
+# Purpose:     Ask the daemon for one field of a container's inspect output.
+# Entry:       $name - the container; $format - a Go template such as
+#              '{{.State.Status}}'.
+# Exit status: Returns the field with all white space removed, or undef when
+#              the inspect failed (the container is gone, or the daemon is).
+# Side effects: Runs docker inspect, with its standard error discarded.
+sub _inspect_field {
+    my ($self, $name, $format) = @_;
+
+    my ($output, $rc) = $self->capture_silent('inspect', '--format', $format, $name);
+
+    # Every field read this way is a single token, so white space is only
+    # the trailing newline and any CR a Windows client adds.
+    (my $field = defined $output ? $output : '') =~ s/\s+//g;
+
+    return $rc == 0 ? $field : undef;
 }
 
 sub container_remove {
@@ -339,20 +340,27 @@ sub container_remove {
 sub run {
     my ($self, @args) = @_;
 
-    my $display = $self->_display(@args);
-
-    if ($self->{dry_run}) {
-        print "[dry-run] $self->{bin} $display\n"
-            unless $self->{quiet} || $self->{explain};
-        return 0;
-    }
-
-    print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
-
-    return App::Actions::Process::stream([ $self->_command(@args) ]);
+    return $self->_announce(@args)
+        ? App::Actions::Process::stream([ $self->_command(@args) ])
+        : 0;
 }
 
 sub run_silent {
+    my ($self, @args) = @_;
+
+    return $self->_announce(@args)
+        ? App::Actions::Process::run_quiet([ $self->_command(@args) ])
+        : 0;
+}
+
+# _announce
+# Purpose:     Print the command about to run, the way the mode asks for.
+# Entry:       @args - the Docker arguments.
+# Exit status: Returns 1 when the command should be run, 0 in a dry run.
+# Side effects: Prints "[dry-run] ..." in a dry run (unless quiet or
+#              explaining) and "+ ..." when verbose (unless quiet).  Secrets
+#              are redacted from what is printed, never from what is run.
+sub _announce {
     my ($self, @args) = @_;
 
     my $display = $self->_display(@args);
@@ -365,7 +373,7 @@ sub run_silent {
 
     print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
 
-    return App::Actions::Process::run_quiet([ $self->_command(@args) ]);
+    return 1;
 }
 
 sub capture {
@@ -387,15 +395,7 @@ sub capture_merged {
 sub _capture {
     my ($self, $quiet_stderr, $merge_stderr, @args) = @_;
 
-    my $display = $self->_display(@args);
-
-    if ($self->{dry_run}) {
-        print "[dry-run] $self->{bin} $display\n"
-            unless $self->{quiet} || $self->{explain};
-        return ('', 0);
-    }
-
-    print "+ $self->{bin} $display\n" if $self->{verbose} && !$self->{quiet};
+    return ('', 0) unless $self->_announce(@args);
 
     return App::Actions::Process::capture(
         [ $self->_command(@args) ],
@@ -408,7 +408,11 @@ sub redact {
     my ($self, $text) = @_;
 
     return $text unless defined $text;
-    for my $secret (keys %{ $self->{secret_values} }) {
+
+    # Longest first: when one secret contains another, replacing the shorter
+    # one first would leave the rest of the longer one in the text ("abc" and
+    # "abcdef" would print "***def").
+    for my $secret (sort { length $b <=> length $a || $a cmp $b } keys %{ $self->{secret_values} }) {
         $text =~ s/\Q$secret\E/***/g;
     }
 

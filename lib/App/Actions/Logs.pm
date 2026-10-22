@@ -7,6 +7,7 @@ use File::Spec;
 use JSON::PP ();
 
 use App::Actions::Cache ();
+use App::Actions::I18N qw(i18n);
 use App::Actions::Schema ();
 
 our $VERSION = '0.01';
@@ -308,12 +309,9 @@ sub report {
         );
     }
 
-    my $count = @rows;
-    $out .= sprintf(
-        "\n%d log%s, %s on disk.\n",
-        $count, $count == 1 ? '' : 's',
-        App::Actions::Cache::format_size($total),
-    );
+    $out .= "\n" . __PACKAGE__->i18n('logs.summary', {
+        count => scalar @rows, size => App::Actions::Cache::format_size($total),
+    }) . "\n";
     $out .= "Remove them with \"action-run logs --prune\".\n";
 
     return $out;
@@ -381,21 +379,14 @@ sub prune {
         push @failed, { run => $run->{name}, error => $error };
     }
 
-    if ($removed) {
-        $out .= sprintf(
-            "Removed %d log%s, %s freed.\n",
-            $removed, $removed == 1 ? '' : 's',
-            App::Actions::Cache::format_size($freed),
-        );
-    }
+    $out .= __PACKAGE__->i18n('logs.removed', {
+        count => $removed, size => App::Actions::Cache::format_size($freed),
+    }) . "\n" if $removed;
 
     my $data = { removed => $removed, freed => $freed, failed => \@failed };
 
     if (@failed) {
-        $out .= sprintf(
-            "Could not remove %d run%s:\n",
-            scalar @failed, @failed == 1 ? '' : 's',
-        );
+        $out .= __PACKAGE__->i18n('logs.remove_failed', { count => scalar @failed }) . "\n";
         $out .= "  $_->{run}: $_->{error}\n" for @failed;
         return ($out, 1, $data);
     }

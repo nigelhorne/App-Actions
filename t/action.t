@@ -154,4 +154,39 @@ runs:
 YAML
 is(App::Actions::Action->load($docker)->kind, 'docker', 'Docker actions are identified');
 
+# A metadata file named without a directory is in the current directory;
+# its directory used to be reported as the file name itself.
+{
+    my $here = File::Spec->catdir($root, 'here');
+    write_file($here, 'action.yml', "runs:\n  using: composite\n  steps:\n    - run: echo hi\n");
+    require Cwd;
+    my $cwd = Cwd::getcwd();
+    chdir $here or die "$here: $!";
+    my $action = eval { App::Actions::Action->load('action.yml') };
+    chdir $cwd or die "$cwd: $!";
+    is($action && $action->dir, '.', 'a bare metadata file name is in the current directory');
+}
+
+# required: is read for its truth, so a JSON or YAML false is not required.
+{
+    my $flags = write_file(File::Spec->catdir($root, 'flags'), 'action.yml', <<'YAML');
+inputs:
+  yes_word: { required: yes }
+  false_word: { required: false }
+  off: { required: 0 }
+runs:
+  using: node20
+  main: index.js
+YAML
+    my $inputs = App::Actions::Action->load($flags)->inputs;
+    is($inputs->{yes_word}{required}, 1, 'required: yes is required');
+    is($inputs->{false_word}{required}, 0, 'required: false is not required');
+    is($inputs->{off}{required}, 0, 'required: 0 is not required');
+}
+
+throws_ok { App::Actions::Action->load_from_dir(undef) } qr/No action directory given/,
+    'no directory is reported';
+throws_ok { App::Actions::Action->load(File::Spec->catfile($root, 'absent.yml')) }
+    qr/Action metadata file '.*absent\.yml' does not exist/, 'a missing metadata file is reported';
+
 done_testing;

@@ -69,6 +69,17 @@ sub remove_kept_dir {
 # cache test below - do not read each other's commands.
 my $docker_log_count = 0;
 
+# The helpers' options mix the fake Docker's knobs (fake_*), the files to
+# write into the project and the preflight's json flag with the options
+# App::Actions takes.  App::Actions
+# rejects an option it does not know, so only its own are passed on.
+sub actions_options {
+    my (%options) = @_;
+
+    return map { $_ => $options{$_} }
+        grep { !/\Afake_/ && $_ ne 'json' && $_ ne 'files' } keys %options;
+}
+
 sub run_workflow {
     my ($yaml, %options) = @_;
 
@@ -123,7 +134,7 @@ sub run_workflow {
         project_dir   => $project,
         docker_bin    => $fake_docker,
         image         => 'ubuntu:latest',
-        %options,
+        actions_options(%options),
     );
 
     my ($stdout, $stderr, $exit) = capture { $actions->run };
@@ -175,7 +186,7 @@ sub preflight_workflow {
         project_dir   => $project,
         docker_bin    => $fake_docker,
         image         => 'ubuntu:latest',
-        %options,
+        actions_options(%options),
     );
 
     my $result;

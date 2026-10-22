@@ -2,87 +2,334 @@ package App::Actions::Action;
 
 use strict;
 use warnings;
-use Carp qw(croak);
+use utf8;
+use autodie qw(:all);
+
+use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP ();
-use YAML::PP;
-use YAML::PP::Common qw(PRESERVE_ORDER);
+use Readonly;
+
+use App::Actions::I18N qw(throw validate_args);
+use App::Actions::Util qw(load_yaml_mapping normalize_step stringify);
+
+BEGIN { $Sub::Private::config{mode} = 'enforce' }
+use Sub::Private;
 
 our $VERSION = '0.01';
 
-# Load an action's metadata from an action.yml or action.yaml in $dir.
+# An error in an action's metadata is reported where the action was asked
+# for, which is the runner step that uses it.
+our @CARP_NOT = qw(App::Actions::Runner);
+
+# The names GitHub looks for, in the order it looks for them.
+Readonly::Array my @METADATA_FILES => qw(action.yml action.yaml);
+
+# runs.using values for which a kind is named.  node12, node16, node20 and
+# whatever comes next are all JavaScript.
+Readonly::Scalar my $NODE_RUNTIME => qr/^node\d+$/;
+Readonly::Scalar my $KIND_COMPOSITE => 'composite';
+Readonly::Scalar my $KIND_JAVASCRIPT => 'javascript';
+Readonly::Scalar my $KIND_DOCKER => 'docker';
+
+# The YAML words a required: input may be written with to mean true.
+Readonly::Scalar my $TRUE_WORD => qr/^(?:true|yes|1)$/i;
+
+# The fields of a declared input and output, with what an absent or scalar
+# declaration means.  An input written as "who: world" is an optional input
+# whose default is "world"; an output written as "name: value" has that value.
+Readonly::Hash my %DECLARATION => (
+	inputs => { scalar_field => 'default', error_key => 'action.input_invalid', list_error_key => 'action.inputs_invalid' },
+	outputs => { scalar_field => 'value', error_key => 'action.output_invalid', list_error_key => 'action.outputs_invalid' },
+);
+
+=encoding utf-8
+
+=head1 NAME
+
+App::Actions::Action - read the metadata of a local GitHub action
+
+=head1 SYNOPSIS
+
+	use App::Actions::Action;
+
+	my $action = App::Actions::Action->load_from_dir('path/to/action');
+	print $action->kind, "\n";    # composite, javascript, docker, ...
+
+=head1 DESCRIPTION
+
+Reads C<action.yml> (or C<action.yaml>) and exposes the action's inputs,
+outputs, and C<runs> section.  Composite action steps are normalised by the
+same code as workflow steps (L<App::Actions::Util/normalize_step>), so the
+two cannot drift apart.
+
+=head1 METHODS
+
+=head2 load_from_dir
+
+Finds and parses the metadata file in an action's directory.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$dir> - the action's directory.
+
+=back
+
+=head3 RETURNS
+
+An C<App::Actions::Action> object.
+
+=head3 SIDE EFFECTS
+
+Reads the directory and the metadata file.
+
+=head3 EXAMPLE
+
+	my $action = App::Actions::Action->load_from_dir('.github/actions/setup');
+	print $action->name, ': ', $action->description, "\n";
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{ dir => { type => 'string', min => 1 } }
+
+=head4 OUTPUT
+
+	{ type => 'object', isa => 'App::Actions::Action' }
+
+=head3 MESSAGES
+
+	+-----------------------------------+------------------------------+-------------------------------+
+	| Message                           | Meaning                      | Resolution                    |
+	+-----------------------------------+------------------------------+-------------------------------+
+	| No action directory given         | The path was undef or empty  | Pass the directory            |
+	| Action directory 'D' does not     | No directory at the path     | Check the uses: path          |
+	| exist                             |                              |                               |
+	| No action.yml or action.yaml      | The directory has no         | Add the metadata file         |
+	| found in 'D'                      | metadata                     |                               |
+	+-----------------------------------+------------------------------+-------------------------------+
+
+The messages of L</load> apply to the file that is found.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ LoadFromDir ─────────────────────────────────────
+	│ ΞFileSystem
+	│ dir?    : optional PATH
+	│ action! : Action
+	├───────────────────────────────────────────────────
+	│ dir? ∈ {⊥, ⟨⟩} ⇒ raises DirRequired
+	│ dir? ∉ directories ⇒ raises DirMissing(dir?)
+	│ let found == ⟨ n : ⟨action.yml, action.yaml⟩ | dir?/n ∈ regularFiles ⟩
+	│ found = ⟨⟩ ⇒ raises NoMetadata(dir?)
+	│ found ≠ ⟨⟩ ⇒ action! = Load(dir?/head found)
+	└───────────────────────────────────────────────────
+
+=cut
+
 sub load_from_dir {
-    my ($class, $dir) = @_;
+	my $class = shift;
 
-    croak 'No action directory given' unless defined $dir && length $dir;
-    croak "Action directory '$dir' does not exist" unless -d $dir;
+	my $dir = validate_args(__PACKAGE__ . '::load_from_dir', [ { dir => $_[0] } ], {
+		dir => { type => 'string', optional => 1 },
+	})->{dir};
 
-    for my $name (qw(action.yml action.yaml)) {
-        my $file = File::Spec->catfile($dir, $name);
-        return $class->load($file) if -f $file;
-    }
+	$class->throw('action.dir_required') unless defined $dir && length $dir;
+	$class->throw('action.dir_missing', { dir => $dir }) unless -d $dir;
 
-    croak "No action.yml or action.yaml found in '$dir'";
+	# GitHub prefers action.yml when both exist, so the first match wins.
+	my ($file) = grep { -f } map { File::Spec->catfile($dir, $_) } @METADATA_FILES;
+	$class->throw('action.no_metadata', { dir => $dir }) unless defined $file;
+
+	return $class->load($file);
 }
+
+=head2 load
+
+Parses a single metadata file.
+
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$file> - the path of C<action.yml> or C<action.yaml>.
+
+=back
+
+=head3 RETURNS
+
+An C<App::Actions::Action> object.
+
+=head3 SIDE EFFECTS
+
+Reads the file.
+
+=head3 EXAMPLE
+
+	my $action = App::Actions::Action->load('greet/action.yml');
+	if ($action->is_composite) {
+		print scalar @{ $action->steps }, " steps\n";
+	}
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{ file => { type => 'string', min => 1 } }
+
+=head4 OUTPUT
+
+	{ type => 'object', isa => 'App::Actions::Action' }
+
+=head3 MESSAGES
+
+	+-----------------------------------+------------------------------+-------------------------------+
+	| Message                           | Meaning                      | Resolution                    |
+	+-----------------------------------+------------------------------+-------------------------------+
+	| No action metadata file given     | The path was undef or empty  | Pass a path                   |
+	| Action metadata file 'F' does not | No file at the path          | Check the path                |
+	| exist                             |                              |                               |
+	| Unable to parse action metadata   | The YAML is malformed        | Fix the YAML                  |
+	| 'F': E                            |                              |                               |
+	| Action metadata 'F' is empty      | No document in the file      | Add the metadata              |
+	| Action metadata 'F' must contain  | The top level is not a       | Make it a mapping             |
+	| a YAML mapping                    | mapping                      |                               |
+	| Action metadata 'F' has no 'runs' | runs is missing              | Add a runs: mapping           |
+	| mapping                           |                              |                               |
+	| Action metadata 'F' has no        | runs.using is missing        | Add using: composite (or      |
+	| 'runs.using'                      |                              | node20, docker)               |
+	| Composite action 'F' has no       | A composite with no steps    | Add runs.steps                |
+	| 'runs.steps' list                 |                              |                               |
+	| JavaScript action 'F' has no      | A node action with no entry  | Add runs.main                 |
+	| 'runs.main'                       | point                        |                               |
+	| The 'inputs' of 'F' must be a     | inputs is a list or a scalar | Name each input               |
+	| mapping                           |                              |                               |
+	| Input 'N' of 'F' must be a        | An input is a list           | Give it description, default  |
+	| mapping                           |                              | and required keys             |
+	| The 'outputs' of 'F' must be a    | outputs is a list or a       | Name each output              |
+	| mapping                           | scalar                       |                               |
+	| Output 'N' of 'F' must be a       | An output is a list          | Give it a value key           |
+	| mapping                           |                              |                               |
+	+-----------------------------------+------------------------------+-------------------------------+
+
+The step messages of L<App::Actions::Util/normalize_step> apply to every
+composite step.
+
+=head3 FORMAL SPECIFICATION
+
+	KIND ::= composite | javascript | docker | other⟨⟨STRING⟩⟩
+
+	┌─ Load ────────────────────────────────────────────
+	│ file?   : PATH
+	│ action! : Action
+	├───────────────────────────────────────────────────
+	│ let doc == LoadYamlMapping(file?, action)
+	│ doc.runs ∉ MAPPING ⇒ raises NoRuns(file?)
+	│ doc.runs.using ∈ {⊥, ⟨⟩} ⇒ raises NoUsing(file?)
+	│ let u == lower(doc.runs.using)
+	│ u = composite ⇒ action!.kind = composite ∧ doc.runs.steps ∈ seq VALUE
+	│ u ∈ node⁀DIGITS ⇒ action!.kind = javascript ∧ doc.runs.main ∈ STRING \ {⟨⟩}
+	│ u = docker ⇒ action!.kind = docker
+	│ otherwise action!.kind = u
+	│ action!.dir = dirname(file?)
+	│ action!.kind ≠ composite ⇒ action!.steps = ⟨⟩
+	└───────────────────────────────────────────────────
+
+=head3 PSEUDOCODE
+
+	read the file as a YAML mapping
+	refuse metadata without runs, or without runs.using
+	decide the kind from runs.using:
+		composite needs runs.steps, which are normalised like workflow steps
+		nodeN needs runs.main
+		docker and anything else are recorded as given
+	read the declared inputs and outputs
+	return the action with its directory, names, kind and declarations
+
+=cut
 
 sub load {
-    my ($class, $file) = @_;
+	my $class = shift;
 
-    croak 'No action metadata file given' unless defined $file && length $file;
-    croak "Action metadata file '$file' does not exist" unless -f $file;
+	my $file = validate_args(__PACKAGE__ . '::load', [ { file => $_[0] } ], {
+		file => { type => 'string', optional => 1 },
+	})->{file};
 
-    my $yaml = YAML::PP->new(preserve => PRESERVE_ORDER);
-    my $data = eval { $yaml->load_file($file) };
-    if ($@) {
-        my $error = $@;
-        $error =~ s/\s+$//;
-        croak "Unable to parse action metadata '$file': $error";
-    }
-    croak "Action metadata '$file' is empty" unless defined $data;
-    croak "Action metadata '$file' must contain a YAML mapping"
-        unless ref $data eq 'HASH';
+	my $data = load_yaml_mapping($file, 'action');
 
-    my $runs = $data->{runs};
-    croak "Action metadata '$file' has no 'runs' mapping"
-        unless ref $runs eq 'HASH';
+	my $runs = $data->{runs};
+	$class->throw('action.no_runs', { file => $file }) unless ref $runs eq 'HASH';
 
-    my $using = defined $runs->{using} ? lc "$runs->{using}" : '';
-    croak "Action metadata '$file' has no 'runs.using'" unless length $using;
+	my $using = defined $runs->{using} ? lc "$runs->{using}" : '';
+	$class->throw('action.no_using', { file => $file }) unless length $using;
 
-    my $kind;
-    my $steps = [];
+	my ($kind, $steps) = $class->_kind_and_steps($using, $runs, $file);
 
-    if ($using eq 'composite') {
-        croak "Composite action '$file' has no 'runs.steps' list"
-            unless ref $runs->{steps} eq 'ARRAY';
-        $kind = 'composite';
-        $steps = [ map { _normalize_step($_, $file) } @{ $runs->{steps} } ];
-    } elsif ($using =~ /^node\d+$/) {
-        croak "JavaScript action '$file' has no 'runs.main'"
-            unless defined $runs->{main} && length "$runs->{main}" && !ref $runs->{main};
-        $kind = 'javascript';
-    } elsif ($using eq 'docker') {
-        $kind = 'docker';
-    } else {
-        $kind = $using;
-    }
-
-    my $dir = $file;
-    $dir =~ s{[/\\][^/\\]+$}{};
-
-    return bless {
-        file        => $file,
-        dir         => length $dir ? $dir : '.',
-        name        => defined $data->{name} ? "$data->{name}" : '',
-        description => defined $data->{description} ? "$data->{description}" : '',
-        using       => $using,
-        kind        => $kind,
-        inputs      => _inputs($data->{inputs}, $file),
-        outputs     => _outputs($data->{outputs}, $file),
-        runs        => { %$runs },
-        steps       => $steps,
-    }, $class;
+	return bless {
+		file => $file,
+		# dirname is '.' for a bare file name, which is the directory such a
+		# file is in; the action's scripts are found relative to it.
+		dir => dirname($file),
+		name => defined $data->{name} ? "$data->{name}" : '',
+		description => defined $data->{description} ? "$data->{description}" : '',
+		using => $using,
+		kind => $kind,
+		inputs => $class->_declarations('inputs', $data->{inputs}, $file),
+		outputs => $class->_declarations('outputs', $data->{outputs}, $file),
+		runs => { %{$runs} },
+		steps => $steps,
+	}, $class;
 }
+
+=head2 file, dir, name, description, using, kind, inputs, outputs, runs, steps
+
+	my $kind   = $action->kind;      # composite, javascript, docker, or runs.using
+	my $inputs = $action->inputs;    # { NAME => { description, required, default } }
+	my $steps  = $action->steps;     # [] unless the action is composite
+
+Read-only accessors.  C<file> is the metadata file and C<dir> the directory
+it is in.  C<name> and C<description> are C<''> when the metadata has none.
+C<using> is C<runs.using> in lower case.  C<inputs> maps each input to
+C<description> (or undef), C<required> (0 or 1) and C<default> (a string);
+C<outputs> maps each output to C<description> and C<value>.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{}
+
+=head4 OUTPUT
+
+	file, dir, name, description, using, kind: { type => 'string' }
+	inputs, outputs, runs:                     { type => 'hashref' }
+	steps:                                     { type => 'arrayref' }
+
+=head3 MESSAGES
+
+None.
+
+=head3 EXAMPLE
+
+	for my $name (sort keys %{ $action->inputs }) {
+		my $input = $action->inputs->{$name};
+		printf "%s%s\n", $name, $input->{required} ? ' (required)' : '';
+	}
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ Accessor ────────────────────────────────────────
+	│ ΞAction
+	│ field? : {file, dir, name, description, using, kind, inputs, outputs, runs, steps}
+	│ value! : VALUE
+	├───────────────────────────────────────────────────
+	│ value! = θAction.field?
+	└───────────────────────────────────────────────────
+
+=cut
 
 sub file        { return $_[0]->{file} }
 sub dir         { return $_[0]->{dir} }
@@ -95,153 +342,145 @@ sub outputs     { return $_[0]->{outputs} }
 sub runs        { return $_[0]->{runs} }
 sub steps       { return $_[0]->{steps} }
 
-sub is_composite  { return $_[0]->{kind} eq 'composite' }
-sub is_javascript { return $_[0]->{kind} eq 'javascript' }
+=head2 is_composite, is_javascript
 
-# Inputs are declared as a mapping of name to { description, required, default }.
-sub _inputs {
-    my ($inputs, $file) = @_;
+	print "composite\n" if $action->is_composite;
 
-    my %declared;
-    return \%declared unless defined $inputs;
-    croak "The 'inputs' of '$file' must be a mapping" unless ref $inputs eq 'HASH';
+Return 1 when the action is of that kind, else 0.
 
-    for my $name (keys %$inputs) {
-        my $input = $inputs->{$name};
-        if (!defined $input) {
-            $declared{$name} = { default => '', required => 0 };
-            next;
-        }
-        if (!ref $input) {
-            $declared{$name} = { default => "$input", required => 0 };
-            next;
-        }
-        croak "Input '$name' of '$file' must be a mapping" unless ref $input eq 'HASH';
-        $declared{$name} = {
-            description => defined $input->{description} ? "$input->{description}" : undef,
-            required    => _boolean($input->{required}) ? 1 : 0,
-            default     => defined $input->{default} ? _stringify($input->{default}) : '',
-        };
-    }
+=head3 API SPECIFICATION
 
-    return \%declared;
+=head4 INPUT
+
+	{}
+
+=head4 OUTPUT
+
+	{ type => 'integer', memberof => [ 0, 1 ] }
+
+=head3 MESSAGES
+
+None.
+
+=head3 EXAMPLE
+
+	my $runner = $action->is_javascript ? 'node' : 'sh';
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ IsKind ──────────────────────────────────────────
+	│ ΞAction
+	│ k?   : {composite, javascript}
+	│ yes! : {0, 1}
+	├───────────────────────────────────────────────────
+	│ yes! = 1 ⇔ kind = k?
+	└───────────────────────────────────────────────────
+
+=cut
+
+sub is_composite  { return $_[0]->{kind} eq $KIND_COMPOSITE ? 1 : 0 }
+sub is_javascript { return $_[0]->{kind} eq $KIND_JAVASCRIPT ? 1 : 0 }
+
+# _kind_and_steps
+# Purpose:     Classify an action by runs.using and check what that kind needs.
+# Entry:       $class - the invocant; $using - runs.using in lower case;
+#              $runs - the runs mapping; $file - the metadata path, for messages.
+# Exit status: Returns (kind, steps arrayref); throws when a composite has no
+#              steps or a JavaScript action has no main.
+# Side effects: None.
+sub _kind_and_steps :Private {
+	my ($class, $using, $runs, $file) = @_;
+
+	if ($using eq $KIND_COMPOSITE) {
+		$class->throw('action.no_steps', { file => $file }) unless ref $runs->{steps} eq 'ARRAY';
+		return ($KIND_COMPOSITE, [ map { normalize_step($_, ['where.file', { file => $file }]) } @{ $runs->{steps} } ]);
+	}
+
+	if ($using =~ $NODE_RUNTIME) {
+		# main must be a non-empty plain string: it is the script node runs.
+		my $main = $runs->{main};
+		$class->throw('action.no_main', { file => $file }) unless defined $main && !ref $main && length $main;
+		return ($KIND_JAVASCRIPT, []);
+	}
+
+	# docker, and anything GitHub may add, is recorded as given; the runner
+	# decides what it can do with it.
+	return ($using eq $KIND_DOCKER ? $KIND_DOCKER : $using, []);
 }
 
-sub _outputs {
-    my ($outputs, $file) = @_;
+# _declarations
+# Purpose:     Normalise the inputs: or outputs: mapping of an action.
+# Entry:       $class - the invocant; $section - 'inputs' or 'outputs';
+#              $declared - the mapping as parsed (may be undef); $file - the
+#              metadata path, for messages.
+# Exit status: Returns a hash reference of name to normalised declaration;
+#              throws when the section or an entry is not a mapping.
+# Side effects: None.
+sub _declarations :Private {
+	my ($class, $section, $declared, $file) = @_;
 
-    my %declared;
-    return \%declared unless defined $outputs;
-    croak "The 'outputs' of '$file' must be a mapping" unless ref $outputs eq 'HASH';
+	my $rules = $DECLARATION{$section};
+	return {} unless defined $declared;
+	$class->throw($rules->{list_error_key}, { file => $file }) unless ref $declared eq 'HASH';
 
-    for my $name (keys %$outputs) {
-        my $output = $outputs->{$name};
-        if (!defined $output) {
-            $declared{$name} = { value => '' };
-            next;
-        }
-        if (!ref $output) {
-            $declared{$name} = { value => "$output" };
-            next;
-        }
-        croak "Output '$name' of '$file' must be a mapping" unless ref $output eq 'HASH';
-        $declared{$name} = {
-            description => defined $output->{description} ? "$output->{description}" : undef,
-            value       => defined $output->{value} ? _stringify($output->{value}) : '',
-        };
-    }
+	my %normalised;
+	for my $name (keys %{$declared}) {
+		my $entry = $declared->{$name};
 
-    return \%declared;
+		# "name:" and "name: text" are shorthand: no declaration at all, and
+		# a bare default (for an input) or value (for an output).
+		if (!ref $entry) {
+			$normalised{$name} = { $rules->{scalar_field} => defined $entry ? "$entry" : '' };
+			$normalised{$name}{required} = 0 if $section eq 'inputs';
+			next;
+		}
+		$class->throw($rules->{error_key}, { name => $name, file => $file }) unless ref $entry eq 'HASH';
+
+		$normalised{$name} = {
+			description => defined $entry->{description} ? "$entry->{description}" : undef,
+			$rules->{scalar_field} => defined $entry->{ $rules->{scalar_field} } ? stringify($entry->{ $rules->{scalar_field} }) : '',
+		};
+		$normalised{$name}{required} = _boolean($entry->{required}) if $section eq 'inputs';
+	}
+
+	return \%normalised;
 }
 
-sub _normalize_step {
-    my ($step, $file) = @_;
+# _boolean
+# Purpose:     Read a YAML required: value as 0 or 1.
+# Entry:       $value - undef, a boolean, a reference, or a word.
+# Exit status: Returns 1 for a true boolean, a reference, or true/yes/1 in any
+#              case; otherwise 0.
+# Side effects: None.
+sub _boolean :Private {
+	my ($value) = @_;
 
-    croak "A step in '$file' is not a mapping" unless ref $step eq 'HASH';
-
-    my %copy = %$step;
-    $copy{env}  = _mapping($copy{env},  "env of a step in '$file'");
-    $copy{with} = _mapping($copy{with}, "with of a step in '$file'");
-
-    for my $field (qw(run uses shell working-directory name id if)) {
-        croak "Step field '$field' in '$file' must be a string"
-            if defined $copy{$field} && ref $copy{$field};
-    }
-
-    croak "A step in '$file' has neither 'run' nor 'uses'"
-        unless defined $copy{run} || defined $copy{uses};
-
-    return \%copy;
-}
-
-sub _mapping {
-    my ($value, $description) = @_;
-
-    return {} unless defined $value;
-    croak "$description must be a mapping" unless ref $value eq 'HASH';
-    return { %$value };
-}
-
-sub _boolean {
-    my ($value) = @_;
-
-    return 0 unless defined $value;
-    return 1 if ref $value;
-    return 1 if "$value" =~ /^(?:true|yes|1)$/i;
-    return 0;
-}
-
-sub _stringify {
-    my ($value) = @_;
-
-    return '' unless defined $value;
-    return "$value" unless ref $value;
-    return JSON::PP->new->canonical->encode($value);
+	# stringify turns a YAML or JSON boolean into true/false, so one pattern
+	# covers booleans and the words people write.
+	return (defined $value && (ref $value && !JSON::PP::is_bool($value) || stringify($value) =~ $TRUE_WORD)) ? 1 : 0;
 }
 
 1;
 
 __END__
 
-=head1 NAME
+=head1 LIMITATIONS
 
-App::Actions::Action - read the metadata of a local GitHub action
+=over 4
 
-=head1 SYNOPSIS
+=item * Only the metadata is read.  Whether a composite step's C<uses> can be
+run, or a JavaScript action's C<main> exists, is the runner's question.
 
-    use App::Actions::Action;
+=item * C<runs.pre>, C<runs.post> and their conditions are kept in C<runs>
+but not interpreted here.
 
-    my $action = App::Actions::Action->load_from_dir('path/to/action');
-    print $action->kind;  # composite or javascript
+=item * Input names are not validated against the characters GitHub allows,
+and a declared input's C<deprecationMessage> is ignored.
 
-=head1 DESCRIPTION
+=item * The C<required> word list is C<true>, C<yes> and C<1>; YAML 1.1
+spellings such as C<on> and C<y> are read as false.
 
-Reads C<action.yml> (or C<action.yaml>) and exposes the action's inputs,
-outputs, and C<runs> section.  Composite action steps are normalised in the
-same way as workflow steps.
-
-=head1 METHODS
-
-=head2 load_from_dir
-
-    my $action = App::Actions::Action->load_from_dir($directory);
-
-Looks for C<action.yml> then C<action.yaml> in the directory.
-
-=head2 load
-
-    my $action = App::Actions::Action->load($file);
-
-Parses a single metadata file.  Malformed metadata raises an exception.
-
-=head2 kind
-
-Returns C<composite>, C<javascript>, C<docker>, or the raw C<runs.using>
-value for anything else.
-
-=head2 inputs, outputs, runs, steps
-
-Return the parsed metadata.  C<steps> is empty unless the action is composite.
+=back
 
 =head1 AUTHOR
 

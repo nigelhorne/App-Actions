@@ -4,12 +4,14 @@ use strict;
 use warnings;
 use Carp qw(croak);
 use JSON::PP ();
-use Scalar::Util qw(blessed looks_like_number);
+use Scalar::Util qw(looks_like_number);
+
+use App::Actions::Util ();
 
 our $VERSION = '0.01';
 
 sub new {
-    my ($class, %args) = @_;
+    my ($class) = @_;
 
     return bless {
         json    => JSON::PP->new->canonical,
@@ -521,17 +523,13 @@ sub _truthy {
     my ($value) = @_;
 
     return 0 unless defined $value;
-    return 0 if _is_json_false($value);
+    # A boolean (JSON::PP's, or a core one from YAML::PP) is its own truth;
+    # a JSON::PP false is a reference, so this must come before the ref test.
+    return $value ? 1 : 0 if JSON::PP::is_bool($value);
     return 1 if ref $value;
     return 0 if $value eq '';
     return 0 if $value eq '0';
     return 1;
-}
-
-sub _is_json_false {
-    my ($value) = @_;
-    return 0 unless ref $value && blessed($value) && $value->isa('JSON::PP::Boolean');
-    return $value ? 0 : 1;
 }
 
 sub _equal {
@@ -553,24 +551,19 @@ sub _compare {
 sub _is_number {
     my ($value) = @_;
     return 0 unless defined $value;
+    # GitHub compares a boolean with a number as 1 or 0, which is what lets
+    # "matrix.debug == false" match a matrix value of false.
+    return 1 if JSON::PP::is_bool($value);
     return 0 if ref $value;
     return 0 if $value eq '';
     return looks_like_number($value) ? 1 : 0;
 }
 
+# The string a workflow sees for a value: one definition for the whole
+# distribution, so a boolean interpolates as true/false here exactly as it is
+# shown in a job's display name.
 sub _stringify {
-    my ($value) = @_;
-
-    return '' unless defined $value;
-    return $value ? 'true' : 'false' if _is_json_false($value) || _is_json_true($value);
-    return $value unless ref $value;
-    return JSON::PP->new->canonical->encode($value);
-}
-
-sub _is_json_true {
-    my ($value) = @_;
-    return 0 unless ref $value && blessed($value) && $value->isa('JSON::PP::Boolean');
-    return $value ? 1 : 0;
+    return App::Actions::Util::stringify($_[0]);
 }
 
 1;

@@ -193,4 +193,15 @@ my $missing = App::Actions::Docker->new(bin => File::Spec->catfile($dir, 'absent
 my (undef, $missing_rc) = $missing->capture_silent('--version');
 isnt($missing_rc, 0, 'a missing Docker command is reported');
 
+# When one secret contains another the longer one must be redacted first, or
+# the rest of it is printed ("abc" then "abcdef" left "***def").
+{
+    my $docker = App::Actions::Docker->new(
+        dry_run => 1, quiet => 1,
+        secrets => { SHORT => 'abc', LONG => 'abcdef' },
+    );
+    is($docker->redact('token=abcdef and abc'), 'token=*** and ***',
+        'overlapping secrets are redacted completely');
+}
+
 done_testing;

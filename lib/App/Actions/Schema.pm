@@ -7,7 +7,7 @@ use JSON::PP ();
 
 our $VERSION = '0.01';
 
-our @EXPORT_OK = qw(validate assert_valid);
+our @EXPORT_OK = qw(validate assert_valid describe_errors);
 
 # A small JSON Schema subset: type, const, enum, properties, required, items
 # and oneOf.  An object whose schema names properties also rejects keys the
@@ -95,13 +95,22 @@ sub assert_valid {
     my @errors = validate($value, $schema);
     return 1 unless @errors;
 
-    my $more = @errors == 1 ? '' : sprintf(' (and %d more)', @errors - 1);
-
     # An exception rather than a string: a command can tell a broken document
     # from every other way of failing, and give it the status that says so.
     # The message still carries no source location, because it reports a
     # document rather than a place in the code.
-    die App::Actions::Schema::Invalid->new("$what: $errors[0]$more\n");
+    die App::Actions::Schema::Invalid->new("$what: " . describe_errors(\@errors) . "\n");
+}
+
+# The first mismatch, with a count of the others, so a message stays one
+# readable line however far a document has drifted.  Shared by assert_valid
+# and "action-run validate", which report the same errors the same way.
+sub describe_errors {
+    my ($errors) = @_;
+
+    my $more = @$errors > 1 ? sprintf(' (and %d more)', @$errors - 1) : '';
+
+    return @$errors ? "$errors->[0]$more" : '';
 }
 
 # The exit status a command gives when a document of its own does not match
@@ -216,6 +225,14 @@ check --json document does not match App::Actions::Check-E<gt>json_schema>.
 The exception carries no source location, because it reports a document rather
 than a place in the code.  It is a L</App::Actions::Schema::Invalid> object,
 not a string, so a caller can tell it from every other failure.
+
+=head2 describe_errors
+
+    my $text = App::Actions::Schema::describe_errors(\@errors);
+
+Returns the first error of the array reference, followed by C<(and N more)>
+when there are others, or an empty string for no errors.  This is the
+wording L</assert_valid> and C<action-run validate> both use.
 
 =head2 invalid_exit
 

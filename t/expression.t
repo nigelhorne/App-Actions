@@ -4,6 +4,7 @@ use Test::Most;
 use Test::Exception;
 
 use App::Actions::Expression;
+use JSON::PP ();
 
 my $expression = App::Actions::Expression->new;
 
@@ -111,5 +112,13 @@ throws_ok { $expression->interpolate('${{ matrix.perl', $context) }
 throws_ok { $expression->evaluate('', $context) }
     qr/empty expression/,
     'empty expression is rejected';
+
+# Booleans from JSON compare as numbers and print as words, as on GitHub.
+{
+    my $json = { flag => JSON::PP::false() };
+    ok($expression->condition('flag == false', $json), 'a JSON false equals the literal false');
+    ok(!$expression->condition('flag', $json), 'and is falsy');
+    is($expression->interpolate('${{ flag }}', $json), 'false', 'and interpolates as false');
+}
 
 done_testing;

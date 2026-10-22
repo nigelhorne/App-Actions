@@ -2,146 +2,71 @@ package App::Actions;
 
 use strict;
 use warnings;
-use Carp qw(croak);
+use utf8;
+use autodie qw(:all);
+
 use Cwd qw(abs_path);
-use File::Spec;
+use Readonly;
 
 use App::Actions::Cache;
 use App::Actions::Check;
+use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Logs;
-use App::Actions::Workflow;
 use App::Actions::Runner;
+use App::Actions::Workflow;
+
+BEGIN { $Sub::Private::config{mode} = 'enforce' }
+use Sub::Private;
+use Sub::Protected;
 
 our $VERSION = '0.01';
 
-sub new {
-	my ($class, %args) = @_;
+# The options a run is configured with.  new() accepts them, run(),
+# preflight() and list_jobs() accept them again as overrides, and every one is
+# handed to App::Actions::Runner under the same name.  Keeping the list in one
+# place is what stops an option being accepted here and silently dropped on
+# its way to the runner, which is what had happened to cache_file.
+Readonly::Array my @RUNNER_OPTIONS => qw(
+	jobs image perl_image platform user env secrets
+	dry_run explain verbose quiet keep keep_images log_dir cache_file
+	pull no_pull strict_actions skip_check pull_concurrency parallel
+	docker docker_bin
+);
 
-	croak 'workflow_file is required' unless defined $args{workflow_file};
+# The Params::Validate::Strict rule of each option.  Flags are strings rather
+# than booleans because callers pass undef, 0, 1 and '' interchangeably, and
+# the runner reads them for truth.  pull_concurrency and parallel are left to
+# the runner, whose message says what a valid value is.
+Readonly::Hash my %OPTION_RULES => (
+	jobs => { type => 'arrayref', optional => 1 },
+	env => { type => 'hashref', optional => 1 },
+	secrets => { type => 'hashref', optional => 1 },
+	docker => { type => 'object', optional => 1 },
+	map({ $_ => { type => 'string', optional => 1 } } qw(
+		image perl_image platform user log_dir cache_file docker_bin pull_concurrency parallel
+		dry_run explain verbose quiet keep keep_images pull no_pull strict_actions skip_check
+	)),
+);
 
-    my $workflow_file = abs_path($args{workflow_file});
-    croak "Workflow file '$args{workflow_file}' does not exist"
-        unless defined $workflow_file && -f $workflow_file;
+# The machine-readable documents, in the order the error message lists them,
+# and the module whose json_schema describes each.
+Readonly::Array my @DOCUMENTS => qw(check preflight cache logs);
+Readonly::Hash my %DOCUMENT_OWNER => (
+	check => 'App::Actions::Check',
+	preflight => 'App::Actions::Runner',
+	cache => 'App::Actions::Cache',
+	logs => 'App::Actions::Logs',
+);
 
-    my $project_dir = $args{project_dir};
-    if (!defined $project_dir) {
-        if ($workflow_file =~ m{^(.*)/\.github/workflows/[^/]+$}) {
-            $project_dir = $1;
-        } else {
-            croak 'project_dir is required when the workflow is not inside .github/workflows';
-        }
-    }
-    $project_dir = abs_path($project_dir);
-    croak "Project directory '$args{project_dir}' does not exist"
-        unless defined $project_dir && -d $project_dir;
+# Where a workflow lives inside a repository, so the repository root can be
+# found from the workflow's own path.
+Readonly::Scalar my $WORKFLOW_IN_REPOSITORY => qr{^(.*)/\.github/workflows/[^/]+$};
 
-    my $workflow = App::Actions::Workflow->load($workflow_file);
+# The options list_jobs forces: listing never starts anything or prints
+# anything but the list.
+Readonly::Hash my %LIST_OPTIONS => (dry_run => 1, quiet => 1);
 
-    return bless {
-        %args,
-        workflow_file => $workflow_file,
-        project_dir   => $project_dir,
-        workflow      => $workflow,
-        jobs          => $args{jobs} || [],
-    }, $class;
-}
-
-sub workflow     { return $_[0]->{workflow} }
-sub workflow_file { return $_[0]->{workflow_file} }
-sub project_dir  { return $_[0]->{project_dir} }
-
-sub run {
-    my ($self, %overrides) = @_;
-
-    return $self->_runner(%overrides)->run;
-}
-
-# Probe the environment and prepare the images without starting a job.  The
-# result is a hash of exit, summary (the check's report with one record per
-# image added) and error, so a caller can print it as text or as JSON.
-sub preflight {
-    my ($self, %overrides) = @_;
-
-    my $json        = delete $overrides{json};
-    my $schema_line = delete $overrides{schema_line};
-
-    return $self->_runner(%overrides)->preflight(
-        json        => $json,
-        schema_line => $schema_line,
-    );
-}
-
-# The JSON schema of one of the machine-readable documents, as a hash that a
-# caller can print.  The schemas live in the modules that own the documents,
-# so the contract is available from an installed distribution rather than only
-# from the test directory.
-sub json_schema {
-    my ($class, $name) = @_;
-
-    croak 'A document name is required' unless defined $name && length $name;
-
-    return App::Actions::Check->json_schema       if $name eq 'check';
-    return App::Actions::Runner->json_schema      if $name eq 'preflight';
-    return App::Actions::Cache->json_schema       if $name eq 'cache';
-    return App::Actions::Logs->json_schema        if $name eq 'logs';
-
-    croak "Unknown document '$name'; expected check, preflight, cache or logs";
-}
-
-sub _runner {
-    my ($self, %overrides) = @_;
-
-    my $runner = App::Actions::Runner->new(
-        workflow      => $self->{workflow},
-        project_dir   => $self->{project_dir},
-        jobs          => exists $overrides{jobs} ? $overrides{jobs} : $self->{jobs},
-        image         => exists $overrides{image} ? $overrides{image} : $self->{image},
-        perl_image    => exists $overrides{perl_image} ? $overrides{perl_image} : $self->{perl_image},
-        platform      => exists $overrides{platform} ? $overrides{platform} : $self->{platform},
-        user          => exists $overrides{user} ? $overrides{user} : $self->{user},
-        env           => exists $overrides{env} ? $overrides{env} : $self->{env},
-        secrets       => exists $overrides{secrets} ? $overrides{secrets} : $self->{secrets},
-        dry_run       => exists $overrides{dry_run} ? $overrides{dry_run} : $self->{dry_run},
-        explain       => exists $overrides{explain} ? $overrides{explain} : $self->{explain},
-        verbose       => exists $overrides{verbose} ? $overrides{verbose} : $self->{verbose},
-        quiet         => exists $overrides{quiet} ? $overrides{quiet} : $self->{quiet},
-        keep          => exists $overrides{keep} ? $overrides{keep} : $self->{keep},
-        keep_images   => exists $overrides{keep_images} ? $overrides{keep_images} : $self->{keep_images},
-        log_dir       => exists $overrides{log_dir} ? $overrides{log_dir} : $self->{log_dir},
-        pull          => exists $overrides{pull} ? $overrides{pull} : $self->{pull},
-        no_pull       => exists $overrides{no_pull} ? $overrides{no_pull} : $self->{no_pull},
-        strict_actions => exists $overrides{strict_actions} ? $overrides{strict_actions} : $self->{strict_actions},
-        skip_check    => exists $overrides{skip_check} ? $overrides{skip_check} : $self->{skip_check},
-        pull_concurrency => exists $overrides{pull_concurrency}
-            ? $overrides{pull_concurrency}
-            : $self->{pull_concurrency},
-        parallel      => exists $overrides{parallel} ? $overrides{parallel} : $self->{parallel},
-        docker        => $overrides{docker} || $self->{docker},
-        docker_bin    => exists $overrides{docker_bin} ? $overrides{docker_bin} : $self->{docker_bin},
-    );
-
-    return $runner;
-}
-
-sub list_jobs {
-    my ($self, %overrides) = @_;
-
-    my $runner = App::Actions::Runner->new(
-        workflow    => $self->{workflow},
-        project_dir => $self->{project_dir},
-        jobs        => exists $overrides{jobs} ? $overrides{jobs} : $self->{jobs},
-        image       => $self->{image},
-        perl_image  => $self->{perl_image},
-        dry_run     => 1,
-        quiet       => 1,
-    );
-
-    return $runner->list_jobs;
-}
-
-1;
-
-__END__
+=encoding utf-8
 
 =head1 NAME
 
@@ -149,14 +74,14 @@ App::Actions - run GitHub Actions workflows locally with Docker
 
 =head1 SYNOPSIS
 
-    use App::Actions;
+	use App::Actions;
 
-    my $actions = App::Actions->new(
-        workflow_file => "$ENV{HOME}/src/njh/CGI-Info/.github/workflows/perl-ci.yml",
-        project_dir   => "$ENV{HOME}/src/njh/CGI-Info",
-    );
+	my $actions = App::Actions->new(
+		workflow_file => "$ENV{HOME}/src/njh/CGI-Info/.github/workflows/perl-ci.yml",
+		project_dir   => "$ENV{HOME}/src/njh/CGI-Info",
+	);
 
-    exit $actions->run;
+	exit $actions->run;
 
 =head1 DESCRIPTION
 
@@ -200,35 +125,46 @@ step that fixes it, such as starting Docker Desktop, switching it to Linux
 containers, or sharing the drive that holds the project.  See L<action-run>
 for the details.
 
+Errors raised by this module, L<App::Actions::Workflow> and
+L<App::Actions::Action> come from the catalogue in L<App::Actions::I18N>.
+They are in English unless C<ACTION_RUN_LANG> names another catalogue
+(C<fr>, C<de> or C<zh>).
+
 =head1 METHODS
 
 =head2 new
 
-    my $actions = App::Actions->new(
-        workflow_file => $path,
-        project_dir   => $directory,
-        %options,
-    );
+Creates the object that runs one workflow.
 
-C<project_dir> may be omitted when the workflow is inside a repository's
-C<.github/workflows> directory; the repository root is then used.
+=head3 ARGUMENTS
 
-Options include C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>, C<env>,
-C<secrets>, C<dry_run>, C<explain>, C<verbose>, C<quiet>, C<keep>,
+=over 4
+
+=item * C<workflow_file> - required; the path of the workflow.
+
+=item * C<project_dir> - the repository the workflow runs against.  It may
+be omitted when the workflow is inside a repository's C<.github/workflows>
+directory; the repository root is then used.
+
+=item * Run options: C<jobs>, C<image>, C<perl_image>, C<platform>, C<user>,
+C<env>, C<secrets>, C<dry_run>, C<explain>, C<verbose>, C<quiet>, C<keep>,
 C<keep_images>, C<pull>, C<no_pull>, C<strict_actions>, C<skip_check>,
-C<pull_concurrency>, C<parallel>, C<log_dir>, C<docker>, and C<docker_bin>.
-C<parallel>
-says how many jobs of one matrix may run at the same time; it is 1 unless it
-is set, and C<action-run> sets it to the number of processors unless
-C<--parallel> says otherwise.  C<pull_concurrency> says
-how many images may be pulled at the same time; it defaults to
-C<ACTION_RUN_PULL_CONCURRENCY> from the environment, and to four when that is
-not set or empty.  It must be a positive integer.  C<keep_images> defaults to
-true: the images a run pulls stay behind as the next run's cache, and a false
-value removes the ones the run itself pulled when it finishes.  The kept
-images are recorded by L<App::Actions::Cache>, which is what
-C<action-run cache> lists and C<action-run cache --prune> removes; the record
-lives in the user's cache directory, and C<ACTION_RUN_CACHE_FILE> moves it.
+C<pull_concurrency>, C<parallel>, C<log_dir>, C<cache_file>, C<docker>, and
+C<docker_bin>.  Any other key is an error.
+
+=back
+
+C<parallel> says how many jobs of one matrix may run at the same time; it is
+1 unless it is set, and C<action-run> sets it to the number of processors
+unless C<--parallel> says otherwise.  C<pull_concurrency> says how many images
+may be pulled at the same time; it defaults to C<ACTION_RUN_PULL_CONCURRENCY>
+from the environment, and to four when that is not set or empty.  It must be
+a positive integer.  C<keep_images> defaults to true: the images a run pulls
+stay behind as the next run's cache, and a false value removes the ones the
+run itself pulled when it finishes.  The kept images are recorded by
+L<App::Actions::Cache>, which is what C<action-run cache> lists and
+C<action-run cache --prune> removes; the record lives in the user's cache
+directory, and C<cache_file> or C<ACTION_RUN_CACHE_FILE> moves it.
 C<log_dir> says where the per-job logs of a parallel run are kept; it
 defaults to C<ACTION_RUN_LOG_DIR>, then to C<action-run/logs> under that same
 cache directory.  C<action-run logs> reads that directory, with the sizes and
@@ -271,22 +207,272 @@ check a job makes of its own image reuses what the run has already fetched.
 C<docker> and C<docker_bin> name the Docker command.  It may also be a wrapper
 script; a wrapper written in Perl is run with the current Perl interpreter, so
 it works on Windows too, where the operating system cannot start a shebang
-script directly.
+script directly.  C<docker> may instead be an object with the
+L<App::Actions::Docker> interface, which is how the tests run without one.
+
+=head3 RETURNS
+
+An C<App::Actions> object.
+
+=head3 SIDE EFFECTS
+
+Reads and parses the workflow file.
+
+=head3 EXAMPLE
+
+	# The repository root is found from the workflow's path.
+	my $actions = App::Actions->new(
+		workflow_file => 'project/.github/workflows/ci.yml',
+		jobs          => [ 'test' ],
+		dry_run       => 1,
+	);
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{
+		workflow_file    => { type => 'string', min => 1 },
+		project_dir      => { type => 'string', optional => 1 },
+		jobs             => { type => 'arrayref', optional => 1 },
+		env              => { type => 'hashref', optional => 1 },
+		secrets          => { type => 'hashref', optional => 1 },
+		docker           => { type => 'object', optional => 1 },
+		image            => { type => 'string', optional => 1 },
+		perl_image       => { type => 'string', optional => 1 },
+		platform         => { type => 'string', optional => 1 },
+		user             => { type => 'string', optional => 1 },
+		log_dir          => { type => 'string', optional => 1 },
+		cache_file       => { type => 'string', optional => 1 },
+		docker_bin       => { type => 'string', optional => 1 },
+		pull_concurrency => { type => 'string', optional => 1 },
+		parallel         => { type => 'string', optional => 1 },
+		dry_run          => { type => 'string', optional => 1 },
+		explain          => { type => 'string', optional => 1 },
+		verbose          => { type => 'string', optional => 1 },
+		quiet            => { type => 'string', optional => 1 },
+		keep             => { type => 'string', optional => 1 },
+		keep_images      => { type => 'string', optional => 1 },
+		pull             => { type => 'string', optional => 1 },
+		no_pull          => { type => 'string', optional => 1 },
+		strict_actions   => { type => 'string', optional => 1 },
+		skip_check       => { type => 'string', optional => 1 },
+	}
+
+=head4 OUTPUT
+
+	{ type => 'object', isa => 'App::Actions' }
+
+=head3 MESSAGES
+
+	+-----------------------------------+------------------------------+-------------------------------+
+	| Message                           | Meaning                      | Resolution                    |
+	+-----------------------------------+------------------------------+-------------------------------+
+	| workflow_file is required         | No workflow was named        | Pass workflow_file            |
+	| Workflow file 'F' does not exist  | No file at the path          | Check the path                |
+	| project_dir is required when the  | The repository root cannot   | Pass project_dir              |
+	| workflow is not inside            | be inferred                  |                               |
+	| .github/workflows                 |                              |                               |
+	| Project directory 'D' does not    | No directory at the path     | Check the path                |
+	| exist                             |                              |                               |
+	| Invalid arguments to              | An unknown option, or one of | Use the documented options    |
+	| App::Actions::new: REASON         | the wrong type               |                               |
+	+-----------------------------------+------------------------------+-------------------------------+
+
+The messages of L<App::Actions::Workflow/load> apply to the workflow file.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ New ─────────────────────────────────────────────
+	│ ΞFileSystem
+	│ workflowFile? : optional PATH
+	│ projectDir?   : optional PATH
+	│ options?      : OPTION ⇸ VALUE
+	│ actions!      : Actions
+	├───────────────────────────────────────────────────
+	│ dom options? ⊆ RUNNER_OPTIONS
+	│ workflowFile? = ⊥ ⇒ raises WorkflowFileRequired
+	│ abs(workflowFile?) ∉ regularFiles ⇒ raises WorkflowFileMissing
+	│ projectDir? = ⊥ ∧ abs(workflowFile?) ∉ (PATH ⁀ "/.github/workflows/" ⁀ NAME)
+	│     ⇒ raises ProjectDirRequired
+	│ let root == (projectDir? ≠ ⊥ ⇒ abs(projectDir?))
+	│             ∧ (projectDir? = ⊥ ⇒ repository(abs(workflowFile?)))
+	│ root ∉ directories ⇒ raises ProjectDirMissing
+	│ actions!.workflow = Workflow.Load(abs(workflowFile?))
+	│ actions!.project_dir = root
+	│ actions!.options = options?
+	└───────────────────────────────────────────────────
+
+=head3 PSEUDOCODE
+
+	validate the arguments, refusing unknown options
+	refuse a missing workflow_file, then one that does not exist
+	take project_dir as given, or the repository root that holds .github/workflows
+	refuse a project directory that does not exist
+	load the workflow
+	return the object holding the paths, the workflow and the options
+
+=cut
+
+sub new {
+	my $class = shift;
+
+	my $params = validate_args(__PACKAGE__ . '::new', \@_, {
+		workflow_file => { type => 'string', optional => 1 },
+		project_dir => { type => 'string', optional => 1 },
+		%OPTION_RULES,
+	});
+
+	$class->throw('actions.workflow_file_required') unless defined $params->{workflow_file};
+
+	# abs_path is undef for a path that does not exist on some platforms and
+	# the path itself on others, so both outcomes are checked with -f.
+	my $workflow_file = abs_path($params->{workflow_file});
+	$class->throw('actions.workflow_file_missing', { file => $params->{workflow_file} })
+		unless defined $workflow_file && -f $workflow_file;
+
+	my $project_dir = $class->_project_dir($params->{project_dir}, $workflow_file);
+
+	return bless {
+		%{$params},
+		workflow_file => $workflow_file,
+		project_dir => $project_dir,
+		workflow => App::Actions::Workflow->load($workflow_file),
+		jobs => $params->{jobs} || [],
+	}, $class;
+}
+
+=head2 workflow, workflow_file, project_dir
+
+	my $workflow = $actions->workflow;         # the App::Actions::Workflow
+	my $file     = $actions->workflow_file;    # its absolute path
+	my $root     = $actions->project_dir;      # the absolute project directory
+
+Read-only accessors.
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{}
+
+=head4 OUTPUT
+
+	workflow:                   { type => 'object', isa => 'App::Actions::Workflow' }
+	workflow_file, project_dir: { type => 'string' }
+
+=head3 MESSAGES
+
+None.
+
+=head3 EXAMPLE
+
+	printf "%s from %s\n", $actions->workflow->name, $actions->project_dir;
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ Accessor ────────────────────────────────────────
+	│ ΞActions
+	│ field? : {workflow, workflow_file, project_dir}
+	│ value! : VALUE
+	├───────────────────────────────────────────────────
+	│ value! = θActions.field?
+	└───────────────────────────────────────────────────
+
+=cut
+
+sub workflow      { return $_[0]->{workflow} }
+sub workflow_file { return $_[0]->{workflow_file} }
+sub project_dir   { return $_[0]->{project_dir} }
 
 =head2 run
 
-    my $exit_code = $actions->run;
+Runs the selected jobs.
 
-Returns 0 for success, 1 when a job fails, and 2 for a usage, Docker, or other
+=head3 ARGUMENTS
+
+Any of the run options of L</new>, which override the object's for this run
+only.
+
+=head3 RETURNS
+
+0 for success, 1 when a job fails, and 2 for a usage, Docker, or other
 infrastructure error.
+
+=head3 SIDE EFFECTS
+
+Starts and removes Docker containers and networks, pulls images, writes the
+image cache record and, for a parallel run, the job logs; prints the run's
+progress unless C<quiet>.
+
+=head3 EXAMPLE
+
+	my $exit = $actions->run(jobs => [ 'lint' ], verbose => 1);
+	exit $exit;
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+The option rules of L</new>, all optional, without C<workflow_file> and
+C<project_dir>.
+
+=head4 OUTPUT
+
+	{ type => 'integer', memberof => [ 0, 1, 2 ] }
+
+=head3 MESSAGES
+
+	+--------------------------+-------------------------------+--------------------------------+
+	| Message                  | Meaning                       | Resolution                     |
+	+--------------------------+-------------------------------+--------------------------------+
+	| Invalid arguments to     | An unknown or mistyped        | Use the options of new         |
+	| App::Actions::run: R     | override                      |                                |
+	+--------------------------+-------------------------------+--------------------------------+
+
+Failures of the run itself are printed by L<App::Actions::Runner> and
+reported by the exit code rather than raised.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ Run ─────────────────────────────────────────────
+	│ ΞActions
+	│ overrides? : OPTION ⇸ VALUE
+	│ exit!      : {0, 1, 2}
+	├───────────────────────────────────────────────────
+	│ dom overrides? ⊆ RUNNER_OPTIONS
+	│ exit! = Runner.Run(options ⊕ overrides?)
+	└───────────────────────────────────────────────────
+
+=cut
+
+sub run {
+	my $self = shift;
+
+	return $self->_runner($self->_overrides('run', \@_))->run;
+}
 
 =head2 preflight
 
-    my $result = $actions->preflight(%options);
+Makes the same checks as a run before its first job, then prepares the
+images the selected jobs need, without starting anything.
 
-Makes the same checks as a run before its first job, then prepares the images
-the selected jobs need, without starting anything.  Returns a hash of C<exit>
-(0 or 2), C<summary> and C<error>.  C<summary> is the report
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<json> - optional; true to print nothing and return the document
+C<action-run preflight --json> prints.
+
+=item * C<schema_line> - optional; passed to the runner.
+
+=item * Any run option of L</new>, overriding the object's.
+
+=back
+
+=head3 RETURNS
+
+A hash of C<exit> (0 or 2), C<summary> and C<error>.  C<summary> is the report
 L<App::Actions::Check> produces as data, with an C<images> array added; each
 entry is C<< { image, source, status, error } >>, and C<status> is C<pulled>,
 C<present>, C<failed>, C<skipped> or C<deferred>.  A deferred entry could not
@@ -305,34 +491,294 @@ L<App::Actions::Schema::Invalid|App::Actions::Schema/App::Actions::Schema::Inval
 exception naming the first key at fault rather than being returned; the
 command gives that exit 70.
 
+=head3 SIDE EFFECTS
+
+Contacts the Docker daemon, starts a probe container and pulls images.
+
+=head3 EXAMPLE
+
+	my $result = $actions->preflight(json => 1);
+	print JSON::PP->new->canonical->encode($result->{summary}), "\n";
+	exit $result->{exit};
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+The option rules of L</new>, all optional, plus
+
+	{
+		json        => { type => 'string', optional => 1 },
+		schema_line => { type => 'string', optional => 1 },
+	}
+
+=head4 OUTPUT
+
+	{ type => 'hashref' }    # { exit => 0|2, summary => {...}, error => string|undef }
+
+=head3 MESSAGES
+
+	+--------------------------+-------------------------------+--------------------------------+
+	| Message                  | Meaning                       | Resolution                     |
+	+--------------------------+-------------------------------+--------------------------------+
+	| Invalid arguments to     | An unknown or mistyped option | Use the options of new         |
+	| App::Actions::preflight  |                               |                                |
+	| the action-run preflight | The document drifted from its | A bug in this distribution;    |
+	| --json document does not | schema (an                    | report it                      |
+	| match ...                | App::Actions::Schema::Invalid)|                                |
+	+--------------------------+-------------------------------+--------------------------------+
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ Preflight ───────────────────────────────────────
+	│ ΞActions
+	│ overrides? : OPTION ⇸ VALUE
+	│ json?      : optional BOOLEAN
+	│ result!    : Result
+	├───────────────────────────────────────────────────
+	│ dom overrides? ⊆ RUNNER_OPTIONS
+	│ result! = Runner.Preflight(options ⊕ overrides?, json?)
+	│ result!.exit ∈ {0, 2}
+	│ json? ⇒ valid(result!.summary, PreflightSchema)
+	└───────────────────────────────────────────────────
+
+=cut
+
+sub preflight {
+	my $self = shift;
+
+	# json and schema_line belong to the preflight, not to the runner's
+	# construction, so they are separated from the overrides here.
+	my $params = validate_args(__PACKAGE__ . '::preflight', \@_, {
+		%OPTION_RULES,
+		json => { type => 'string', optional => 1 },
+		schema_line => { type => 'string', optional => 1 },
+	});
+	my %preflight = map { $_ => delete $params->{$_} } qw(json schema_line);
+
+	return $self->_runner($params)->preflight(%preflight);
+}
+
 =head2 json_schema
 
-    my $schema = App::Actions->json_schema('check');
-    my $schema = App::Actions->json_schema('preflight');
-    my $schema = App::Actions->json_schema('cache');
-    my $schema = App::Actions->json_schema('logs');
+Returns the JSON schema of one of the machine-readable documents.
 
-Returns the JSON schema of one of the machine-readable documents as a hash,
-which is what C<action-run schema> prints.  The name is C<check>, C<preflight>,
-C<cache> or C<logs>; anything else is an error naming the four that exist.
+=head3 ARGUMENTS
+
+=over 4
+
+=item * C<$name> - C<check>, C<preflight>, C<cache> or C<logs>.
+
+=back
+
+=head3 RETURNS
+
+The schema as a hash reference, which is what C<action-run schema> prints.
 The schemas live in L<App::Actions::Check>, L<App::Actions::Runner>,
-L<App::Actions::Cache> and L<App::Actions::Logs>, so the contract is available
-from an installed distribution.
+L<App::Actions::Cache> and L<App::Actions::Logs>, so the contract is
+available from an installed distribution.
+
+=head3 SIDE EFFECTS
+
+None.
+
+=head3 EXAMPLE
+
+	my $schema = App::Actions->json_schema('check');
+	print $schema->{title}, "\n";    # action-run check --json
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{ name => { type => 'string', optional => 1 } }
+
+=head4 OUTPUT
+
+	{ type => 'hashref' }
+
+=head3 MESSAGES
+
+	+--------------------------+-------------------------------+--------------------------------+
+	| Message                  | Meaning                       | Resolution                     |
+	+--------------------------+-------------------------------+--------------------------------+
+	| A document name is       | The name was undef or empty   | Pass check, preflight, cache   |
+	| required                 |                               | or logs                        |
+	| Unknown document 'N';    | No such document              | Use one of the names listed    |
+	| expected check,          |                               |                                |
+	| preflight, cache or logs |                               |                                |
+	+--------------------------+-------------------------------+--------------------------------+
+
+=head3 FORMAL SPECIFICATION
+
+	DOCUMENT ::= check | preflight | cache | logs
+
+	┌─ JsonSchema ──────────────────────────────────────
+	│ name?   : optional STRING
+	│ schema! : KEY ⇸ VALUE
+	├───────────────────────────────────────────────────
+	│ name? ∈ {⊥, ⟨⟩} ⇒ raises DocumentRequired
+	│ name? ∉ DOCUMENT ⇒ raises DocumentUnknown(name?)
+	│ name? ∈ DOCUMENT ⇒ schema! = owner(name?).json_schema
+	└───────────────────────────────────────────────────
+
+=cut
+
+sub json_schema {
+	my $class = shift;
+
+	my $name = validate_args(__PACKAGE__ . '::json_schema', [ { name => $_[0] } ], {
+		name => { type => 'string', optional => 1 },
+	})->{name};
+
+	$class->throw('actions.document_required') unless defined $name && length $name;
+
+	# The list in the message comes from the same table as the lookup, so a
+	# new document cannot be added to one and forgotten in the other.
+	my $owner = $DOCUMENT_OWNER{$name};
+	$class->throw('actions.document_unknown', {
+		name => $name,
+		expected => $class->i18n('list.or', {
+			head => join(', ', @DOCUMENTS[ 0 .. $#DOCUMENTS - 1 ]),
+			last => $DOCUMENTS[-1],
+		}),
+	}) unless defined $owner;
+
+	return $owner->json_schema;
+}
 
 =head2 list_jobs
 
-Prints one line per expanded job and returns 0.
+Prints one line per expanded job: its id, a tab, and its display name.
 
-=head2 workflow
+=head3 ARGUMENTS
 
-Returns the loaded L<App::Actions::Workflow> object.
+Any of the run options of L</new>.  C<dry_run> and C<quiet> are always set,
+because listing starts nothing and prints only the list.
+
+=head3 RETURNS
+
+0.
+
+=head3 SIDE EFFECTS
+
+Prints to standard output.
+
+=head3 EXAMPLE
+
+	$actions->list_jobs(jobs => [ 'test' ]);
+	# test	test (perl=5.38)
+	# test	test (perl=5.40)
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+The option rules of L</new>, all optional.
+
+=head4 OUTPUT
+
+	{ type => 'integer', memberof => [ 0 ] }
+
+=head3 MESSAGES
+
+	+--------------------------+-------------------------------+--------------------------------+
+	| Message                  | Meaning                       | Resolution                     |
+	+--------------------------+-------------------------------+--------------------------------+
+	| Invalid arguments to     | An unknown or mistyped        | Use the options of new         |
+	| App::Actions::list_jobs  | override                      |                                |
+	+--------------------------+-------------------------------+--------------------------------+
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ ListJobs ────────────────────────────────────────
+	│ ΞActions
+	│ overrides? : OPTION ⇸ VALUE
+	│ exit!      : {0}
+	├───────────────────────────────────────────────────
+	│ output' = output ⁀ ⟨ j : selected(jobs ⊕ overrides?) • j.base_id ⁀ TAB ⁀ j.display_name ⟩
+	│ exit! = 0
+	└───────────────────────────────────────────────────
+
+=cut
+
+sub list_jobs {
+	my $self = shift;
+
+	my $overrides = $self->_overrides('list_jobs', \@_);
+
+	return $self->_runner({ %{$overrides}, %LIST_OPTIONS })->list_jobs;
+}
+
+# _runner
+# Purpose:     Build the App::Actions::Runner for one call, with overrides applied.
+# Entry:       $self - the object; $overrides - a hash reference of run
+#              options that replace the object's for this call.  An override
+#              that is present but undef does replace the object's value; an
+#              absent one does not.  docker is the exception: an undef
+#              override keeps the object's, as it always has.
+# Exit status: Returns an App::Actions::Runner; croaks (via the runner) on
+#              options the runner rejects.
+# Side effects: None until the runner is used.
+# Protected rather than private so a subclass can substitute its own runner.
+sub _runner :Protected {
+	my ($self, $overrides) = @_;
+
+	my %options = map { $_ => (exists $overrides->{$_} ? $overrides->{$_} : $self->{$_}) } @RUNNER_OPTIONS;
+	$options{docker} ||= $self->{docker};
+
+	return App::Actions::Runner->new(
+		workflow => $self->{workflow},
+		project_dir => $self->{project_dir},
+		%options,
+	);
+}
+
+# _overrides
+# Purpose:     Validate the run options a method was given as overrides.
+# Entry:       $self - the object; $routine - the method's name, for the
+#              message; $args - its arguments (invocant removed).
+# Exit status: Returns a hash reference of the overrides (empty when none).
+# Side effects: None; croaks on an unknown or mistyped option.
+sub _overrides :Private {
+	my (undef, $routine, $args) = @_;
+
+	return validate_args(__PACKAGE__ . "::$routine", $args, \%OPTION_RULES);
+}
+
+# _project_dir
+# Purpose:     Decide and check the project directory.
+# Entry:       $class - the invocant (for throw); $given - project_dir as
+#              passed, or undef; $workflow_file - the workflow's absolute path.
+# Exit status: Returns the absolute project directory; throws when it cannot
+#              be inferred or does not exist.
+# Side effects: None.
+sub _project_dir :Private {
+	my ($class, $given, $workflow_file) = @_;
+
+	# A workflow in a repository's .github/workflows knows its repository.
+	my $wanted = $given;
+	if (!defined $wanted) {
+		($wanted) = $workflow_file =~ $WORKFLOW_IN_REPOSITORY;
+		$class->throw('actions.project_dir_required') unless defined $wanted;
+	}
+
+	my $project_dir = abs_path($wanted);
+	$class->throw('actions.project_dir_missing', { dir => $wanted }) unless defined $project_dir && -d $project_dir;
+
+	return $project_dir;
+}
+
+1;
+
+__END__
 
 =head1 TESTING
 
 The suite runs against a fake Docker command, so it needs neither Docker nor
 a daemon:
 
-    prove -l t
+	prove -l t
 
 One of its tests copies the suite into a temporary directory whose name
 contains spaces and runs every test file there again, which is how paths with
@@ -342,6 +788,10 @@ finds it there as soon as that file is listed.  That doubles the running time;
 set C<SPACE_PATH=0> to skip it, or run just that check with
 C<prove -l t/space-path.t>.
 
+F<t/locales.t> covers the message catalogue: the country-to-language table
+for GB, US, FR, DE and CN, and the error paths under the C<en_US.UTF-8>,
+C<de_DE.UTF-8> and C<ja_JP.UTF-8> POSIX locales.
+
 The repository ships a pre-commit hook in F<.githooks/> that runs the schema
 checks and the live-knob check against the files a commit stages, so a version
 bump applied to the schema or to the documents but not to both, or a live
@@ -349,15 +799,15 @@ test's knob added without its documentation or whitelist, is refused where it
 happens rather than by CI afterwards.  Each check starts only when a staged
 path can affect it.  It is off until a clone asks for it:
 
-    git config core.hooksPath .githooks
+	git config core.hooksPath .githooks
 
 A commit that touches nothing either check reads passes without a check being
 run at all, and C<git commit --no-verify> skips it for one commit.
 
 The same checks can be run from the command line without attempting a commit:
 
-    make check-staged    # against the index
-    make check-worktree  # against the working tree, unstaged edits included
+	make check-staged    # against the index
+	make check-worktree  # against the working tree, unstaged edits included
 
 C<check-worktree> always runs both checks, including files that are not tracked
 yet, so a new fixture or live test is not skipped.  Both targets need the
@@ -433,6 +883,34 @@ Images are pulled concurrently only where C<fork()> is reliable; on Windows
 they are pulled one at a time, because Perl's emulation of C<fork()> shares the
 parent's handles with the child.
 
+Design weaknesses that remain:
+
+=over 4
+
+=item * L<App::Actions::Runner> is a single 4,000-line class that plans the
+run, talks to Docker, interprets steps, runs parallel jobs and writes logs.
+Its private methods share state through one hash, so none of those concerns
+can be tested or replaced alone.  It should be split, at least into a
+planner (what to run), an executor (how to run one step) and a reporter.
+
+=item * Errors are mostly strings.  Only schema drift has an exception class;
+callers such as F<bin/action-run> tell other failures apart by matching
+their text, which a translation would break.  The catalogue keys are the
+natural basis for an exception class carrying a stable code.
+
+=item * Options are validated twice: their types here and their values in
+the runner.  The runner's checks are the ones with the specific messages,
+so the two cannot simply be merged without moving those messages.
+
+=item * Unknown options are now an error.  A caller that passed an option
+this module never forwarded (and which therefore had no effect) will now be
+told so.
+
+=item * The Runner, Check, Docker and command-line messages have not been
+moved into the catalogue yet; see L<App::Actions::I18N/LIMITATIONS>.
+
+=back
+
 =head1 AUTHOR
 
 Nigel Horne, C<< <njh at nigelhorne.com> >>
@@ -446,5 +924,3 @@ If you use it,
 please let me know.
 
 =cut
-
-1;

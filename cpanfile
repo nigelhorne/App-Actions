@@ -1,6 +1,6 @@
 # Generated from Makefile.PL using makefilepl2cpanfile
 
-requires 'perl', '5.010';
+requires 'perl', '5.014';
 
 requires 'Carp';
 requires 'Config';
@@ -12,14 +12,23 @@ requires 'File::Spec';
 requires 'File::Temp';
 requires 'Getopt::Long';
 requires 'IO::Handle';
+requires 'IPC::System::Simple';
 requires 'JSON::PP';
+requires 'Params::Get', '0.17';
+requires 'Params::Validate::Strict', '0.33';
 requires 'Pod::Usage';
+requires 'Readonly';
+requires 'Return::Set';
 requires 'Scalar::Util';
-requires 'overload';
+requires 'Sub::Private', '0.06';
+requires 'Sub::Protected', '0.03';
 requires 'Text::ParseWords';
 requires 'Time::HiRes';
 requires 'YAML::PP';
 requires 'YAML::PP::Common';
+requires 'autodie';
+requires 'overload';
+requires 'utf8';
 
 on 'configure' => sub {
 	requires 'ExtUtils::MakeMaker', '6.64';
@@ -27,6 +36,7 @@ on 'configure' => sub {
 
 on 'test' => sub {
 	requires 'Capture::Tiny';
+	requires 'Errno';
 	requires 'File::Copy';
 	requires 'File::Find';
 	requires 'File::Temp';
@@ -35,6 +45,7 @@ on 'test' => sub {
 	requires 'Test::DescribeMe';
 	requires 'Test::Exception';
 	requires 'Test::Most';
+	requires 'Test::Warn';
 };
 
 on 'develop' => sub {

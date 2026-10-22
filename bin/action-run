@@ -240,10 +240,9 @@ if ($command eq 'validate') {
 
     my @errors = App::Actions::Schema::validate($document, $schema);
     if (@errors) {
-        my $more = @errors == 1 ? '' : sprintf(' (and %d more)', @errors - 1);
         print STDERR
             "action-run: '$path' does not match the $name schema: ",
-            $errors[0], "$more\n";
+            App::Actions::Schema::describe_errors(\@errors), "\n";
         exit App::Actions::Schema::invalid_exit();
     }
 
@@ -516,12 +515,14 @@ sub _fail {
 # A croak() carries the source location, which is useful in a stack trace and
 # noise in a message someone reads.  Only the final location is removed:
 # JSON::PP puts its own position, such as "at character offset 9", ahead of it,
-# and that is part of the diagnosis rather than noise.
+# and that is part of the diagnosis rather than noise.  The greedy prefix
+# makes the match start at the last " at ", and the file name may contain
+# spaces, as it does when the tool is installed under such a path.
 sub _error_text {
     my ($error) = @_;
 
     $error =~ s/\s+$//;
-    $error =~ s/\s+at\s+\S+\s+line\s+\d+\.?\z//;
+    $error =~ s/\A(.*)\s+at\s+.+?\s+line\s+\d+\.?\z/$1/s;
     $error =~ s/\s+$//;
 
     return $error;

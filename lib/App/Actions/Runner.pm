@@ -12,7 +12,6 @@ use File::Temp ();
 use IO::Handle ();
 use JSON::PP ();
 use POSIX ();
-use Scalar::Util qw(blessed);
 use Text::ParseWords qw(shellwords);
 use Time::HiRes qw(sleep);
 
@@ -24,6 +23,7 @@ use App::Actions::Expression;
 use App::Actions::Logs;
 use App::Actions::Process;
 use App::Actions::Schema;
+use App::Actions::Util ();
 
 our $VERSION = '0.01';
 
@@ -2992,7 +2992,7 @@ sub _run_local_action {
 
     return $self->_unsupported_action(
         $uses,
-        "local actions that use '$action->{using}' are not supported",
+        "local actions that use '" . $action->using . "' are not supported",
     );
 }
 
@@ -3851,14 +3851,7 @@ sub _truthy_scalar {
 }
 
 sub _stringify {
-    my ($value) = @_;
-
-    return '' unless defined $value;
-    if (blessed($value) && $value->isa('JSON::PP::Boolean')) {
-        return $value ? 'true' : 'false';
-    }
-    return "$value" unless ref $value;
-    return JSON::PP->new->canonical->encode($value);
+    return App::Actions::Util::stringify($_[0]);
 }
 
 sub _hostname {
@@ -3889,11 +3882,7 @@ sub _redact {
 }
 
 sub _trim {
-    my ($value) = @_;
-
-    return '' unless defined $value;
-    $value =~ s/^\s+|\s+$//g;
-    return $value;
+    return App::Actions::Util::trim($_[0]);
 }
 
 1;
