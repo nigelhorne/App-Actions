@@ -9,6 +9,10 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  ran, as passed (with its test count) or failed, and each they skipped,
 	  so a clean run shows that the live-knob check ran rather than only
 	  that nothing failed.  A commit that passes the hook is still silent.
+	- t/regex.t's time limits are scaled up when Devel::Cover is loaded.
+	  The CI coverage job runs the suite under it, which made the
+	  40,000-comparison tokenizer case (linear, but about five times
+	  slower there) fail its two-second limit.
 
 0.001.0	Thu Oct 22 12:40:02 PM EDT 2026
 	- First release
