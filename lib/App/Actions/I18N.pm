@@ -76,10 +76,37 @@ Readonly::Hash my %COUNTRY_LANGUAGE => (
 	US => 'en',
 );
 
+# What new() and the lookups accept.  \A and \z rather than ^ and $, which
+# would also let through a value with a newline on the end.
+#
+# A language as a caller may write it: "fr", or a locale such as "en_GB.UTF-8"
+# whose first two or three letters are the language.
+Readonly::Scalar my $LANGUAGE_TAG => qr/\A[A-Za-z]{2,3}(?:[_.-].*)?\z/;
+# A language as the catalogues are named: "fr", "zh".
+Readonly::Scalar my $LANGUAGE_CODE => qr/\A[a-z]{2,3}\z/;
+# An ISO 3166 alpha-2 country, in either case: "GB", "fr".
+Readonly::Scalar my $COUNTRY_CODE => qr/\A[A-Za-z]{2}\z/;
+
 # Placeholders are sprintf conversions with a name: %(file)s, %(count)d,
 # %(ratio).1f.  The name says which argument fills it, so a translation may
 # put the arguments in whatever order its grammar needs.
-Readonly::Scalar my $PLACEHOLDER => qr/%\((\w+)\)([-+ 0#]*\d*(?:\.\d+)?[sdiouxXeEfgG])/;
+#
+# The flags and the width overlap - "0" is both - so with quantifiers that
+# give back, a run of zeros not followed by a conversion is split between
+# them in every possible way: 40,000 of them took forty seconds.  None of the
+# quantifiers needs to give anything back, because the conversion letter is
+# never a flag, a digit or a full stop, so they are possessive.
+Readonly::Scalar my $PLACEHOLDER => qr/
+	%
+	\( (\w++) \)                # the argument's name
+	(                           # the sprintf format, without its "%":
+		[-+ 0#]*+               #   flags (the space is a flag; under \/x a
+		                        #   class keeps its spaces)
+		\d*+                    #   width
+		(?: \. \d++ )?           #   precision
+		[sdiouxXeEfgG]          #   conversion
+	)
+/x;
 
 # Configuration in the shape Object::Configure produces: a flat hash of
 # defaults that a configuration file or the environment can override.
@@ -187,8 +214,8 @@ when the requested language has no catalogue.
 =head4 INPUT
 
 	{
-		language => { type => 'string', optional => 1, matches => qr/^[A-Za-z]{2,3}(?:[_.-].*)?$/ },
-		country  => { type => 'string', optional => 1, matches => qr/^[A-Za-z]{2}$/ },
+		language => { type => 'string', optional => 1, matches => qr/\A[A-Za-z]{2,3}(?:[_.-].*)?\z/ },
+		country  => { type => 'string', optional => 1, matches => qr/\A[A-Za-z]{2}\z/ },
 	}
 
 =head4 OUTPUT
@@ -242,8 +269,8 @@ sub new {
 	# Every argument is optional, so new() with none is English or whatever
 	# the configuration and the environment choose.
 	my $params = validate_args(__PACKAGE__ . '::new', \@_, {
-		language => { type => 'string', optional => 1, matches => qr/^[A-Za-z]{2,3}(?:[_.-].*)?$/ },
-		country => { type => 'string', optional => 1, matches => qr/^[A-Za-z]{2}$/ },
+		language => { type => 'string', optional => 1, matches => $LANGUAGE_TAG },
+		country => { type => 'string', optional => 1, matches => $COUNTRY_CODE },
 	});
 
 	my $wanted = _wanted_language($params);
@@ -336,7 +363,7 @@ Returns the code of the language the translator writes, such as C<en>.
 
 =head4 OUTPUT
 
-	{ type => 'string', matches => qr/^[a-z]{2,3}$/ }
+	{ type => 'string', matches => qr/\A[a-z]{2,3}\z/ }
 
 =head3 MESSAGES
 
@@ -425,7 +452,7 @@ None.
 
 =head4 INPUT
 
-	{ language => { type => 'string', matches => qr/^[a-z]{2,3}$/ } }
+	{ language => { type => 'string', matches => qr/\A[a-z]{2,3}\z/ } }
 
 =head4 OUTPUT
 
@@ -457,7 +484,7 @@ sub catalogue_keys {
 	shift;    # the invocant: the class or an instance, neither of which is needed
 
 	my $language = validate_args(__PACKAGE__ . '::catalogue_keys', \@_, {
-		language => { type => 'string', matches => qr/^[a-z]{2,3}$/ },
+		language => { type => 'string', matches => $LANGUAGE_CODE },
 	}, 'language')->{language};
 
 	return [ sort keys %{ $CATALOGUE{$language} || {} } ];
@@ -489,7 +516,7 @@ The language code, or C<undef> when the country has no mapped catalogue.
 
 =head4 INPUT
 
-	{ country => { type => 'string', matches => qr/^[A-Za-z]{2}$/ } }
+	{ country => { type => 'string', matches => qr/\A[A-Za-z]{2}\z/ } }
 
 =head4 OUTPUT
 
@@ -520,7 +547,7 @@ sub language_for_country {
 	shift;    # the invocant: the class or an instance, neither of which is needed
 
 	my $params = validate_args(__PACKAGE__ . '::language_for_country', \@_, {
-		country => { type => 'string', matches => qr/^[A-Za-z]{2}$/ },
+		country => { type => 'string', matches => $COUNTRY_CODE },
 	}, 'country');
 
 	return $COUNTRY_LANGUAGE{ uc $params->{country} };
@@ -672,7 +699,7 @@ uses the English plural rule unless it is one of en, fr, de or zh.
 =head4 INPUT
 
 	{
-		language => { type => 'string', matches => qr/^[a-z]{2,3}$/ },
+		language => { type => 'string', matches => qr/\A[a-z]{2,3}\z/ },
 		entries  => { type => 'hashref' },
 	}
 
@@ -705,7 +732,7 @@ sub add_messages {
 	my $self = shift;
 
 	my $params = validate_args(__PACKAGE__ . '::add_messages', \@_, {
-		language => { type => 'string', matches => qr/^[a-z]{2,3}$/ },
+		language => { type => 'string', matches => $LANGUAGE_CODE },
 		entries => { type => 'hashref' },
 	}, ['language', 'entries']);
 

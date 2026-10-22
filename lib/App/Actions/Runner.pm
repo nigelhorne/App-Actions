@@ -216,6 +216,19 @@ Readonly::Scalar my $PULL_CONCURRENCY_VARIABLE => 'ACTION_RUN_PULL_CONCURRENCY';
 # A positive integer, as the concurrency options must be.
 Readonly::Scalar my $POSITIVE_INTEGER => qr/\A[1-9][0-9]*\z/;
 
+# The OWNER/REPO of a GitHub remote, in any of the forms git writes it:
+# https://github.com/o/r.git, git@github.com:o/r, ssh://git@github.com/o/r/.
+Readonly::Scalar my $GITHUB_REMOTE => qr{
+	github\.com [:/]      # the host, then ":" (scp form) or "/" (URL form)
+	(
+		[^/]+ /          # the owner
+		.+?              # the repository, as short as the rest allows
+	)
+	(?: \.git )?         # git's suffix
+	/?                   # and a trailing slash
+	\z
+}x;
+
 # The runner directory the job's container mounts, and where a run that
 # keeps its temporary directory leaves it.  Its subdirectories are the
 # runner's own: the tool cache, HOME, scripts, the step files, the event and
@@ -1270,7 +1283,7 @@ sub _repository_env {
 	return $self->{repository_env} if $self->{repository_env};
 
 	my $remote = App::Actions::Util::trim($self->_git('config', '--get', 'remote.origin.url'));
-	my ($repository) = $remote =~ m{github\.com[:/]([^/]+/.+?)(?:\.git)?/?\z};
+	my ($repository) = $remote =~ $GITHUB_REMOTE;
 	$repository = basename($self->{project_dir}) unless defined $repository;
 	$repository =~ s/\.git\z//;
 

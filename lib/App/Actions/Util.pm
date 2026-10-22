@@ -503,8 +503,13 @@ sub trim {
 	my ($text) = @_;
 
 	# A copy is trimmed so a caller's variable is never changed behind it.
+	# The two ends are separate substitutions: as one alternation,
+	# s/\A\s+|\s+\z//g, the second branch is tried at every position of
+	# every inner run of white space and rescans the run each time, which is
+	# quadratic in its length; on its own Perl anchors it at the end.
 	my $copy = defined $text ? $text : '';
-	$copy =~ s/\A\s+|\s+\z//g;
+	$copy =~ s/\A\s+//;
+	$copy =~ s/\s+\z//;
 
 	return $copy;
 }

@@ -12,6 +12,7 @@ use Text::ParseWords qw(shellwords);
 use App::Actions::Access;
 use App::Actions::Action;
 use App::Actions::I18N qw(i18n throw validate_args);
+use App::Actions::Util ();
 use App::Actions::Runner::Support qw(
 	action_inputs boolean_value chomp_error env_args has_status_function
 	local_action_path redact resolve_env status_flags write_container_file
@@ -61,7 +62,16 @@ Readonly::Hash my %DEFAULT_SHELL => (
 # artifacts and coverage uploads have nowhere to go.
 Readonly::Scalar my $CHECKOUT => qr{\Aactions/checkout@}i;
 Readonly::Scalar my $SETUP_PERL => qr{\A(?:shogo82148/actions-setup-perl|perl-actions/setup-perl)@}i;
-Readonly::Scalar my $NO_OP => qr{\A(?:actions/cache(?:/restore|/save)?|actions/upload-artifact|actions/download-artifact|codecov/codecov-action)@}i;
+Readonly::Scalar my $NO_OP => qr{
+	\A
+	(?:
+		actions/cache (?: /restore | /save )?    # the cache, or half of it
+		| actions/upload-artifact
+		| actions/download-artifact
+		| codecov/codecov-action
+	)
+	@                                          # any version
+}xi;
 
 =encoding utf-8
 
@@ -919,7 +929,7 @@ sub _shell_for {
 	return $DEFAULT_SHELL{ ($self->{dry_run} || $self->{has_bash}) ? 'bash' : 'sh' } unless defined $shell;
 
 	$shell = $self->{expression}->interpolate("$shell", $context, $status);
-	(my $known = lc $shell) =~ s/\A\s+|\s+\z//g;
+	my $known = App::Actions::Util::trim(lc $shell);
 
 	# Anything else is a command line of its own, with {0} for the script.
 	return $SHELL{$known} || {
@@ -977,7 +987,7 @@ sub _step_name {
 	my $name = defined $step->{name} ? $step->{name} : $step->{uses};
 	if (!defined $name && defined $step->{run}) {
 		($name = $step->{run}) =~ s/\s+/ /g;
-		$name =~ s/\A\s+|\s+\z//g;
+		$name = App::Actions::Util::trim($name);
 		$name = substr($name, 0, $NAME_LENGTH - 3) . '...' if length $name > $NAME_LENGTH;
 	}
 	$name = $self->i18n('runner.step.default_name', { number => $number }) unless defined $name && length $name;
@@ -1092,7 +1102,7 @@ sub _read_lines {
 
 	my @lines;
 	while (defined(my $line = <$handle>)) {
-		$line =~ s/\A\s+|\s+\z//g;    # the newline is trailing white space too
+		$line = App::Actions::Util::trim($line);    # the newline is trailing white space too
 		push @lines, $line if length $line;
 	}
 	close $handle;

@@ -28,7 +28,7 @@ Readonly::Array my @METADATA_FILES => qw(action.yml action.yaml);
 
 # runs.using values for which a kind is named.  node12, node16, node20 and
 # whatever comes next are all JavaScript.
-Readonly::Scalar my $NODE_RUNTIME => qr/^node\d+$/;
+Readonly::Scalar my $NODE_RUNTIME => qr/\Anode\d+\z/;
 Readonly::Scalar my $KIND_COMPOSITE => 'composite';
 Readonly::Scalar my $KIND_JAVASCRIPT => 'javascript';
 Readonly::Scalar my $KIND_DOCKER => 'docker';

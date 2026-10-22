@@ -440,7 +440,7 @@ sub _quote {
     my $copy = defined $argument ? $argument : '';
 
     return !length $copy ? q{''}
-        : $copy =~ /^[A-Za-z0-9_@%+=:,.\/-]+$/ ? $copy
+        : $copy =~ /\A[A-Za-z0-9_@%+=:,.\/-]+\z/ ? $copy
         : "'" . ($copy =~ s/'/'\\''/gr) . "'";
 }
 

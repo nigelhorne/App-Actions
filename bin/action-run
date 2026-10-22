@@ -532,7 +532,7 @@ sub _parse_pairs {
     my %values;
     for my $pair (@$pairs) {
         my ($name, $value) = split /=/, $pair, 2;
-        if (!defined $value || $name !~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+        if (!defined $value || $name !~ /\A[A-Za-z_][A-Za-z0-9_]*\z/) {
             print STDERR "action-run: $option expects NAME=VALUE, got '$pair'\n";
             exit 2;
         }

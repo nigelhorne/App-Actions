@@ -20,11 +20,34 @@ use overload
 
 our $VERSION = '0.01';
 
-# What Carp appends to a message: " at FILE line N." and, for confess, the
-# stack below it.  The greedy prefix makes the match start at the last " at ",
-# because a message may quote a position of its own ("at character offset 9")
-# and a file name may contain spaces.
-Readonly::Scalar my $LOCATION => qr/\A(.*)\s+at\s+.+?\s+line\s+\d+\.?\z/s;
+# What Carp appends to a message: " at FILE line N.".  It is found in two
+# steps, the tail and then the " at " before it, because one pattern that
+# does both - \A(.*)\s+at\s+.+?\s+line\s+\d+\.?\z - tries every " at " and
+# scans to the end from each, which is quadratic: 40,000 characters of
+# "x at f line " took three seconds.  Each step below is linear.
+#
+# The tail: " line N." at the very end.  It is tried only where a run of
+# white space starts, and its quantifiers never give back, so no run of
+# spaces is scanned twice.
+Readonly::Scalar my $LOCATION_TAIL => qr/
+	(?<!\s)        # the start of a run of white space, or of the text
+	\s++ line      # " line"
+	\s++ \d++      # " N"
+	\.?            # Carp's full stop
+	\z
+/x;
+
+# The message: everything before the last " at " that is followed by a file
+# name.  The greedy prefix is what makes it the last, because a message may
+# quote a position of its own ("at character offset 9") and a file name may
+# contain spaces; ending the prefix at a non-space (or leaving it empty)
+# means each run of white space is tried from its start only.
+Readonly::Scalar my $LOCATION_HEAD => qr/
+	\A
+	(.*\S|)        # the message: ends at a non-space, or is empty
+	\s+ at \s+     # " at "
+	\S             # the start of the file name
+/xs;
 
 # A message key is a dotted lower-case name such as workflow.no_jobs.
 Readonly::Scalar my $CODE => qr/\A[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\z/;
@@ -517,7 +540,10 @@ sub describe {
 		: $class->caught($error) ? $error->message
 		: "$error";
 	$text =~ s/\s+\z//;
-	$text =~ s/$LOCATION/$1/;
+	if ($text =~ $LOCATION_TAIL) {
+		my $before = substr($text, 0, $-[0]);
+		$text = $1 if $before =~ $LOCATION_HEAD;
+	}
 	$text =~ s/\s+\z//;
 
 	return $text;

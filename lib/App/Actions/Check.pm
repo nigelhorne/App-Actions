@@ -415,13 +415,13 @@ sub _check_mounts {
     my $manifest = {
         host      => $project,
         container => '/check-project',
-        entries   => defined $seen && $seen =~ /^\d+$/ ? $seen + 0 : undef,
+        entries   => defined $seen && $seen =~ /\A\d+\z/ ? $seen + 0 : undef,
         expected  => $expected,
         ok        => JSON::PP::false(),
     };
     push @{ $self->{data}{mounts} }, $manifest;
 
-    if (!defined $seen || $seen !~ /^\d+$/) {
+    if (!defined $seen || $seen !~ /\A\d+\z/) {
         return $self->_problem("could not count the entries in '$project'");
     }
     if (!defined $expected || $seen != $expected) {

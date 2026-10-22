@@ -4,9 +4,28 @@ use strict;
 use warnings;
 use Carp qw(croak);
 use JSON::PP ();
+use Readonly;
 use Scalar::Util qw(looks_like_number);
 
 use App::Actions::Util ();
+
+# The tokenizer matches each token where the previous one ended (\G with
+# pos), rather than against substr($text, $pos), which copies the rest of the
+# expression for every token and so is quadratic in its length.
+
+# A number literal: 12, 1.5, 1., .5, and any of those with an exponent.
+Readonly::Scalar my $NUMBER => qr/
+	\G
+	(
+		(?: \d++ (?: \. \d*+ )?    # 12, 1.5 or 1.
+		  | \. \d++               # .5
+		)
+		(?: [eE] [+-]? \d++ )?     # an exponent
+	)
+/x;
+
+# An identifier: a letter or underscore, then letters, digits, _ and -.
+Readonly::Scalar my $IDENTIFIER => qr/\G([A-Za-z_][A-Za-z0-9_-]*+)/;
 
 our $VERSION = '0.01';
 
@@ -64,7 +83,7 @@ sub interpolate {
         my $value      = $self->evaluate($expression, $context, $status);
 
         if ($self->{strict} && $self->{unresolved}) {
-            (my $written = $expression) =~ s/^\s+|\s+$//g;
+            my $written = App::Actions::Util::trim($expression);
             croak "unable to resolve '\${{ $written }}' from the values available";
         }
 
@@ -187,15 +206,16 @@ sub _tokenize {
             next;
         }
 
-        if (substr($text, $pos) =~ /^((?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/) {
+        pos($text) = $pos;
+        if ($text =~ /$NUMBER/gc) {
             my $number = $1;
             push @tokens, { type => 'num', value => $number + 0 };
             $pos += length($number);
             next;
         }
 
-        if ($char =~ /[A-Za-z_]/) {
-            substr($text, $pos) =~ /^([A-Za-z_][A-Za-z0-9_-]*)/;
+        pos($text) = $pos;
+        if ($text =~ /$IDENTIFIER/gc) {
             my $identifier = $1;
             push @tokens, { type => 'ident', value => $identifier };
             $pos += length($identifier);
@@ -433,7 +453,7 @@ sub _lookup {
     }
 
     if (ref $object eq 'ARRAY') {
-        return $self->_missing unless $key =~ /^-?\d+$/;
+        return $self->_missing unless $key =~ /\A-?\d+\z/;
         return $object->[$key];
     }
 

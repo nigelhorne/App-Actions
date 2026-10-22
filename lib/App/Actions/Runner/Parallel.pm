@@ -534,9 +534,17 @@ sub _stream {
 	$entry->{shown} += length $chunk;
 	$entry->{pending} .= $chunk;
 
+	# The complete lines are split off in one pass; the unfinished last one
+	# waits for the rest of it.  Cutting one line at a time off the front of
+	# the buffer, while (s/\A([^\n]*)\n//), copies what is left every time,
+	# which is quadratic: a 200,000-line chunk took sixteen seconds.
+	my @lines = split /\n/, $entry->{pending}, -1;
+	my $rest = pop @lines;
+	$entry->{pending} = defined $rest ? $rest : q{};
+
 	my $prefix = _prefix($entry);
-	while ($entry->{pending} =~ s/\A([^\n]*)\n//) {
-		(my $line = $1) =~ s/\r\z//;
+	for my $line (@lines) {
+		$line =~ s/\r\z//;
 
 		# A blank line stays blank: a prefix on it would be noise rather
 		# than a name for something the job said.
@@ -632,7 +640,10 @@ sub _log_name {
 
 	$name = '' unless defined $name;
 	$name =~ s/[^A-Za-z0-9_.-]+/_/g;
-	$name =~ s/\A[_.-]+|[_.-]+\z//g;
+	# Each end separately: as one alternation the second branch rescans every
+	# inner run of separators from each of its positions, which is quadratic.
+	$name =~ s/\A[_.-]+//;
+	$name =~ s/[_.-]+\z//;
 	$name = substr($name, 0, $LOG_NAME_LENGTH);
 
 	return length $name ? "job-$slot-$name.log" : "job-$slot.log";

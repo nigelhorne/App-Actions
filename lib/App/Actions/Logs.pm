@@ -5,6 +5,7 @@ use warnings;
 use Carp qw(croak);
 use File::Spec;
 use JSON::PP ();
+use Readonly;
 
 use App::Actions::Cache ();
 use App::Actions::I18N qw(i18n);
@@ -22,8 +23,10 @@ our $VERSION = '0.01';
 # A log directory shared with anything else - ACTION_RUN_LOG_DIR can point
 # anywhere - is left alone.
 
-my $RUN_DIRECTORY = qr/\A\d{8}-\d{6}-[0-9a-fA-F]+\z/;
-my $LOG_FILE      = qr/\Ajob-\d+(?:-[A-Za-z0-9_.-]+)?\.log\z/;
+# Each pattern is anchored itself and used as it is: wrapping it again, as
+# /\A$RUN_DIRECTORY\z/, anchored it twice and built a new pattern from it.
+Readonly::Scalar my $RUN_DIRECTORY => qr/\A\d{8}-\d{6}-[0-9a-fA-F]+\z/;    # 20261021-222955-6ad9752153c1
+Readonly::Scalar my $LOG_FILE => qr/\Ajob-\d+(?:-[A-Za-z0-9_.-]+)?\.log\z/;  # job-2-test_n_bad.log
 
 # The shape of the JSON document this module prints.  Bump it whenever a key,
 # a value type or an enum changes, and update the schema below and the examples
@@ -182,13 +185,13 @@ sub entries {
         or croak "cannot read the log directory '$root': $!";
 
     my @runs;
-    for my $name (sort { $b cmp $a } grep { /\A$RUN_DIRECTORY\z/ } readdir $handle) {
+    for my $name (sort { $b cmp $a } grep { $_ =~ $RUN_DIRECTORY } readdir $handle) {
         my $run = File::Spec->catdir($root, $name);
         next if -l $run || !-d $run;
 
         opendir my $logs, $run or next;
         my @files;
-        for my $file (sort grep { /\A$LOG_FILE\z/ } readdir $logs) {
+        for my $file (sort grep { $_ =~ $LOG_FILE } readdir $logs) {
             my $path = File::Spec->catfile($run, $file);
             next if -l $path || !-f $path;
 

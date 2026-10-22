@@ -597,4 +597,16 @@ my ($conflict_out, $conflict_err, $conflict_exit) = run_cli(
 is($conflict_exit, 2, 'conflicting pull options exit 2');
 like($conflict_err, qr/cannot be used together/, 'conflicting pull options are reported');
 
+# A variable name is checked to its very end: with ^...$ a name followed by a
+# newline was accepted and handed to docker -e as it was.
+SKIP: {
+    skip 'a newline in an argument does not survive the Windows command line', 3
+        if $^O eq 'MSWin32';
+
+    my ($env_out, $env_err, $env_exit) = run_cli('--env', "FOO\n=bar", 'list');
+    is($env_exit, 2, 'a variable name ending in a newline exits 2');
+    like($env_err, qr/--env expects NAME=VALUE/, 'and says what --env expects');
+    is($env_out, '', 'without listing anything');
+}
+
 done_testing;

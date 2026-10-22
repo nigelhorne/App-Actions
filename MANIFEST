@@ -78,6 +78,7 @@ t/matrix.t
 t/process.t
 t/real-docker-preflight.t
 t/real-docker.t
+t/regex.t
 t/runner-parts.t
 t/runner.t
 t/schema.t

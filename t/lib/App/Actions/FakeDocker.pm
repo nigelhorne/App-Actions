@@ -5,7 +5,7 @@ use warnings;
 use Exporter qw(import);
 use File::Spec;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 our @EXPORT_OK = qw(split_volume mounts to_host);
 
 # Split a Docker "host:container[:mode]" volume specification.  A Windows host
