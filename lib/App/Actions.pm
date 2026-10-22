@@ -22,8 +22,6 @@ use Sub::Protected ();
 
 use App::Actions::Access;
 
-our $VERSION = '0.001.0';
-
 # The options a run is configured with, and the Params::Validate::Strict rule
 # of each.  new() accepts them, run(), preflight() and list_jobs() accept them
 # again as overrides, and every one is handed to App::Actions::Runner under
@@ -51,11 +49,17 @@ Readonly::Scalar my $WORKFLOW_IN_REPOSITORY => qr{^(.*)/\.github/workflows/[^/]+
 # anything but the list.
 Readonly::Hash my %LIST_OPTIONS => (dry_run => 1, quiet => 1);
 
-=encoding utf-8
-
 =head1 NAME
 
 App::Actions - run GitHub Actions workflows locally
+
+=head1 VERSION
+
+0.001.0
+
+=cut
+
+our $VERSION = '0.001.0';
 
 =head1 SYNOPSIS
 
@@ -947,9 +951,21 @@ in English unless C<ACTION_RUN_LANG> chooses French (C<fr>), German
 (C<de>) or Chinese (C<zh>); those are character strings, so the terminal
 should use UTF-8.
 
+=head1 SEE ALSO
+
+=over 4
+
+=item * L<Configure an Object at Runtime|Object::Configure>
+
+=item * L<Test Dashboard|https://nigelhorne.github.io/App-Actions/coverage/>
+
+=back
+
 =head1 AUTHOR
 
 Nigel Horne, C<< <njh at nigelhorne.com> >>
+
+=encoding utf-8
 
 =head1 FORMAL SPECIFICATION
 

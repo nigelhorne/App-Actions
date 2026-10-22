@@ -8,7 +8,7 @@ use Carp qw(croak);
 use Readonly;
 use Sub::Identify qw(get_code_info);
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # A routine whose name starts with this is private to its package.
 Readonly::Scalar my $PRIVATE => qr/\A_[A-Za-z0-9]\w*\z/;

@@ -12,7 +12,7 @@ use JSON::PP ();
 use App::Actions::I18N qw(i18n);
 use App::Actions::Schema ();
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # The images action-run keeps are a cache: a run records what it pulled, so a
 # later command can list the images and say how much disk they take, and
@@ -166,7 +166,7 @@ sub base_directory {
 }
 
 sub default_path {
-    my $override = $ENV{ACTION_RUN_CACHE_FILE};
+	my $override = $ENV{ACTION_RUN_CACHE_FILE};
 
     # An empty variable is the same as an unset one.
     return (defined $override && length $override)
@@ -175,20 +175,20 @@ sub default_path {
 }
 
 sub new {
-    my ($class, %args) = @_;
+	my ($class, %args) = @_;
 
-    my $file = $args{file};
-    $file = default_path() if !defined $file || !length $file;
+	my $file = $args{file};
+	$file = default_path() if !defined $file || !length $file;
 
-    return bless { file => $file, data => undef }, $class;
+	return bless { file => $file, data => undef }, $class;
 }
 
 sub file { return $_[0]->{file} }
 
 sub load {
-    my ($self) = @_;
+	my ($self) = @_;
 
-    return $self->{data} if $self->{data};
+	return $self->{data} if $self->{data};
 
     my $images = {};
     my $path   = $self->{file};
@@ -311,15 +311,15 @@ sub forget {
         $count++ if delete $data->{images}{$image};
     }
 
-    $self->save if $count;
+	$self->save if $count;
 
-    return $count;
+	return $count;
 }
 
 sub format_size {
-    my ($bytes) = @_;
+	my ($bytes) = @_;
 
-    return '0 B' unless defined $bytes && $bytes > 0;
+	return '0 B' unless defined $bytes && $bytes > 0;
 
     my @units = qw(B KB MB GB TB);
     my $value = $bytes;

@@ -16,7 +16,7 @@ use App::Actions::Access;
 use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Runner::Support qw(chomp_error);
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # How long the parent waits between looks at the jobs' logs.  Short enough
 # that a line appears while its job is still working, long enough that the

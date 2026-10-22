@@ -13,7 +13,7 @@ use App::Actions::Cache;
 use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Runner::Support qw(action_inputs local_action_dir trim_error);
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # The image a job without a container or a known runner label runs in.
 Readonly::Scalar my $DEFAULT_IMAGE => 'ubuntu:latest';

@@ -7,7 +7,8 @@
 # The command it runs needs the tool's own dependencies, which the image does
 # not have: they are installed only when they are missing, so the fake daemon
 # (which runs these steps on the host, where they are installed) does not touch
-# the network, and a real container fetches just the one distribution.
+# the network, and a real container fetches only what the image lacks.
+# t/self_test.t fails if a module lib/ or bin/ uses is missing from the list.
 #
 # The image is named by digest and not by the "perl:5.38" tag it came from: a
 # tag is a moving reference, so the live job would run against whatever that
@@ -28,7 +29,8 @@ jobs:
       - name: Make the tool's dependencies available
         run: |
           for module in YAML::PP Readonly Params::Get Params::Validate::Strict \
-              Return::Set Sub::Private Sub::Protected Sub::Identify IPC::System::Simple; do
+              Return::Set Sub::Private Sub::Protected Sub::Identify IPC::System::Simple \
+              Object::Configure; do
             perl -M"$module" -e 1 2>/dev/null || cpanm --notest --quiet "$module"
           done
           echo "the dependencies the tool needs are available"

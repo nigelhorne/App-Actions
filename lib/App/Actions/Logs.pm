@@ -11,7 +11,7 @@ use App::Actions::Cache ();
 use App::Actions::I18N qw(i18n);
 use App::Actions::Schema ();
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # A parallel run copies each job's log out of its temporary directory before
 # that is removed, into a directory named after the run.  They are kept so a

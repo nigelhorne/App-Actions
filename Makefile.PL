@@ -43,7 +43,7 @@ WriteMakefile(
         'POSIX'            => 0,
         'Scalar::Util'     => 0,
         'Sub::Identify'    => 0,
-        'Sub::Private'     => 0.06,
+        'Sub::Private'     => 0.07,
         'Sub::Protected'   => 0.03,
         'Text::ParseWords' => 0,
         'Time::HiRes'      => 0,

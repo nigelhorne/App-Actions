@@ -2,6 +2,10 @@
 
 App::Actions - run GitHub Actions workflows locally
 
+## Version
+
+0.001.0
+
 ## Synopsis
 
 Run every job of a workflow (this is what `action-run run` does):
@@ -736,6 +740,11 @@ passed through to your terminal unchanged.  Messages from this module are
 in English unless `ACTION_RUN_LANG` chooses French (`fr`), German
 (`de`) or Chinese (`zh`); those are character strings, so the terminal
 should use UTF-8.
+
+## See Also
+
+- [Configure an Object at Runtime](https://metacpan.org/pod/Object%3A%3AConfigure)
+- [Test Dashboard](https://nigelhorne.github.io/App-Actions/coverage/)
 
 ## Author
 

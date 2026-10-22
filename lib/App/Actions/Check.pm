@@ -10,7 +10,7 @@ use JSON::PP ();
 use App::Actions::Docker;
 use App::Actions::Schema;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # The shape of the JSON document this module prints.  Bump it whenever a key,
 # a value type or an enum changes, and update the schema below and the examples

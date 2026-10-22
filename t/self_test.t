@@ -4,6 +4,7 @@ use Test::Most;
 use Capture::Tiny qw(capture);
 use Fcntl qw(:flock);
 use File::Basename qw(dirname basename);
+use File::Find ();
 use File::Glob qw(bsd_glob);
 use File::Spec;
 use File::Temp qw(tempdir);
@@ -91,6 +92,45 @@ BAIL_OUT("cannot find '$script'; the self test would have nothing to run it with
         qr/\Aperl:5\.38\@sha256:[0-9a-f]{64}\z/,
         'the Perl image is pinned by digest, so the live run does not follow a tag',
     );
+
+    # The image has only core Perl, so the step that installs the tool's
+    # dependencies must name every other module lib/ and bin/ use.  Only the
+    # live run would notice one missing (the fake daemon runs the steps on
+    # this host, where it is installed), so the list is checked here.  A
+    # module counts as named when it or a parent namespace is in the list:
+    # YAML::PP brings YAML::PP::Common.
+    my ($list) = $text =~ /^\s*for module in ((?:[^\n]*\\\n)*[^\n]*?);\s*do$/m;
+    my %named = map { $_ => 1 } split ' ', ($list // '') =~ s/\\\n//gr;
+
+    ok(%named, 'the second workflow lists the modules it installs');
+
+    require Module::CoreList;
+    my @sources = bsd_glob(File::Spec->catfile($root, 'bin', '*'));
+    File::Find::find(
+        sub { push @sources, $File::Find::name if /\.pm\z/ && -f },
+        File::Spec->catdir($root, 'lib'),
+    );
+    my %used;
+    for my $source (@sources) {
+        open my $code, '<', $source or die "Unable to read '$source': $!";
+        while (my $line = <$code>) {
+            last if $line =~ /\A__END__\b/;
+            $used{$1} = 1 if $line =~ /\A\s*use\s+([A-Z]\w*(?:::\w+)*)/;
+        }
+        close $code;
+    }
+
+    my @missing = grep {
+        my $module = $_;
+        my @parents = map { join '::', (split /::/, $module)[0 .. $_] }
+            0 .. ($module =~ tr/:// / 2);
+        !/\AApp::Actions\b/
+            && !Module::CoreList::is_core($module, undef, '5.038')
+            && !grep { $named{$_} } @parents;
+    } sort keys %used;
+
+    is_deeply(\@missing, [],
+        'every non-core module lib/ and bin/ use is installed by the second workflow');
 }
 
 my $live = defined $ENV{LIVE_TESTING} && length $ENV{LIVE_TESTING}

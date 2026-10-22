@@ -8,7 +8,7 @@ use JSON::PP ();
 use App::Actions::Error;
 use App::Actions::Schema::Invalid;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 our @EXPORT_OK = qw(validate assert_valid describe_errors);
 
@@ -25,7 +25,7 @@ our @EXPORT_OK = qw(validate assert_valid describe_errors);
 # Returns the list of errors, in document order, or an empty list when the
 # value matches.  Callers that should stop on a mismatch use assert_valid.
 sub validate {
-    my ($value, $schema, $path) = @_;
+	my ($value, $schema, $path) = @_;
 
     $path = '$' unless defined $path;
 
@@ -84,7 +84,7 @@ sub validate {
         }
     }
 
-    return @errors;
+	return @errors;
 }
 
 # Stop when a document does not match the schema it claims to.  $what is the
@@ -93,16 +93,16 @@ sub validate {
 # a count of any others, so the message stays one readable line however far the
 # document has drifted.
 sub assert_valid {
-    my ($value, $schema, $what) = @_;
+	my ($value, $schema, $what) = @_;
 
-    my @errors = validate($value, $schema);
-    return 1 unless @errors;
+	my @errors = validate($value, $schema);
+	return 1 unless @errors;
 
-    # An exception rather than a string: a command can tell a broken document
-    # from every other way of failing, and give it the status that says so.
-    # The message still carries no source location, because it reports a
-    # document rather than a place in the code.
-    die App::Actions::Schema::Invalid->new("$what: " . describe_errors(\@errors) . "\n");
+	# An exception rather than a string: a command can tell a broken document
+	# from every other way of failing, and give it the status that says so.
+	# The message still carries no source location, because it reports a
+	# document rather than a place in the code.
+	die App::Actions::Schema::Invalid->new("$what: " . describe_errors(\@errors) . "\n");
 }
 
 # The first mismatch, with a count of the others, so a message stays one
