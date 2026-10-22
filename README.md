@@ -730,7 +730,7 @@ Nigel Horne, `<njh at nigelhorne.com>`
 
 ## Licence and Copyright
 
-Copyright 2010-2026 Nigel Horne.
+Copyright 2026 Nigel Horne.
 
 Usage is subject to the GPL2 licence terms.
 If you use it,
