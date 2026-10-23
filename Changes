@@ -1,162 +1,37 @@
 Revision history for App-Actions - run GitHub Actions workflows locally
 
-0.002.0
-	- The test that walks t/fixtures now checks each example against its
-	  schema as it reads it, so a fixture with the wrong shape is named
-	  and rejected there, like one that is not valid JSON, and does not
-	  count towards the schema coverage check.
-	- make check-staged and make check-worktree now list each check they
-	  ran, as passed (with its test count) or failed, and each they skipped,
-	  so a clean run shows that the live-knob check ran rather than only
-	  that nothing failed.  A commit that passes the hook is still silent.
-	- t/regex.t's time limits are scaled up when Devel::Cover is loaded.
-	  The CI coverage job runs the suite under it, which made the
-	  40,000-comparison tokenizer case (linear, but about five times
-	  slower there) fail its two-second limit.
-	- Documented the configuration that Object::Configure adds to
-	  App::Actions->new and action-run: an App__Actions section in the
-	  Config::Abstraction files (base/local in CONFIG_DIR or ~/.conf) and
-	  App__Actions__* environment variables, both of which win over the
-	  arguments and the command line and are not validated.
-	- Warnings and errors from a run (a failed step, a job that could not
-	  run, a container or log that could not be kept) now go through a
-	  Log::Abstraction logger, at the error or warn level.  By default it
-	  prints them to standard error as before.  App::Actions->new takes a
-	  logger argument: a Log::Abstraction object, an array to collect the
-	  messages in, a hash of Log::Abstraction options, or 'NULL' to turn
-	  them off.  A logger in an App__Actions (or UNIVERSAL) configuration
-	  section replaces the default; the argument replaces both.  Progress
-	  lines, command echoes and the summary stay on standard output.
-	- Log::Abstraction 0.41 is now required directly.  It sets
-	  Sub::Private's mode for its own package only, so t/error.t's TODO now
-	  applies only to an older Log::Abstraction.
-	- The tests set CONFIG_DIR to an empty directory, so a developer's own
-	  ~/.conf files (such as a UNIVERSAL logger) cannot change what they see.
-	- Added t/function.t, white-box tests of every routine in lib/.  They
-	  found the bugs below.
-	- Security: an environment value is now interpolated once.  Before,
-	  ${{ }} text that came from a context value (a commit message, say)
-	  was evaluated again, which could show a secret, and each further
-	  reference could double the work.  A variable that refers to itself,
-	  directly or through others, is now an error
-	  (runner.env_cycle).  The new App::Actions::Runner::Support::Env does
-	  the lookups.
+0.002.0	Fri Oct 23 02:52:55 PM EDT 2026
+	- Security: an environment value is interpolated only once, so ${{ }}
+	  text from a context value (a commit message, say) is no longer
+	  evaluated again; a variable that refers to itself is an error
+	  (runner.env_cycle).  A docker:// image is likewise interpolated once.
 	- Security: keep_logs refuses a log name or run id that is not a plain
-	  file name (runner.logs.bad_name), so it cannot write outside the log
-	  directory.
-	- Expression is re-entrant: a call made while another is being
-	  evaluated (for example from a context lookup) no longer corrupts it,
-	  and nothing from a call is kept in the object.  Booleans interpolate
-	  as true and false; an array index out of range is missing; negative
-	  numbers are read; a quoted }} does not end an expression; format()
-	  replaces each placeholder once.
-	- Action: a true word is matched to the end of the string (\z), so
-	  "true\n" is not true.
-	- Workflow: each matrix instance gets its own copy of the job, so
-	  changing one no longer changes the others.
-	- Cache: load() drops pulls and last_used entries of the wrong shape;
-	  base_directory() handles an empty HOME.
-	- Check: run() puts the output handle back when a check dies; an
-	  object's os is used by host_info().
-	- Process: a child's output is flushed before it runs the program;
-	  run_parallel truncates each output file once and every program then
-	  appends to it; run() takes an append option.
-	- Schema: JSON booleans compare by their truth.
-	- Error and I18N: an argument whose value is undef is dropped before
-	  validating, so a required one is reported as missing; named pairs
-	  given to a routine with positional names are accepted.
-	- Parallel: jobs are still collected when waitpid returns -1 (as it
-	  does with $SIG{CHLD} = 'IGNORE'); a job's prints go to its own log;
-	  a cut log name no longer ends in a separator.
-	- Images: a pull with no result counts as failed.
-	- Containers: container options or service entrypoints with a quote
-	  that is not closed are an error (runner.options_invalid) rather than
-	  being run as nothing; a host name made from a job name no longer
-	  starts or ends with - or .
-	- Steps: a condition that cannot be evaluated fails the step; a docker
-	  action's args with a quote that is not closed are an error
-	  (runner.docker_action.bad_args); INPUT_ names keep - and ., as
-	  GitHub's do, and Docker now hides such names in the environment.
-	- Runner: a matrix instance with continue-on-error does not stop the
-	  others under fail-fast, as on GitHub; a container user given by the
-	  current user's name is not treated as a different user.
-	- App::Actions: a workflow in /.github/workflows has / as its project
-	  directory, not the current directory.
-	- t/space-path.t is skipped when AUTOMATED_TESTING is set, unless
-	  SPACE_PATH is true: under Devel::Cover its second run of the suite took
-	  most of an hour of the dashboard job.
-	- The cache and logs listings (their headings, column names and
-	  "just now" / "ago" ages) and the two lines a child process prints when
-	  it cannot redirect its output or start its program now come from the
-	  message catalogues, so they are in French, German or Chinese when that
-	  language is chosen.  The English text is unchanged.  The JSON documents
-	  are not translated.
-	- New test dependencies: Test::Mockingbird 0.14, Test::Returns 0.05 and
-	  Test::Memory::Cycle 1.06, for t/function.t.  Test::DescribeMe and
-	  Test::Warn are no longer listed; no test used them directly.
-	- Added t/changes.t, which checks the shape of this file: the newest
-	  release is the modules' version, every release has items and a date
-	  in date(1)'s form (only the newest, dated when it is released, may
-	  have none), and versions and dates go one way.
-	- META: the repository URL is https (GitHub no longer serves git://),
-	  and keys the META spec does not define are gone.
-	- Windows: a program that is not there is no longer handed to system(),
-	  which retried it through cmd.exe.  That reported status 1 and
-	  "is not recognized" instead of 255, and let cmd.exe read & and | in
-	  the arguments as commands.  The program is now looked for first (the
-	  current directory and PATH, with a PATHEXT extension added to a bare
-	  name), and a missing one is status 255, as on other systems.
-	- The pre-commit hook's report names each check's test file with / on
-	  every platform (it showed t\schema.t on Windows).
-	- Added t/unit.t, black-box tests of every public routine against what
-	  its POD documents.  It keeps a ledger of every catalogue message and
-	  every documented status and fails if any is never reached.  It found
-	  the bugs below.
-	- if: false, pre-if: false, post-if: false and fail-fast: false are
-	  honoured on Perl 5.36 and later.  YAML::PP loads false as Perl's own
-	  boolean, which reads as an empty string, and an empty condition
-	  (or fail-fast value) was taken as true, so the job or step ran.
-	- A docker:// action's image is interpolated once.  It was
-	  interpolated again after the uses: value had been, so ${{ }} text
-	  from a step output was evaluated, and docker://${{ env.EMPTY }} was
-	  skipped as an unsupported remote action instead of being reported
-	  as having no image name.
-	- The preflight lists docker://image:${{ steps.x.outputs.tag }} as
-	  deferred, as documented, instead of as the image "image:", and so
-	  does a local action's path built from a value the job will have.
-	- A workflow mistake found while a step or job runs (no image name,
-	  a missing local action, nesting too deep, no node, an environment
-	  value that does not evaluate) is reported without a Perl source
-	  location, as the other run errors are.
-	- The caller's $@ is kept by Util::load_yaml_mapping,
-	  I18N::validate_args, I18N::new, Error::new, Expression's fromJSON,
-	  Cache::load and save, Logs::prune, Runner::Support::resolve_env,
-	  Runner::Report::keep_logs, Runner::Parallel::run, the public methods
-	  of Runner::Images, Runner::Steps::run, and Runner::new, run and
-	  preflight.
-	- Invalid arguments are an App::Actions::Error with the code
-	  actions.invalid_arguments (the text is unchanged), and Error::new's
-	  own message no longer carries the validator's prefix or a location.
-	- Process::exit_code is always between 0 and 255, as documented.
-	- Expression: a.1 is "Expected a property name after dot", as
-	  documented, and fromJSON()'s message no longer names JSON::PP's file
-	  and line, even when the installed path has a space in it.
-	- Cache::save reports a directory it cannot make, and a temporary file
-	  it cannot create, as "cannot write a new cache file in 'DIR':
-	  REASON", without the library's file and line.
-	- Logs::prune counts a log it removed before a later one failed.
-	- Runner::Report::keep_logs reports a log directory it cannot make as
-	  runner.logs.copy_failed, rather than with File::Path's text.
-	- Schema: invalid_exit can be imported, as the POD says.
-	- Removed three messages no run could reach (runner.fault.image_unnamed,
-	  runner.job.did_not_run, runner.job.no_result) and the code that would
-	  have printed them.
-	- Runner::Containers::name treats a job without a matrix_index as index
-	  0 rather than warning about an undefined value.
-	- POD: Runner::Steps->new documents share_files; Runner::Images'
-	  pitfalls say the cache warning needs verbose; Access and I18N::message
-	  document what they do with a routine already wrapped and an unknown
-	  key.
+	  file name (runner.logs.bad_name).
+	- if: false, pre-if, post-if and fail-fast: false are honoured on Perl
+	  5.36 and later.
+	- Warnings and errors go through a Log::Abstraction logger;
+	  App::Actions->new takes a logger argument.  Progress and the summary
+	  stay on standard output.  Log::Abstraction 0.41 is required.
+	- Documented the configuration Object::Configure adds (App__Actions
+	  config sections and environment variables).
+	- The cache and logs listings and a child process's error lines are
+	  translated.
+	- Windows: a missing program is status 255 and is no longer retried
+	  through cmd.exe.
+	- Bug fixes in Expression (re-entrant, booleans, negative numbers,
+	  quoted }}, format()), Workflow (matrix instances share no job data),
+	  Runner (continue-on-error under fail-fast), Steps, Containers,
+	  Images, Parallel, Process, Cache, Check, Schema, Action and the
+	  preflight's deferred images.  Run errors no longer show a Perl
+	  source location, the caller's $@ is preserved, and invalid
+	  arguments are an App::Actions::Error (actions.invalid_arguments).
+	- Removed three unreachable messages.
+	- New tests: t/function.t (white-box), t/unit.t (black-box, against
+	  the POD) and t/changes.t; the fixture, pre-commit, regex and
+	  space-path tests were improved.  New test dependencies:
+	  Test::Mockingbird, Test::Returns and Test::Memory::Cycle.
+	- META: https repository URL; non-standard keys removed.
+	- POD fixes.
 
 0.001.0	Thu Oct 22 12:40:02 PM EDT 2026
 	- First release
