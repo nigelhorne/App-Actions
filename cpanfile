@@ -48,7 +48,9 @@ on 'test' => sub {
 	requires 'JSON::PP';
 	requires 'Test::DescribeMe';
 	requires 'Test::Exception';
+	requires 'Test::Mockingbird';
 	requires 'Test::Most';
+	requires 'Test::Returns';
 	requires 'Test::Warn';
 };
 
