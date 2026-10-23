@@ -20,7 +20,7 @@ https://pjcj.net
 <h1>Branch Coverage</h1>
 <table>
 <tr><td class="h" align="right">File:</td><td align="left">blib/lib/App/Actions/Docker.pm</td></tr>
-<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">92.1%</td></tr>
+<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">94.4%</td></tr>
 </table>
 <div><br/></div>
 <table>
@@ -40,7 +40,7 @@ https://pjcj.net
 <tr><td class="h"><a id="L102">102</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $self-&gt;{&#39;platform&#39;} &amp;&amp; length $self-&gt;{&#39;platform&#39;} ? :</td></tr>
 <tr><td class="h"><a id="L108">108</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;dry_run&#39;}</td></tr>
 <tr><td class="h"><a id="L111">111</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($version_rc != 0)</td></tr>
-<tr><td class="h"><a id="L114">114</a></td><td class="c0">0</td><td class="c0">T</td><td class="c0">F</td><td class="s">if $self-&gt;{&#39;verbose&#39;} and not $self-&gt;{&#39;quiet&#39;} and length $version</td></tr>
+<tr><td class="h"><a id="L114">114</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if $self-&gt;{&#39;verbose&#39;} and not $self-&gt;{&#39;quiet&#39;} and length $version</td></tr>
 <tr><td class="h"><a id="L117">117</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$self-&gt;{&#39;quiet&#39;} ? :</td></tr>
 <tr><td class="h"><a id="L119">119</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($rc != 0)</td></tr>
 <tr><td class="h"><a id="L130">130</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$self-&gt;{&#39;dry_run&#39;} ? :</td></tr>
@@ -54,13 +54,13 @@ https://pjcj.net
 <tr><td class="h"><a id="L180">180</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$options{&#39;quiet&#39;} ? :</td></tr>
 <tr><td class="h"><a id="L182">182</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($self-&gt;{&#39;dry_run&#39;})</td></tr>
 <tr><td class="h"><a id="L186">186</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;{&#39;quiet&#39;} or $quiet or $self-&gt;{&#39;explain&#39;}</td></tr>
-<tr><td class="h"><a id="L193">193</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if ($self-&gt;{&#39;verbose&#39;} and not $self-&gt;{&#39;quiet&#39;} and not $quiet)</td></tr>
+<tr><td class="h"><a id="L193">193</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($self-&gt;{&#39;verbose&#39;} and not $self-&gt;{&#39;quiet&#39;} and not $quiet)</td></tr>
 <tr><td class="h"><a id="L205">205</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($quiet)</td></tr>
 <tr><td class="h"><a id="L256">256</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">defined $output ? :</td></tr>
 <tr><td class="h"><a id="L267">267</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;dry_run&#39;}</td></tr>
 <tr><td class="h"><a id="L272">272</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $rc == 0 and $output =~ /true/</td></tr>
 <tr><td class="h"><a id="L279">279</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $lines</td></tr>
-<tr><td class="h"><a id="L290">290</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">unless defined $lines</td></tr>
+<tr><td class="h"><a id="L290">290</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $lines</td></tr>
 <tr><td class="h"><a id="L292">292</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;dry_run&#39;}</td></tr>
 <tr><td class="h"><a id="L296">296</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">defined $output ? :</td></tr>
 <tr><td class="h"><a id="L306">306</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$self-&gt;{&#39;dry_run&#39;} ? :</td></tr>

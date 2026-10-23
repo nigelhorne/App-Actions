@@ -20,7 +20,7 @@ https://pjcj.net
 <h1>Branch Coverage</h1>
 <table>
 <tr><td class="h" align="right">File:</td><td align="left">blib/lib/App/Actions/Logs.pm</td></tr>
-<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">92.3%</td></tr>
+<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">96.2%</td></tr>
 </table>
 <div><br/></div>
 <table>
@@ -28,7 +28,7 @@ https://pjcj.net
 <tr><td class="h"><a id="L157">157</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $override &amp;&amp; length $override ? :</td></tr>
 <tr><td class="h"><a id="L166">166</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $directory and length $directory</td></tr>
 <tr><td class="h"><a id="L182">182</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless -d $root</td></tr>
-<tr><td class="h"><a id="L184">184</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless opendir my $handle, $root</td></tr>
+<tr><td class="h"><a id="L184">184</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless opendir my $handle, $root</td></tr>
 <tr><td class="h"><a id="L190">190</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if -l $run or not -d $run</td></tr>
 <tr><td class="h"><a id="L192">192</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless opendir my $logs, $run</td></tr>
 <tr><td class="h"><a id="L196">196</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if -l $path or not -f $path</td></tr>
@@ -43,14 +43,14 @@ https://pjcj.net
 <tr><td class="h"><a id="L310">310</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $older_than</td></tr>
 <tr><td class="h"><a id="L320">320</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if length $row-&gt;[0] &gt; $run_width</td></tr>
 <tr><td class="h"><a id="L321">321</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if length $row-&gt;[1] &gt; $log_width</td></tr>
-<tr><td class="h"><a id="L358">358</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L358">358</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
 <tr><td class="h"><a id="L365">365</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (@$runs)</td></tr>
-<tr><td class="h"><a id="L381">381</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;_unlink($log-&gt;{&#39;path&#39;})</td></tr>
-<tr><td class="h"><a id="L390">390</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($ok)</td></tr>
-<tr><td class="h"><a id="L401">401</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $removed</td></tr>
-<tr><td class="h"><a id="L407">407</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (@failed)</td></tr>
-<tr><td class="h"><a id="L425">425</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L435">435</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $age &lt; 0</td></tr>
+<tr><td class="h"><a id="L378">378</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($self-&gt;_unlink($log-&gt;{&#39;path&#39;}))</td></tr>
+<tr><td class="h"><a id="L387">387</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $error)</td></tr>
+<tr><td class="h"><a id="L397">397</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $removed</td></tr>
+<tr><td class="h"><a id="L403">403</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (@failed)</td></tr>
+<tr><td class="h"><a id="L421">421</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L431">431</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $age &lt; 0</td></tr>
 </table>
 </body>
 </html>

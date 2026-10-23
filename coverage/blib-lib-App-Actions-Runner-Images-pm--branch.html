@@ -20,53 +20,53 @@ https://pjcj.net
 <h1>Branch Coverage</h1>
 <table>
 <tr><td class="h" align="right">File:</td><td align="left">blib/lib/App/Actions/Runner/Images.pm</td></tr>
-<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">93.2%</td></tr>
+<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">94.6%</td></tr>
 </table>
 <div><br/></div>
 <table>
 <tr><th>line</th><th>%</th><th colspan="2">coverage</th><th>branch</th></tr>
 <tr><td class="h"><a id="L242">242</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$^O eq $SERIAL_OS ? :</td></tr>
-<tr><td class="h"><a id="L293">293</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $runs_on</td></tr>
-<tr><td class="h"><a id="L299">299</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless defined $expression and length $expression</td></tr>
-<tr><td class="h"><a id="L305">305</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $image)</td></tr>
-<tr><td class="h"><a id="L306">306</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seen{&quot;image\000$image&quot;}++</td></tr>
-<tr><td class="h"><a id="L310">310</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seen{&quot;expression\000$expression\000$entry-&gt;{&#39;source&#39;}&quot;}++</td></tr>
-<tr><td class="h"><a id="L361">361</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">defined $job-&gt;{&#39;display_name&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L365">365</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $job_image and length $job_image</td></tr>
-<tr><td class="h"><a id="L372">372</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $job-&gt;{&#39;services&#39;}</td></tr>
-<tr><td class="h"><a id="L374">374</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ref $service eq &quot;HASH&quot;</td></tr>
-<tr><td class="h"><a id="L375">375</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $service-&gt;{&#39;image&#39;} and length $service-&gt;{&#39;image&#39;}</td></tr>
-<tr><td class="h"><a id="L386">386</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless $job-&gt;{&#39;steps&#39;}</td></tr>
-<tr><td class="h"><a id="L476">476</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$params-&gt;{&#39;quiet&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L484">484</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if @failed or not @pending</td></tr>
-<tr><td class="h"><a id="L486">486</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ($self-&gt;{&#39;quiet&#39;} or $quiet)</td></tr>
-<tr><td class="h"><a id="L498">498</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $rc</td></tr>
-<tr><td class="h"><a id="L499">499</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($rc != 0) { }</td></tr>
-<tr><td class="h"><a id="L502">502</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $record-&gt;{&#39;error&#39;} and length $record-&gt;{&#39;error&#39;}</td></tr>
-<tr><td class="h"><a id="L504">504</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $record-&gt;{&#39;present&#39;}</td></tr>
-<tr><td class="h"><a id="L592">592</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $entry-&gt;{&#39;kind&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L594">594</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (defined $image)</td></tr>
-<tr><td class="h"><a id="L599">599</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $kind eq &quot;job&quot; or $kind =~ /\Aservice:/</td></tr>
-<tr><td class="h"><a id="L605">605</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $kind eq &quot;job&quot;</td></tr>
-<tr><td class="h"><a id="L608">608</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seen{$image}++</td></tr>
-<tr><td class="h"><a id="L609">609</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if eval {
+<tr><td class="h"><a id="L296">296</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $runs_on</td></tr>
+<tr><td class="h"><a id="L302">302</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless defined $expression and length $expression</td></tr>
+<tr><td class="h"><a id="L308">308</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $image)</td></tr>
+<tr><td class="h"><a id="L309">309</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seen{&quot;image\000$image&quot;}++</td></tr>
+<tr><td class="h"><a id="L313">313</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seen{&quot;expression\000$expression\000$entry-&gt;{&#39;source&#39;}&quot;}++</td></tr>
+<tr><td class="h"><a id="L366">366</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $job-&gt;{&#39;display_name&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L370">370</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $job_image and length $job_image</td></tr>
+<tr><td class="h"><a id="L377">377</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $job-&gt;{&#39;services&#39;}</td></tr>
+<tr><td class="h"><a id="L379">379</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ref $service eq &quot;HASH&quot;</td></tr>
+<tr><td class="h"><a id="L380">380</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $service-&gt;{&#39;image&#39;} and length $service-&gt;{&#39;image&#39;}</td></tr>
+<tr><td class="h"><a id="L391">391</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless $job-&gt;{&#39;steps&#39;}</td></tr>
+<tr><td class="h"><a id="L483">483</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$params-&gt;{&#39;quiet&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L491">491</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if @failed or not @pending</td></tr>
+<tr><td class="h"><a id="L493">493</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ($self-&gt;{&#39;quiet&#39;} or $quiet)</td></tr>
+<tr><td class="h"><a id="L505">505</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $rc</td></tr>
+<tr><td class="h"><a id="L506">506</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($rc != 0) { }</td></tr>
+<tr><td class="h"><a id="L509">509</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $record-&gt;{&#39;error&#39;} and length $record-&gt;{&#39;error&#39;}</td></tr>
+<tr><td class="h"><a id="L511">511</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $record-&gt;{&#39;present&#39;}</td></tr>
+<tr><td class="h"><a id="L601">601</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $entry-&gt;{&#39;kind&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L603">603</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (defined $image)</td></tr>
+<tr><td class="h"><a id="L608">608</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $kind eq &quot;job&quot; or $kind =~ /\Aservice:/</td></tr>
+<tr><td class="h"><a id="L614">614</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $kind eq &quot;job&quot;</td></tr>
+<tr><td class="h"><a id="L617">617</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seen{$image}++</td></tr>
+<tr><td class="h"><a id="L618">618</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if eval {
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;do {
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$self-&gt;ensure($image);
 1
 }
 }</td></tr>
-<tr><td class="h"><a id="L651">651</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $runs_on</td></tr>
-<tr><td class="h"><a id="L654">654</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless defined $image and length $image</td></tr>
-<tr><td class="h"><a id="L659">659</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if defined $resolved and length $resolved</td></tr>
-<tr><td class="h"><a id="L660">660</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $image =~ /\{\{/</td></tr>
-<tr><td class="h"><a id="L704">704</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;dry_run&#39;} or $self-&gt;{&#39;pulled_once&#39;}{$image}</td></tr>
-<tr><td class="h"><a id="L707">707</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $exists and not $self-&gt;{&#39;pull&#39;}</td></tr>
-<tr><td class="h"><a id="L710">710</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;no_pull&#39;}</td></tr>
-<tr><td class="h"><a id="L712">712</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;{&#39;quiet&#39;}</td></tr>
-<tr><td class="h"><a id="L714">714</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $exists</td></tr>
-<tr><td class="h"><a id="L751">751</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $_</td></tr>
-<tr><td class="h"><a id="L841">841</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if not @images or $self-&gt;{&#39;dry_run&#39;}</td></tr>
-<tr><td class="h"><a id="L845">845</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if not $recorded and $self-&gt;{&#39;verbose&#39;}</td></tr>
+<tr><td class="h"><a id="L662">662</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $runs_on</td></tr>
+<tr><td class="h"><a id="L665">665</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless defined $image and length $image</td></tr>
+<tr><td class="h"><a id="L670">670</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if defined $resolved and length $resolved</td></tr>
+<tr><td class="h"><a id="L671">671</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $image =~ /\{\{/</td></tr>
+<tr><td class="h"><a id="L715">715</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;dry_run&#39;} or $self-&gt;{&#39;pulled_once&#39;}{$image}</td></tr>
+<tr><td class="h"><a id="L718">718</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $exists and not $self-&gt;{&#39;pull&#39;}</td></tr>
+<tr><td class="h"><a id="L721">721</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;no_pull&#39;}</td></tr>
+<tr><td class="h"><a id="L723">723</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;{&#39;quiet&#39;}</td></tr>
+<tr><td class="h"><a id="L725">725</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $exists</td></tr>
+<tr><td class="h"><a id="L762">762</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $_</td></tr>
+<tr><td class="h"><a id="L854">854</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if not @images or $self-&gt;{&#39;dry_run&#39;}</td></tr>
+<tr><td class="h"><a id="L858">858</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if not $recorded and $self-&gt;{&#39;verbose&#39;}</td></tr>
 </table>
 </body>
 </html>

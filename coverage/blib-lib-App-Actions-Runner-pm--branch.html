@@ -20,7 +20,7 @@ https://pjcj.net
 <h1>Branch Coverage</h1>
 <table>
 <tr><td class="h" align="right">File:</td><td align="left">blib/lib/App/Actions/Runner.pm</td></tr>
-<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">94.0%</td></tr>
+<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">96.2%</td></tr>
 </table>
 <div><br/></div>
 <table>
@@ -34,21 +34,22 @@ https://pjcj.net
 <tr><td class="h"></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $params-&gt;{&#39;keep_images&#39;} ? :</td></tr>
 <tr><td class="h"><a id="L525">525</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">ref $params-&gt;{&#39;docker&#39;} ? :</td></tr>
 <tr><td class="h"><a id="L528">528</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $self-&gt;{&#39;pull&#39;} and $self-&gt;{&#39;no_pull&#39;}</td></tr>
-<tr><td class="h"><a id="L757">757</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;{&#39;dry_run&#39;}</td></tr>
-<tr><td class="h"><a id="L764">764</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$self-&gt;{&#39;report&#39;}-&gt;failed ? :</td></tr>
-<tr><td class="h"><a id="L768">768</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ($ran)</td></tr>
-<tr><td class="h"><a id="L773">773</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;{&#39;quiet&#39;}</td></tr>
-<tr><td class="h"><a id="L873">873</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$options{&#39;json&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L874">874</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $options{&#39;schema_line&#39;} &amp;&amp; !$options{&#39;schema_line&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L879">879</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$self-&gt;{&#39;skip_check&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L883">883</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless $checked-&gt;{&#39;reachable&#39;}</td></tr>
-<tr><td class="h"><a id="L888">888</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$checked-&gt;{&#39;exit&#39;} != 0 ? :</td></tr>
-<tr><td class="h"><a id="L891">891</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless $summary-&gt;{&#39;issues&#39;}</td></tr>
-<tr><td class="h"><a id="L898">898</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ($json)</td></tr>
-<tr><td class="h"><a id="L900">900</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $schema_line</td></tr>
-<tr><td class="h"><a id="L905">905</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if $self-&gt;{&#39;keep_images&#39;}</td></tr>
-<tr><td class="h"><a id="L907">907</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$summary-&gt;{&#39;ready&#39;} &amp;&amp; !@{$failures;} ? :</td></tr>
-<tr><td class="h"><a id="L908">908</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$ready ? :</td></tr>
+<tr><td class="h"><a id="L760">760</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;{&#39;dry_run&#39;}</td></tr>
+<tr><td class="h"><a id="L767">767</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$self-&gt;{&#39;report&#39;}-&gt;failed ? :</td></tr>
+<tr><td class="h"><a id="L771">771</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ($ran)</td></tr>
+<tr><td class="h"><a id="L775">775</a></td><td class="c0">50</td><td class="c0">T</td><td class="c3">F</td><td class="s">unless defined $error</td></tr>
+<tr><td class="h"><a id="L779">779</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $self-&gt;{&#39;quiet&#39;}</td></tr>
+<tr><td class="h"><a id="L881">881</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$options{&#39;json&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L882">882</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $options{&#39;schema_line&#39;} &amp;&amp; !$options{&#39;schema_line&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L887">887</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$self-&gt;{&#39;skip_check&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L891">891</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $checked-&gt;{&#39;reachable&#39;}</td></tr>
+<tr><td class="h"><a id="L896">896</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$checked-&gt;{&#39;exit&#39;} != 0 ? :</td></tr>
+<tr><td class="h"><a id="L899">899</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $summary-&gt;{&#39;issues&#39;}</td></tr>
+<tr><td class="h"><a id="L906">906</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ($json)</td></tr>
+<tr><td class="h"><a id="L908">908</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $schema_line</td></tr>
+<tr><td class="h"><a id="L913">913</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if $self-&gt;{&#39;keep_images&#39;}</td></tr>
+<tr><td class="h"><a id="L915">915</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$summary-&gt;{&#39;ready&#39;} &amp;&amp; !@{$failures;} ? :</td></tr>
+<tr><td class="h"><a id="L916">916</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$ready ? :</td></tr>
 <tr><td class="h"></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">@{$failures;} ? :</td></tr>
 </table>
 </body>
