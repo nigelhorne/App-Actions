@@ -226,6 +226,7 @@ my %MESSAGES = (
 	'runner.unsupported.skipped' => "已跳过操作 '%(action)s'：%(reason)s",
 	'runner.unsupported.note' => '    （已跳过：%(reason)s）',
 	'runner.docker_action.no_image' => "作业 '%(job)s' 中的 Docker 操作 '%(uses)s' 没有镜像名称；请检查它使用的表达式",
+	'runner.docker_action.bad_args' => "无法读取 '%(uses)s' 的 args（'%(args)s'）：有引号未闭合",
 	'runner.docker_action.bad_image' => "作业 '%(job)s' 中的 Docker 操作 '%(uses)s' 解析为 '%(image)s'，这不是镜像名称；请检查它使用的表达式",
 	'runner.docker_action.exited' => 'Docker 操作以状态 %(status)s 退出',
 	'runner.local_action.missing' => "本地操作 '%(uses)s' 不存在（查找位置：%(dir)s）",

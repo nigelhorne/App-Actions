@@ -1275,7 +1275,8 @@ subtest 'App::Actions::Docker' => sub {
 			[ 'a client variable', 'DOCKER_HOST', 'tcp://evil:2375' ],
 			[ 'PATH', 'PATH', '/tmp/evil' ],
 			[ 'a proxy', 'https_proxy', 'http://evil' ],
-			[ 'a name with a dash', 'MY-VAR', 'x' ],
+			[ 'a name with a space', 'MY VAR', 'x' ],
+			[ 'a name that starts with a dash', '-X', 'x' ],
 			[ 'a name that starts with a digit', '1X', 'x' ],
 			[ 'an empty name', '', 'x' ],
 			[ 'a value with a NUL', 'OK', "a\0b" ],
@@ -1284,6 +1285,10 @@ subtest 'App::Actions::Docker' => sub {
 			($command, $hidden) = App::Actions::Docker::_hide_variables(undef, '-e', $var->($name, $value));
 			is_deeply([ $command, $hidden ], [ [ '-e', "$name=$value" ], {} ], "$what stays on the command line");
 		}
+		# GitHub's INPUT_* names keep - and ., and an input is often a token.
+		($command, $hidden) = App::Actions::Docker::_hide_variables(undef, '-e', $var->('INPUT_GITHUB-TOKEN', 's3cret'), '-e', $var->('A.B', 1));
+		is_deeply([ $command, $hidden ], [ [ '-e', 'INPUT_GITHUB-TOKEN', '-e', 'A.B' ], { 'INPUT_GITHUB-TOKEN' => 's3cret', 'A.B' => 1 } ],
+			'a name with - or . after its first character is hidden');
 		($command, $hidden) = App::Actions::Docker::_hide_variables(undef, '-e', $var->('Path2', 'a'), '-e', $var->('PATH2', 'b'));
 		is_deeply($hidden, {}, 'names that differ only in case both stay on the command line');
 		($command) = App::Actions::Docker::_hide_variables(undef, 'NAME=value', 'plain');
@@ -3699,7 +3704,7 @@ subtest 'App::Actions::Runner::Containers' => sub {
 		my $object = $containers->();
 		is($object->name('job', $job->()), 'action-run-90abcdef-1-job-build-0', 'kind, job and index, with the last eight of the run id');
 		is($object->name('svc', $job->(), 'db'), 'action-run-90abcdef-2-svc-build-0-db', 'a counter keeps names apart, and a suffix');
-		like($object->name('net', $job->(base_id => 'a b/c;$(rm)', matrix_index => 3), 'x y'), qr/\Aaction-run-90abcdef-3-net-a-b-c--rm--3-x-y\z/,
+		like($object->name('net', $job->(base_id => 'a b/c;$(rm)', matrix_index => 3), 'x y'), qr/\Aaction-run-90abcdef-3-net-a-b-c---rm--3-x-y\z/,
 			'unsafe characters become hyphens');
 		is(length $object->name('job', $job->(base_id => 'j' x 200), 's' x 200), 63, 'at most 63 characters');
 		like($object->name('job', $job->(base_id => 'j' x 200)), qr/-j{20}-0\z/, 'a long job id is cut to twenty');
@@ -3908,6 +3913,398 @@ subtest 'App::Actions::Runner::Containers' => sub {
 		is($object->_with_output('x.y', 'S', "\n\n", 'runner.container.silent', 'runner.container.output')->message, 'S; it printed nothing',
 			'blank output is no output');
 		keeps_topic(sub { $object->_with_output('x.y', 'S', "a\r\n", 'runner.container.silent', 'runner.container.output') }, '_with_output');
+	};
+};
+
+# ---------------------------------------------------------------------------
+# App::Actions::Runner::Steps
+# ---------------------------------------------------------------------------
+
+use App::Actions::Runner::Steps;
+
+# A job container.  Each docker exec is recorded with its environment, and
+# a test's callback can act as the command: it is given the environment,
+# with each runner path turned into the host path the test can write to.
+{
+	package Local::StepDocker;
+	sub new { my ($class, %option) = @_; return bless { execs => [], status => 0, %option }, $class }
+	sub container_exec {
+		my ($self, @args) = @_;
+		my (%env, @rest);
+		while (@args) {
+			my $arg = shift @args;
+			if ($arg eq '-e') { my $variable = shift @args; $env{ $variable->name } = $variable->value; next }
+			push @rest, "$arg";
+		}
+		my %host = map { my $v = $env{$_}; $v =~ s{\A/github/actions-runner}{$self->{temp}}; ($_ => $v) } keys %env;
+		push @{ $self->{execs} }, { env => \%env, args => \@rest };
+		return $self->{act} ? $self->{act}->(\%host, \@rest, \%env) : $self->{status};
+	}
+	sub redact { my ($self, $text) = @_; (my $copy = $text) =~ s/hunter2/***/g; return $copy }
+
+	package Local::StepImages;
+	sub new { return bless { ensured => [] }, shift }
+	sub ensure { my ($self, $image) = @_; push @{ $self->{ensured} }, $image; return 1 }
+
+	package Local::StepContainers;
+	sub new { my ($class, %option) = @_; return bless { runs => [], status => 0, %option }, $class }
+	sub run_action { my ($self, %action) = @_; push @{ $self->{runs} }, \%action; return $self->{status} }
+
+	package Local::StepWorkflow;
+	sub new { my ($class, $defaults) = @_; return bless { defaults => $defaults || {} }, $class }
+	sub defaults { return $_[0]{defaults} }
+}
+
+subtest 'App::Actions::Runner::Steps' => sub {
+	my $project = tempdir(CLEANUP => 1);
+	my $steps = sub {
+		my (%option) = @_;
+		my $temp = tempdir(CLEANUP => 1);
+		mkdir File::Spec->catdir($temp, $_) or die $! for qw(scripts env output path summary);
+		my $docker = Local::StepDocker->new(temp => $temp, %{ delete $option{docker} || {} });
+		return App::Actions::Runner::Steps->new(
+			expression => App::Actions::Expression->new,
+			docker => $docker,
+			images => Local::StepImages->new,
+			containers => Local::StepContainers->new(%{ delete $option{containers} || {} }),
+			workflow => Local::StepWorkflow->new(delete $option{defaults}),
+			project_dir => $project,
+			temp_path => $temp,
+			job => { base_id => 'build', steps => delete $option{steps} || [] },
+			container => 'job-container',
+			network => 'net',
+			facts => { path => '/usr/bin:/bin', has_bash => 1, has_node => 1, %{ delete $option{facts} || {} } },
+			job_env => delete $option{job_env} || {},
+			context => { github => { repository => 'o/r' }, secrets => { TOKEN => 'hunter2' } },
+			quiet => 1,
+			logger => Local::Logger->new,
+			%option,
+		);
+	};
+	my $read = sub { my ($path) = @_; open my $h, '<', $path or die "$path: $!"; local $/; return scalar <$h> };
+	my $append = sub { my ($path, $text) = @_; open my $h, '>>', $path or die "$path: $!"; print {$h} $text; close $h; return 0 };
+
+	subtest 'new' => sub {
+		my $object = $steps->(job_env => { A => 1 });
+		is_deeply([ @{$object}{qw(base_path has_bash has_node depth failed)} ], [ '/usr/bin:/bin', 1, 1, 0, 0 ], 'the container facts');
+		is_deeply($object->{ctx}{env}, { A => 1 }, 'the context sees the job env');
+		is($object->{ctx}{job}{status}, 'success', 'and a job that has not failed');
+		memory_cycle_ok($object, 'no reference cycle');
+		my $prefix = 'Invalid arguments to App::Actions::Runner::Steps::new: ';
+		throws_ok { $steps->(container => '') } qr/\A\Q$prefix\E.*'container'/, 'an empty container name';
+		throws_ok { $steps->(images => Local::StepWorkflow->new) }
+			qr/\A\Q${prefix}Parameter 'images' must be an object that understands the ensure method\E/, 'an images object that cannot prepare';
+	};
+
+	subtest 'run with run: steps' => sub {
+		my $object = $steps->(
+			steps => [
+				{ id => 'one', run => 'echo ${{ github.repository }}' },
+				{ id => 'two', run => 'false' },
+				{ id => 'three', run => 'skipped after a failure' },
+				{ id => 'four', if => 'failure()', run => 'cleanup' },
+			],
+			docker => { act => sub {
+				my ($host, $args) = @_;
+				return $args->[-1] =~ /step-2/ ? 1 : 0;
+			} },
+		);
+		my $result = $object->run;
+		is($result->{result}, 'failure', 'a failing step fails the job');
+		is_deeply([ map { $object->{ctx}{steps}{$_}{outcome} } qw(one two three four) ], [ qw(success failure skipped success) ],
+			'later steps are skipped, except one asking for failure()');
+		my $script = $read->(File::Spec->catfile($object->{temp_path}, 'scripts', 'step-1.sh'));
+		is($script, "echo o/r\n", 'the script is interpolated and ends in a newline');
+		is((stat File::Spec->catfile($object->{temp_path}, 'scripts', 'step-1.sh'))[2] & oct('0777'), oct('0600'), 'and is private');
+		my $exec = $object->{docker}{execs}[0];
+		is_deeply([ @{ $exec->{args} }[0, 1, -4, -3, -2] ], [ '-w', '/github/workspace', 'job-container', 'sh', '-c' ], 'run in the job container');
+		is($exec->{args}[-1], q{bash -e '/github/actions-runner/scripts/step-1.sh'}, 'with bash -e, the default where there is bash');
+		is_deeply([ @{ $exec->{env} }{qw(GITHUB_ACTION GITHUB_ACTION_PATH PATH)} ], [ 'one', '', '/usr/bin:/bin' ], 'and the GITHUB_ACTION values');
+	};
+
+	subtest 'step files: env, outputs, path, summary' => sub {
+		my $object = $steps->(
+			steps => [
+				{ id => 'w', run => 'write' },
+				{ id => 'r', run => 'read ${{ steps.w.outputs.answer }} ${{ env.FROM_STEP }}' },
+			],
+			docker => { act => sub {
+				my ($host) = @_;
+				return 0 unless -s $host->{GITHUB_ENV} == 0 && $read->($host->{GITHUB_ENV}) eq '' && !$main::wrote++;
+				$append->($host->{GITHUB_ENV}, "FROM_STEP=yes\nMULTI<<EOF\nline 1\r\nline 2\nEOF\nnot a pair\n1BAD=x\n");
+				$append->($host->{GITHUB_OUTPUT}, "answer=42\n");
+				$append->($host->{GITHUB_PATH}, "  /opt/tool/bin  \n\n/second\n");
+				$append->($host->{GITHUB_STEP_SUMMARY}, "## Done\n");
+				return 0;
+			} },
+		);
+		local $main::wrote = 0;
+		$object->run;
+		is_deeply($object->{job_env}, { FROM_STEP => 'yes', MULTI => "line 1\nline 2" }, 'GITHUB_ENV, heredocs and all; junk lines ignored');
+		is_deeply($object->{ctx}{steps}{w}{outputs}, { answer => 42 }, 'GITHUB_OUTPUT becomes the step\'s outputs');
+		is($read->(File::Spec->catfile($object->{temp_path}, 'scripts', 'step-2.sh')), "read 42 yes\n", 'which the next step reads');
+		is($object->{docker}{execs}[1]{env}{PATH}, '/opt/tool/bin:/second:/usr/bin:/bin', 'GITHUB_PATH goes in front, trimmed');
+		ok(!-e File::Spec->catfile($object->{temp_path}, 'env', 'step-1.env'), 'the step files are removed');
+	};
+
+	subtest '_execute_step failures' => sub {
+		my $object = $steps->(quiet => 0);
+		is($object->_execute_step({ id => 'e', env => { X => '${{ nope( }}' }, run => 'x' }), 'failure', 'an env that does not evaluate');
+		is($object->{ctx}{steps}{e}{outcome}, 'failure', 'is recorded');
+		is($object->{ctx}{job}{status}, 'failure', 'and fails the job');
+		like($object->{logger}{lines}[0][1], qr/\Aaction-run: /, 'with a warning');
+
+		$object = $steps->(quiet => 0);
+		my $out = '';
+		{
+			open my $h, '>', \$out or die $!;
+			my $old = select $h;
+			is($object->_execute_step({ id => 'c', if => 'nope(', run => 'x' }), 'failure', 'a condition that does not evaluate');
+			select $old;
+		}
+		is_deeply($object->{ctx}{steps}{c}, { outputs => {}, outcome => 'failure', conclusion => 'failure' },
+			'is recorded too, so steps.c.outcome can be read');
+		is($object->{failed}, 1, 'and fails the job');
+		is_deeply($object->{docker}{execs}, [], 'nothing ran for either');
+
+		my $dies = $steps->(quiet => 0, steps => [ { id => 'd', run => 'x' } ]);
+		my $guard = mock_scoped('App::Actions::Runner::Steps::_run_script_step' => sub { die "exec exploded\n" });
+		my $said = '';
+		{
+			open my $h, '>', \$said or die $!;
+			my $old = select $h;
+			is($dies->_execute_step({ id => 'd', run => 'x' }), 'failure', 'a step whose machinery dies');
+			select $old;
+		}
+		is_deeply($dies->{logger}{lines}[0], [ warn => 'action-run: exec exploded' ], 'says why');
+	};
+
+	subtest '_should_run' => sub {
+		my $object = $steps->();
+		my %cases = ('no condition' => [ undef, 0, 1 ], 'no condition after a failure' => [ undef, 1, 0 ],
+			'true' => [ 'true', 0, 1 ], 'true after a failure' => [ 'true', 1, 0 ], 'always()' => [ 'always()', 1, 1 ],
+			'failure()' => [ 'failure()', 1, 1 ], 'failure() before one' => [ 'failure()', 0, 0 ], 'false' => [ 'false', 0, 0 ]);
+		for my $name (sort keys %cases) {
+			my ($condition, $failed, $want) = @{ $cases{$name} };
+			local $object->{failed} = $failed;
+			is($object->_should_run($condition, {}, status_flags($failed)), $want, $name);
+		}
+		throws_ok { $object->_should_run('nope(', {}, {}) } qr/./, 'a condition that does not parse croaks';
+	};
+
+	subtest '_conclude' => sub {
+		my $object = $steps->();
+		is($object->_conclude({ 'continue-on-error' => 'true' }, { outcome => 'failure' }, '', {}, {}), 'failure', 'the outcome stays failure');
+		is_deeply([ $object->{last_conclusion}, $object->{failed} ], [ 'success', 0 ], 'but continue-on-error concludes success');
+		$object->_conclude({}, { outcome => 'failure', error => 'bad' }, '', {}, {});
+		is($object->{failed}, 1, 'a plain failure fails the job');
+		$object = $steps->(quiet => 0);
+		$object->_conclude({ 'continue-on-error' => 'nope(' }, { outcome => 'failure' }, '', {}, {});
+		is($object->{failed}, 1, 'a continue-on-error that does not evaluate does not continue');
+		like($object->{logger}{lines}[0][1], qr/continue-on-error/i, 'and says so');
+		$object = $steps->(job_env => { A => 1 });
+		$object->_conclude({}, { outcome => 'success', env => { B => 2 }, path => [ '/p2' ] }, '', {}, {});
+		$object->_conclude({}, { outcome => 'success', path => [ '/p3' ] }, '', {}, {});
+		is_deeply([ $object->{job_env}, $object->{path_additions} ], [ { A => 1, B => 2 }, [ '/p3', '/p2' ] ], 'exports and paths, newest first');
+		is($object->_conclude({}, {}, '', {}, {}), 'success', 'no outcome is success');
+	};
+
+	subtest '_run_uses_step' => sub {
+		my $object = $steps->(quiet => 0);
+		my $run = sub { my ($step) = @_; my $out = ''; open my $h, '>', \$out or die; my $old = select $h;
+			my $result = $object->_run_uses_step($step, 1, {}, { github => {} }, {}); select $old; return ($result, $out) };
+		my ($result, $out) = $run->({ uses => 'actions/checkout@v4', with => { path => 'sub', submodules => 'true', ref => 'main' } });
+		is($result->{outcome}, 'success', 'checkout is a no-op');
+		is(scalar @{ $object->{logger}{lines} }, 3, 'each option it ignores is warned about');
+		($result, $out) = $run->({ uses => 'shogo82148/actions-setup-perl@v1', with => { 'perl-version' => q{5.${{ '40' }}} } });
+		like($out, qr/Perl 5\.40/, 'setup-perl names the version');
+		($result) = $run->({ uses => 'actions/cache/restore@v4' });
+		is($result->{outcome}, 'success', 'cache is a no-op');
+		($result) = $run->({ uses => 'Actions/Upload-Artifact@v4' });
+		is($result->{outcome}, 'success', 'case does not matter');
+		($result) = $run->({ uses => 'actions/cachex@v1' });
+		is($result->{outcome}, 'skipped', 'a near miss is an unsupported action');
+		($result) = $run->({ uses => 'someone/else@v1' });
+		is($result->{outcome}, 'skipped', 'a remote action is skipped');
+		my $strict = $steps->(strict_actions => 1);
+		is($strict->_run_uses_step({ uses => 'someone/else@v1' }, 1, {}, {}, {})->{outcome}, 'failure', 'or fails under --strict-actions');
+	};
+
+	subtest '_run_docker_action and _action_arguments' => sub {
+		my $object = $steps->();
+		my $result = $object->_run_docker_action({ id => 'd', uses => 'docker://alpine:3', with => { args => q{echo "a b" ${{ github.repository }}}, entrypoint => '/bin/sh' } },
+			1, 'alpine:${{ 3 }}', { E => 1 }, { github => { repository => 'o/r' } }, {});
+		is($result->{outcome}, 'success', 'it ran');
+		is_deeply($object->{images}{ensured}, [ 'alpine:3' ], 'the image is prepared first');
+		my $run = $object->{containers}{runs}[0];
+		is_deeply([ @{$run}{qw(image network entrypoint)}, $run->{arguments} ], [ 'alpine:3', 'net', '/bin/sh', [ 'echo', 'a b', 'o/r' ] ],
+			'image, network, entrypoint and arguments split as a shell would');
+		is($run->{env}{E}, 1, 'with the step env');
+
+		throws_code(sub { $object->_run_docker_action({ uses => 'docker://${{ x }}' }, 1, '${{ x }}', {}, {}, {}) }, 'runner.docker_action.no_image',
+			q{Docker action 'docker://${{ x }}' in job 'build' has no image name; check the expression it uses}, 'an image that is empty');
+		throws_code(sub { $object->_run_docker_action({ uses => 'docker://a' }, 1, "\${{ '\${{' }}", {}, {}, {}) }, 'runner.docker_action.bad_image',
+			undef, 'an image that still holds an expression');
+		throws_code(sub { $object->_action_arguments({ uses => 'docker://a' }, q{--token "${{ secrets.TOKEN }}}, { secrets => { TOKEN => 'hunter2' } }, {}) },
+			'runner.docker_action.bad_args', q{Unable to read the args of 'docker://a' ('--token "${{ secrets.TOKEN }}'): a quote is not closed},
+			'args with an unclosed quote are refused, quoted as written');
+		is_deeply($object->_action_arguments({}, '  ', {}, {}), [], 'blank args are no args');
+		is_deeply($object->_action_arguments({}, undef, {}, {}), [], 'and so are none');
+		is($steps->(containers => { status => 3 })->_run_docker_action({ uses => 'docker://a' }, 1, 'a', {}, {}, {})->{exit_code}, 3,
+			'the action\'s status is the step\'s');
+	};
+
+	subtest 'local, composite and JavaScript actions' => sub {
+		my $dir = sub {
+			my ($name, $yaml, %files) = @_;
+			my $path = File::Spec->catdir($project, $name);
+			mkdir $path;
+			write_file('action.yml', $yaml, $path);
+			write_file($_, $files{$_}, $path) for keys %files;
+			return "./$name";
+		};
+		my $composite = $dir->('comp', "name: c\ninputs:\n  who: {default: world}\noutputs:\n  said: {value: '\${{ steps.s.outputs.said }}'}\nruns:\n  using: composite\n  steps:\n    - id: s\n      run: echo \${{ inputs.who }}\n      shell: sh\n");
+		my $object = $steps->(docker => { act => sub { my ($host) = @_; $append->($host->{GITHUB_OUTPUT}, "said=hi\n") if $host->{GITHUB_OUTPUT}; $append->($host->{GITHUB_ENV}, "LEAK=1\n") if $host->{GITHUB_ENV}; 0 } });
+		my $result = $object->_run_local_action({ uses => $composite, with => { who => 'you' } }, 1, $composite, { KEEP => 'k' }, { github => {} }, {});
+		is_deeply([ $result->{outcome}, $result->{outputs} ], [ 'success', { said => 'hi' } ], 'a composite runs its steps and declares outputs');
+		is($read->(File::Spec->catfile($object->{temp_path}, 'scripts', 'step-1.sh')), "echo you\n", 'with its inputs');
+		is($object->{job_env}{LEAK}, 1, 'and what it exports reaches the job');
+		ok(!exists $object->{job_env}{KEEP}, 'but the step\'s own env does not');
+
+		throws_code(sub { $object->_run_local_action({ uses => './missing' }, 1, './missing', {}, {}, {}) }, 'runner.local_action.missing', undef,
+			'a local action that is not there');
+		throws_code(sub { $object->_run_local_action({ uses => '../x' }, 1, '../x', {}, {}, {}) }, 'runner.local_action_escapes', undef,
+			'one outside the project');
+		my $deep = $steps->();
+		$deep->{depth} = 10;
+		throws_code(sub { $deep->_run_composite_action(App::Actions::Action->load_from_dir(File::Spec->catdir($project, 'comp')), { uses => './comp' }, '/w', {}, {}, {}) },
+			'runner.composite.too_deep', undef, 'composites nest ten deep at most');
+		my $docker_action = $dir->('dock', "name: d\nruns:\n  using: docker\n  image: Dockerfile\n");
+		is($object->_run_local_action({ uses => $docker_action }, 1, $docker_action, {}, {}, {})->{outcome}, 'skipped', 'a local Docker action is unsupported');
+
+		my $js = $dir->('js', "name: j\ninputs:\n  perl-version: {default: '5.40'}\n  github token: {default: x}\nruns:\n  using: node20\n  pre: pre.js\n  main: main.js\n  post: post.js\n  post-if: failure()\n");
+		$object = $steps->(docker => { act => sub {
+			my ($host, $args, $env) = @_;
+			$append->($host->{GITHUB_STATE}, "phase=pre\n") if $args->[-1] =~ /pre\.js/;
+			return $args->[-1] =~ /main\.js/ && !defined $env->{STATE_phase} ? 9 : 0;
+		} });
+		$result = $object->_run_local_action({ id => 'j', uses => $js }, 1, $js, {}, { github => {} }, {});
+		is($result->{outcome}, 'success', 'a JavaScript action: pre, then main');
+		my $main = $object->{docker}{execs}[1];
+		is_deeply([ @{ $main->{env} }{ 'INPUT_PERL-VERSION', 'INPUT_GITHUB_TOKEN', 'STATE_phase' } ], [ '5.40', 'x', 'pre' ],
+			'inputs named as GitHub names them; pre\'s state reaches main');
+		is_deeply([ @{ $main->{args} }[-2, -1] ], [ 'node', '/github/workspace/js/main.js' ], 'run with node');
+		is(scalar @{ $object->{post_actions} }, 1, 'the post step is queued');
+		$object->_run_post_actions;
+		is(scalar @{ $object->{docker}{execs} }, 2, 'and is skipped, its post-if wanting a failure');
+		$object->{failed} = 1;
+		$object->_run_post_actions;
+		is($object->{docker}{execs}[2]{args}[-1], '/github/workspace/js/post.js', 'and runs after one');
+
+		my $no_node = $steps->(facts => { has_node => 0 });
+		throws_code(sub { $no_node->_run_local_action({ uses => $js }, 1, $js, {}, {}, {}) }, 'runner.javascript.no_node', undef, 'without node');
+		my $pre_fails = $steps->(docker => { status => 4 });
+		$result = $pre_fails->_run_local_action({ uses => $js }, 1, $js, {}, {}, {});
+		is_deeply([ $result->{outcome}, $result->{exit_code}, scalar @{ $pre_fails->{docker}{execs} } ], [ 'failure', 4, 1 ], 'a failed pre stops main');
+	};
+
+	subtest '_shell_for, _working_directory and _default_for' => sub {
+		my $object = $steps->(defaults => { run => { shell => 'sh', 'working-directory' => 'wf' } });
+		is($object->_shell_for({}, {}, {})->{name}, 'sh', 'the workflow default');
+		local $object->{job}{defaults} = { run => { shell => 'Perl ' } };
+		is($object->_shell_for({}, {}, {})->{command}, 'perl {0}', 'the job default wins, case and space aside');
+		is($object->_shell_for({ shell => 'bash' }, {}, {})->{command}, 'bash --noprofile --norc -eo pipefail {0}', 'the step wins');
+		is_deeply($object->_shell_for({ shell => 'node --x' }, {}, {}), { name => 'custom', command => 'node --x {0}', extension => '.sh', requires_bash => 0 },
+			'a custom shell');
+		is($object->_shell_for({ shell => 'deno run {0} x' }, {}, {})->{command}, 'deno run {0} x', 'which may place the script');
+		is($steps->(facts => { has_bash => 0 })->_shell_for({}, {}, {})->{name}, 'sh', 'no bash, sh -e');
+		is($steps->(facts => { has_bash => 0 }, dry_run => 1)->_shell_for({}, {}, {})->{name}, 'bash', 'a dry run assumes bash');
+
+		is($object->_working_directory({}, {}, {}), '/github/workspace/wf', 'a relative default is under the workspace');
+		is($object->_working_directory({ 'working-directory' => '/abs' }, {}, {}), '/abs', 'an absolute one is kept');
+		is($object->_working_directory({ 'working-directory' => '${{ env.NONE }}' }, { env => {} }, {}), '/github/workspace', 'an empty one is the workspace');
+		is($steps->()->_default_for({}, 'shell'), undef, 'nothing set');
+
+		my $missing = $steps->(facts => { has_bash => 0 });
+		my $result = $missing->_run_script_step({ run => 'x', shell => 'bash' }, 1, {}, { github => {} }, {});
+		is_deeply([ $result->{outcome}, $result->{error} ], [ 'failure', "Shell 'bash' is not available in the container" ], 'bash asked for but absent');
+		is_deeply($missing->{docker}{execs}, [], 'and nothing ran');
+	};
+
+	subtest '_step_name' => sub {
+		my $object = $steps->();
+		is($object->_step_name({ name => 'Build ${{ github.repository }}' }, 1, { github => { repository => 'o/r' } }), 'Build o/r', 'a name, interpolated');
+		is($object->_step_name({ uses => 'a/b@v1' }, 1, {}), 'a/b@v1', 'uses');
+		is($object->_step_name({ run => "  make\n\t test  " }, 1, {}), 'make test', 'a script, on one line');
+		is(length $object->_step_name({ run => 'x' x 200 }, 1, {}), 80, 'cut to eighty');
+		like($object->_step_name({ run => 'x' x 200 }, 1, {}), qr/\.\.\.\z/, 'with an ellipsis');
+		is($object->_step_name({}, 7, {}), 'Step 7', 'nothing to go on');
+		is($object->_step_name({ name => '${{ nope( }}' }, 1, {}), '${{ nope( }}', 'a name that does not evaluate is shown as written');
+		keeps_topic(sub { $object->_step_name({ run => "a\nb" }, 1, {}) }, '_step_name');
+	};
+
+	subtest 'step file parsing' => sub {
+		my $file = write_file('kv', "A=1\nB=x=y\nH<<END\none\n\ntwo\nEND\nC=\nbad line\n  D=4\nU<<NEVER\nrest\n");
+		is_deeply(App::Actions::Runner::Steps::_parse_kv_file($file), { A => 1, B => 'x=y', H => "one\n\ntwo", C => '', U => 'rest' },
+			'pairs, heredocs, empty values; other lines are ignored');
+		is_deeply(App::Actions::Runner::Steps::_parse_kv_file(undef), {}, 'no file');
+		is_deeply(App::Actions::Runner::Steps::_parse_kv_file(tempdir(CLEANUP => 1)), {}, 'a directory');
+		is_deeply(App::Actions::Runner::Steps::_read_lines(write_file('p', " /a \r\n\n\t\n/b")), [ '/a', '/b' ], '_read_lines');
+		is_deeply(App::Actions::Runner::Steps::_read_lines("$file.none"), [], 'a missing path file');
+		is(App::Actions::Runner::Steps::_read_file(write_file('s', '')), '', 'an empty summary');
+		is(App::Actions::Runner::Steps::_read_file(undef), '', 'no summary');
+		is(App::Actions::Runner::Steps::_open_if_readable(undef), undef, 'nothing to open');
+
+		my $big = write_file('big', join('', map { "K$_=v\n" } 1 .. $config{big} / 10));
+		my $started = time;
+		is(scalar keys %{ App::Actions::Runner::Steps::_parse_kv_file($big) }, $config{big} / 10, 'a large file');
+		ok(time - $started <= $config{time_limit}, 'is read in linear time');
+		keeps_topic(sub { App::Actions::Runner::Steps::_parse_kv_file($file); App::Actions::Runner::Steps::_read_lines($file) }, 'the parsers');
+	};
+
+	subtest '_prepare_step_files, _collect_step_files and _chmod_private' => sub {
+		my $object = $steps->();
+		my $files = $object->_prepare_step_files(5, '-post');
+		is_deeply([ sort keys %{ $files->{vars} } ], [ qw(GITHUB_ENV GITHUB_OUTPUT GITHUB_PATH GITHUB_STATE GITHUB_STEP_SUMMARY) ], 'every step file');
+		is($files->{vars}{GITHUB_OUTPUT}, '/github/actions-runner/output/step-5-post.out', 'named after the step');
+		is((stat $files->{host}{env})[2] & oct('0777'), oct('0600'), 'private');
+		throws_code(sub { $steps->(temp_path => tempdir(CLEANUP => 1))->_prepare_step_files(1) }, 'runner.write_failed', undef,
+			'a runner directory without the step folders');
+		$append->($files->{host}{state}, "k=v\n");
+		is_deeply($object->_collect_step_files($files, 1)->{state}, { k => 'v' }, 'the state is kept when asked');
+		ok(-e $files->{host}{state} && !-e $files->{host}{env}, 'and only it survives');
+		unlink $files->{host}{state};
+		is_deeply($object->_collect_step_files($files, 0), { env => {}, outputs => {}, path => [], summary => '', state => {} },
+			'files a step removed itself are no error');
+
+		my $shared = $steps->(share_files => 1);
+		my $path = write_file('f', 'x');
+		$shared->_chmod_private($path);
+		is((stat $path)[2] & oct('0777'), oct('0666'), 'shared with another container user');
+	};
+
+	subtest '_exec_env, _result and _shell_quote' => sub {
+		my $object = $steps->();
+		$object->{path_additions} = [ '/a', '/b' ];
+		is_deeply($object->_exec_env({ X => 1 }, { vars => { GITHUB_ENV => '/e' } }, 'id', '/p'),
+			{ X => 1, GITHUB_ENV => '/e', PATH => '/a:/b:/usr/bin:/bin', GITHUB_ACTION => 'id', GITHUB_ACTION_PATH => '/p' }, 'everything a command needs');
+		is($object->_exec_env({ PATH => '/mine' }, undef, 'id', undef)->{PATH}, '/a:/b:/mine', 'a PATH of the step\'s own is the base');
+		is_deeply(App::Actions::Runner::Steps->_result(outcome => 'skipped'), { outcome => 'skipped', env => {}, outputs => {}, path => [], summary => '' }, '_result');
+		is(App::Actions::Runner::Steps::_shell_quote(q{/a b/it's}), q{'/a b/it'\''s'}, '_shell_quote');
+		is(App::Actions::Runner::Steps::_shell_quote(undef), q{''}, 'of nothing');
+	};
+
+	subtest 'dry run and secrets' => sub {
+		my $object = $steps->(dry_run => 1, verbose => 1, quiet => 0, steps => [ { run => 'echo ${{ secrets.TOKEN }}' } ]);
+		my $out = '';
+		{
+			open my $h, '>', \$out or die $!;
+			my $old = select $h;
+			$object->run;
+			select $old;
+		}
+		unlike($out, qr/hunter2/, 'a dry run shows the script with secrets redacted');
+		like($out, qr/echo \*\*\*/, 'in their place');
 	};
 };
 

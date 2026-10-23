@@ -69,6 +69,16 @@ Set an option for every run on this computer, without changing the code
     # or, for one command:  App__Actions__keep_images=0 action-run ci.yml .
 ```
 
+Collect the warnings and errors instead of printing them, or turn them off:
+
+```perl
+    my @messages;
+    my $exit = App::Actions->new(workflow_file => 'ci.yml', logger => \@messages)->run;
+    print "$_->{level}: $_->{message}\n" for @messages;
+
+    App::Actions->new(workflow_file => 'ci.yml', logger => 'NULL')->run;
+```
+
 ## Description
 
 **In short:** this module runs a GitHub Actions workflow on your own
@@ -155,6 +165,11 @@ directory; the repository root is then used.
 `keep_images`, `pull`, `no_pull`, `strict_actions`, `skip_check`,
 `pull_concurrency`, `parallel`, `log_dir`, `cache_file`, `docker`, and
 `docker_bin`.  Any other key is an error.
+- `logger` - where warnings and errors go: a [Log::Abstraction](https://metacpan.org/pod/Log%3A%3AAbstraction)
+object, an array reference to collect them in, a hash reference of
+[Log::Abstraction](https://metacpan.org/pod/Log%3A%3AAbstraction) options (for example `{ file => $path }`), or the
+string `'NULL'` to throw them away.  By default they are printed to standard
+error.
 
 `parallel` says how many jobs of one matrix may run at the same time; it is
 1 unless it is set, and `action-run` sets it to the number of processors
@@ -243,11 +258,31 @@ can be set this way; `App__Actions__env__NAME` does not add to `env`.  There
 is no argument for naming a configuration file: `config_file` is refused as
 an unknown option.
 
+**Warnings and errors.**  What a run reports as a problem - a step that
+failed, a job that could not run, a container that could not be removed -
+goes to a [Log::Abstraction](https://metacpan.org/pod/Log%3A%3AAbstraction) logger, at the `error` or `warn` level.  The
+progress lines, the `[dry-run]` and Docker command echoes and the job
+summary are the run's output, not diagnostics, and stay on standard output.
+The default logger prints each message to standard error as a plain line, as
+earlier versions did.  A `logger` in the configuration replaces it: in the
+`App__Actions` section, or in a `UNIVERSAL` section of `universal.yaml`,
+which [Object::Configure](https://metacpan.org/pod/Object%3A%3AConfigure) applies to every class that uses it.  A `logger`
+argument replaces both.
+
+```
+    # ~/.conf/local.yaml: keep this module's messages in a file
+    ---
+    App__Actions:
+      logger:
+        file: /var/log/action-run.log
+        level: warning
+```
+
 #### Returns
 
 An `App::Actions` object.  Besides the options it holds `logger`, a
-[Log::Abstraction](https://metacpan.org/pod/Log%3A%3AAbstraction) object that [Object::Configure](https://metacpan.org/pod/Object%3A%3AConfigure) always adds, and any
-other top-level keys found in the configuration files.  Only the options
+[Log::Abstraction](https://metacpan.org/pod/Log%3A%3AAbstraction) object (a silent one for `'NULL'`), and any other
+top-level keys found in the configuration files.  Only the options
 listed above are passed on to [App::Actions::Runner](https://metacpan.org/pod/App%3A%3AActions%3A%3ARunner), so the other keys
 have no effect.
 
@@ -298,6 +333,7 @@ above, if there are any, and the `App__Actions__*` environment variables.
             no_pull          => { type => 'string', optional => 1 },
             strict_actions   => { type => 'string', optional => 1 },
             skip_check       => { type => 'string', optional => 1 },
+            logger           => { type => [qw(object arrayref hashref string)], optional => 1 },
     }
 ```
 
@@ -334,10 +370,13 @@ The messages of ["load" in App::Actions::Workflow](https://metacpan.org/pod/App%
 
 #### Pseudocode
 
-```
+```perl
     validate the arguments, refusing unknown options
+    make the logger argument into a logger, or use the default (standard error)
     merge in the App__Actions section of the configuration files, then the
         App__Actions__* environment variables (both win; neither is validated)
+    put back the logger made from the argument, or make the configured one
+        into a logger ('NULL' is a silent one)
     refuse a missing workflow_file, then one that does not exist
     take project_dir as given, or the repository root that holds .github/workflows
     refuse a project directory that does not exist
@@ -760,6 +799,12 @@ variables are merged in by [Object::Configure](https://metacpan.org/pod/Object%3
 arguments, so they are not checked: `App__Actions__parallel=banana` is
 accepted.  They also win over the arguments, which is the reverse of what
 most programs do, and a caller cannot choose a configuration file.
+- Not everything a run prints goes through the logger.  The progress
+lines, the command echoes and the summary are output and stay on standard
+output.  [App::Actions::I18N](https://metacpan.org/pod/App%3A%3AActions%3A%3AI18N) warns about a missing catalogue entry with
+`carp`, because it has no object to hold a logger.  A pulling child of
+[App::Actions::Process](https://metacpan.org/pod/App%3A%3AActions%3A%3AProcess) prints straight to the log file it was given, since
+it is a separate process whose output is already captured.
 
 ## Common Pitfalls
 
@@ -796,6 +841,12 @@ jobs at a time.  When an option seems to be ignored, look for an
 environment variables (`env | grep App__Actions`).
 - **Values from those places are not checked.**  A misspelt or
 nonsensical value there is not reported as an argument would be.
+- **A UNIVERSAL logger takes the messages off the terminal.**
+[Object::Configure](https://metacpan.org/pod/Object%3A%3AConfigure) applies a `UNIVERSAL` section of `universal.yaml` to
+every class that uses it, this one included.  If that section has a
+`logger` that writes to a file or to syslog, a failed step is reported
+there and not on standard error.  Give this module its own `logger` in an
+`App__Actions` section, or pass `logger`, to choose where its messages go.
 
 ## Encoding
 
@@ -860,7 +911,14 @@ rule are the conditions that are always true when the routine returns.
     │ actions!.workflow = Workflow.Load(abs(workflowFile?))
     │ actions!.project_dir = root
     │ actions!.options = settings
+    │ let logged == (logger? ≠ ⊥ ⇒ logger?)
+    │             ∧ (logger? = ⊥ ∧ logger ∈ dom configured ⇒ configured(logger))
+    │             ∧ (logger? = ⊥ ∧ logger ∉ dom configured ⇒ stderrLogger)
+    │     where configured == fileConfig(App__Actions) ⊕ envConfig(App__Actions__)
+    │     -- fileConfig includes the UNIVERSAL section of universal.yaml
     │ actions!.logger ∈ LogAbstraction
+    │ logged = NULL ⇒ actions!.logger = silentLogger
+    │ logged ≠ NULL ⇒ actions!.logger = toLogger(logged)
     └───────────────────────────────────────────────────
 
     The workflowFile? and projectDir? above are the values in settings, so a

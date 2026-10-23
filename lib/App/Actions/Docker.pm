@@ -24,8 +24,10 @@ my $CLIENT_VARIABLE = qr/
 	) \z
 /xi;
 
-# A name a process environment can carry on every platform.
-my $VARIABLE_NAME = qr/\A[A-Za-z_][A-Za-z0-9_]*\z/;
+# A name a process environment can carry on every platform.  - and . are
+# allowed after the first character because GitHub's INPUT_* names keep
+# them (INPUT_GITHUB-TOKEN), and such a value is often a secret.
+my $VARIABLE_NAME = qr/\A[A-Za-z_][A-Za-z0-9_.-]*\z/;
 
 our $VERSION = '0.002.0';
 
@@ -613,8 +615,8 @@ change what the command does:
 
 =over 4
 
-=item * the name is not one an environment can carry (letters, digits and
-C<_>, not starting with a digit);
+=item * the name is not one an environment can carry (letters, digits,
+C<_>, C<-> and C<.>, starting with a letter or C<_>);
 
 =item * the name is one the docker client reads for itself, such as
 C<DOCKER_HOST>, C<PATH>, C<HOME>, C<TMPDIR>, C<HTTPS_PROXY> or

@@ -255,6 +255,7 @@ my %MESSAGES = (
 	'runner.unsupported.skipped' => "action '%(action)s' skipped: %(reason)s",
 	'runner.unsupported.note' => '    (skipped: %(reason)s)',
 	'runner.docker_action.no_image' => "Docker action '%(uses)s' in job '%(job)s' has no image name; check the expression it uses",
+	'runner.docker_action.bad_args' => "Unable to read the args of '%(uses)s' ('%(args)s'): a quote is not closed",
 	'runner.docker_action.bad_image' => "Docker action '%(uses)s' in job '%(job)s' resolved to '%(image)s', which is not an image name; check the expression it uses",
 	'runner.docker_action.exited' => 'docker action exited with status %(status)s',
 	'runner.local_action.missing' => "Local action '%(uses)s' does not exist (looked in %(dir)s)",

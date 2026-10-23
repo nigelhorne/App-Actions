@@ -315,6 +315,9 @@ writes and removes the step files.
 	| skipped: REASON             |                              | it fail instead             |
 	| Shell 'bash' is not         | The image has no bash        | Use shell: sh, or an image  |
 	| available in the container  |                              | with bash                   |
+	| Unable to read the args of  | A docker:// action's         | Close the quote, or escape  |
+	| 'X' ('A'): a quote is not   | with.args has a quote that   | it with a backslash         |
+	| closed                      | is not closed                |                             |
 	+-----------------------------+------------------------------+-----------------------------+
 
 =cut
@@ -363,6 +366,8 @@ sub _execute_step {
 	if (!defined $should_run) {
 		$self->_complain('runner.step.if_failed', { step => $internal_id, error => chomp_error($@) });
 		$self->_fail_job;
+		# Recorded as an env failure is, so a later steps.ID.outcome sees it.
+		$self->_record($step_id, 'failure', 'failure', {});
 		return 'failure';
 	}
 
@@ -646,11 +651,36 @@ sub _run_docker_action {
 		(defined $with->{entrypoint}
 			? (entrypoint => $self->{expression}->interpolate("$with->{entrypoint}", $context, $status))
 			: ()),
-		arguments => [ defined $with->{args} ? shellwords($self->{expression}->interpolate("$with->{args}", $context, $status)) : () ],
+		arguments => $self->_action_arguments($step, $with->{args}, $context, $status),
 		title => $self->i18n('runner.explain.action', { uses => $step->{uses}, job => $job_id }),
 	);
 
 	return $self->_collected($files, $rc, 'runner.docker_action.exited');
+}
+
+# _action_arguments
+# Purpose:     Split a docker:// action's `with.args` into words, as a shell
+#              would.
+# Entry:       $step - for the message; $args - the text, or undef; $context;
+#              $status.
+# Exit status: Returns an array reference.  Throws runner.docker_action.bad_args
+#              when the text cannot be split (an unclosed quote), because
+#              shellwords then returns nothing and the action would run with
+#              no arguments at all.
+# Side effects: None.
+sub _action_arguments {
+	my ($self, $step, $args, $context, $status) = @_;
+
+	return [] unless defined $args;
+
+	my $text = $self->{expression}->interpolate("$args", $context, $status);
+	my @words = shellwords($text);
+
+	# Quoted as written, so a secret the interpolation filled in is not shown.
+	$self->throw('runner.docker_action.bad_args', { uses => $step->{uses}, args => "$args" })
+		if !@words && $text =~ /\S/;
+
+	return \@words;
 }
 
 # _run_local_action
@@ -825,8 +855,11 @@ sub _run_node_script {
 	my ($self, $script, $env, $step_id, $action_path, $inputs) = @_;
 
 	my $exec_env = $self->_exec_env($env, undef, $step_id, $action_path);
+	# As GitHub names them, and as @actions/core's getInput reads them: upper
+	# case with spaces as _, a - or . kept (INPUT_PERL-VERSION).  Anything an
+	# environment name cannot hold becomes _ as well.
 	for my $name (keys %{$inputs}) {
-		(my $key = uc $name) =~ s/[^A-Z0-9_]/_/g;
+		(my $key = uc $name) =~ s/[^A-Z0-9_.-]/_/g;
 		$exec_env->{"INPUT_$key"} = $inputs->{$name};
 	}
 
@@ -1240,7 +1273,11 @@ C<NAME=value> to C<$GITHUB_ENV>.
 image has only C<sh>; the step then fails with C<Shell 'bash' is not
 available>.
 
-=item * B<JavaScript actions need C<node> in the image.>
+=item * B<JavaScript actions need C<node> in the image.>  Their inputs
+arrive as C<INPUT_*> variables named as GitHub names them: upper case, a
+space becomes C<_>, and C<-> and C<.> are kept, so C<perl-version> is
+C<INPUT_PERL-VERSION>.  A shell cannot read such a name as C<$NAME>; use
+C<printenv 'INPUT_PERL-VERSION'>.
 
 =item * B<A failed step stops the job's later steps>, except those with
 C<if: failure()> or C<if: always()>, and except when the step has

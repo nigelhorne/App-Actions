@@ -266,6 +266,7 @@ my %MESSAGES = (
 	'runner.unsupported.skipped' => "action '%(action)s' ignorée : %(reason)s",
 	'runner.unsupported.note' => '    (ignorée : %(reason)s)',
 	'runner.docker_action.no_image' => "L'action Docker '%(uses)s' du job '%(job)s' n'a pas de nom d'image ; vérifiez l'expression qu'elle utilise",
+	'runner.docker_action.bad_args' => "Impossible de lire les args de '%(uses)s' ('%(args)s') : un guillemet n'est pas fermé",
 	'runner.docker_action.bad_image' => "L'action Docker '%(uses)s' du job '%(job)s' donne '%(image)s', qui n'est pas un nom d'image ; vérifiez l'expression qu'elle utilise",
 	'runner.docker_action.exited' => "l'action Docker s'est terminée avec le code %(status)s",
 	'runner.local_action.missing' => "L'action locale '%(uses)s' n'existe pas (cherchée dans %(dir)s)",

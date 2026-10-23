@@ -266,6 +266,7 @@ my %MESSAGES = (
 	'runner.unsupported.skipped' => "Action '%(action)s' übersprungen: %(reason)s",
 	'runner.unsupported.note' => '    (übersprungen: %(reason)s)',
 	'runner.docker_action.no_image' => "Die Docker-Action '%(uses)s' in Job '%(job)s' hat keinen Image-Namen; prüfen Sie den verwendeten Ausdruck",
+	'runner.docker_action.bad_args' => "Die args von '%(uses)s' ('%(args)s') können nicht gelesen werden: ein Anführungszeichen ist nicht geschlossen",
 	'runner.docker_action.bad_image' => "Die Docker-Action '%(uses)s' in Job '%(job)s' ergibt '%(image)s', was kein Image-Name ist; prüfen Sie den verwendeten Ausdruck",
 	'runner.docker_action.exited' => 'die Docker-Action endete mit Status %(status)s',
 	'runner.local_action.missing' => "Die lokale Action '%(uses)s' existiert nicht (gesucht in %(dir)s)",
