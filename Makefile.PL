@@ -12,10 +12,10 @@ if ($^O eq 'darwin') {
 }
 
 WriteMakefile(
-    NAME           => 'App::Actions',
-    ABSTRACT_FROM  => 'lib/App/Actions.pm',
-    VERSION_FROM   => 'lib/App/Actions.pm',
-    AUTHOR         => 'Nigel Horne (njh@nigelhorne.com)',
+	NAME           => 'App::Actions',
+	ABSTRACT_FROM  => 'lib/App/Actions.pm',
+	VERSION_FROM   => 'lib/App/Actions.pm',
+	AUTHOR         => 'Nigel Horne (njh@nigelhorne.com)',
     ((defined($ExtUtils::MakeMaker::VERSION) && ($ExtUtils::MakeMaker::VERSION >= 6.3002))
         ? ('LICENSE' => 'gpl_2')
         : ()),
@@ -55,8 +55,7 @@ WriteMakefile(
     },
     CONFIGURE_REQUIRES => {
         'ExtUtils::MakeMaker' => 6.64,
-    },
-    TEST_REQUIRES  => {
+    }, TEST_REQUIRES  => {
         'Capture::Tiny'    => 0,
         'File::Copy'       => 0,
         'File::Find'       => 0,
@@ -67,6 +66,7 @@ WriteMakefile(
         'Errno'            => 0,
         'Test::Exception'  => 0,
         'Test::Most'       => 0,
+	'Test::Returns' => 0,
         'Test::Warn'       => 0,
     },
     MIN_PERL_VERSION => '5.014',
@@ -97,7 +97,7 @@ WriteMakefile(
 # unstaged edits included.  An ordinary clone needs no hook setup for either
 # target to work.
 sub MY::postamble {
-    return <<'MAKE';
+	return <<'MAKE';
 .PHONY: check-staged check-worktree
 check-staged:
 	$(PERLRUN) .githooks/pre-commit --staged
