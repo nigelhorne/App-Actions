@@ -49,6 +49,7 @@ on 'test' => sub {
 	requires 'Test::DescribeMe';
 	requires 'Test::Exception';
 	requires 'Test::Mockingbird';
+	requires 'Test::Memory::Cycle';
 	requires 'Test::Most';
 	requires 'Test::Returns';
 	requires 'Test::Warn';

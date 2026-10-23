@@ -117,6 +117,9 @@ jobs:
           AUTOMATED_TESTING: 1
           NO_NETWORK_TESTING: 1
           NONINTERACTIVE_TESTING: 1
+          # t/space-path.t reruns the whole suite from a copy, which under
+          # Devel::Cover takes most of an hour and adds no coverage of lib/
+          SPACE_PATH: 0
         run: |
           if [ "${{ github.repository }}" = "nigelhorne/App-Test-Generator" ]; then
             bin/generate-test-dashboard \
