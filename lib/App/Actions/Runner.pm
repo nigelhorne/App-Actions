@@ -944,9 +944,14 @@ sub _shares_runner_files {
 
 	my ($who) = (defined $user && length $user) ? split(/:/, $user, 2) : ();
 
+	# The user running this may be named as well as numbered.  getpwuid is
+	# not implemented everywhere (Windows), and then no name matches.
+	my $me = eval { (getpwuid $<)[0] };
+
 	return !(defined $who && length $who) ? 0
 		: ($who eq 'root' || $who eq '0') ? 0
 		: ($who =~ /\A[0-9]+\z/ && $who == $<) ? 0
+		: (defined $me && $who eq $me) ? 0
 		: 1;
 }
 
@@ -1608,7 +1613,10 @@ sub _record_instance_result {
 	my $report = $self->{report}->record($instance->{display_name}, $result->{result});
 	if ($result->{result} eq 'failure') {
 		$group->{result} = 'failure';
-		$group->{stop} = 1 if $plan->{fail_fast};
+		# On GitHub an instance that may fail does not cancel the rest of its
+		# matrix: continue-on-error applies to the job, fail-fast to the
+		# others, and the first wins for this one.
+		$group->{stop} = 1 if $plan->{fail_fast} && !$continue;
 		$continue ? $self->_say($self->i18n('runner.job.continued', { name => $plan->{display_name} })) : $report->fail;
 	} elsif ($result->{result} eq 'success' && $group->{result} eq 'skipped') {
 		$group->{result} = 'success';

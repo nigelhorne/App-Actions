@@ -46,7 +46,7 @@ Readonly::Hash my %DOCUMENT_OWNER => (
 
 # Where a workflow lives inside a repository, so the repository root can be
 # found from the workflow's own path.
-Readonly::Scalar my $WORKFLOW_IN_REPOSITORY => qr{^(.*)/\.github/workflows/[^/]+$};
+Readonly::Scalar my $WORKFLOW_IN_REPOSITORY => qr{\A(.*)/\.github/workflows/[^/]+\z}s;
 
 # The options list_jobs forces: listing never starts anything or prints
 # anything but the list.
@@ -871,6 +871,10 @@ sub _project_dir {
 	if (!defined $wanted) {
 		($wanted) = $workflow_file =~ $WORKFLOW_IN_REPOSITORY;
 		$class->throw('actions.project_dir_required') unless defined $wanted;
+
+		# /.github/workflows/ci.yml is in the root directory; an empty name
+		# would be taken by abs_path for the current directory instead.
+		$wanted = '/' unless length $wanted;
 	}
 
 	my $project_dir = abs_path($wanted);

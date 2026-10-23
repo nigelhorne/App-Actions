@@ -4308,5 +4308,571 @@ subtest 'App::Actions::Runner::Steps' => sub {
 	};
 };
 
+# ---------------------------------------------------------------------------
+# App::Actions::Runner
+# ---------------------------------------------------------------------------
+
+use App::Actions::Runner;
+
+# A Docker client for the runner itself: what the planner asks of it
+# directly, everything else being mocked part by part.
+{
+	package Local::RunnerDocker;
+	sub new { my ($class, %option) = @_; return bless { removed => [], present => {}, checks => 0, %option }, $class }
+	sub check { my ($self) = @_; $self->{checks}++; die "Cannot connect to the Docker daemon\n" if $self->{down}; return 1 }
+	sub bin { return 'docker' }
+	sub image_exists { my ($self, $image) = @_; return $self->{present}{$image} ? 1 : 0 }
+	sub image_remove { my ($self, $image) = @_; push @{ $self->{removed} }, $image; return 0 }
+	sub container_start { return 0 }
+	sub container_exec { return 0 }
+	sub redact { my ($self, $text) = @_; (my $copy = $text) =~ s/hunter2/***/g; return $copy }
+
+	# One of the caller's own, which need not say what command it runs.
+	package Local::SilentDocker;
+	our @ISA = ('Local::RunnerDocker');
+	sub bin { die "no such method\n" }
+}
+
+subtest 'App::Actions::Runner' => sub {
+	my $project = tempdir(CLEANUP => 1);
+	my $yaml = <<'YAML';
+name: CI
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        v: [1, 2, 3]
+    steps: [{run: echo}]
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps: [{run: echo}]
+  windows:
+    runs-on: windows-latest
+    steps: [{run: echo}]
+YAML
+	my $workflow = App::Actions::Workflow->load(write_file('ci.yml', $yaml));
+	my $runner = sub {
+		return App::Actions::Runner->new(workflow => $workflow, project_dir => $project, docker => Local::RunnerDocker->new,
+			quiet => 1, logger => Local::Logger->new, @_);
+	};
+
+	# What the runner prints, from the selected handle.
+	my $printed = sub {
+		my ($code) = @_;
+		my $text = '';
+		open my $handle, '>', \$text or die $!;
+		my $old = select $handle;
+		my $ok = eval { $code->(); 1 };
+		my $error = $@;
+		select $old;
+		die $error unless $ok;
+		return $text;
+	};
+
+	subtest 'new' => sub {
+		my $object = $runner->();
+		is_deeply([ @{$object}{qw(project_dir perl_image keep_images parallel pull_concurrency dry_run)} ],
+			[ Cwd::abs_path($project), 'perl:%s', 1, 1, 4, 0 ], 'the defaults');
+		is($runner->(explain => 1)->{dry_run}, 1, 'an explain run is a dry run');
+		is($runner->(keep_images => 0)->{keep_images}, 0, 'keeping images is the opt-out');
+		is($runner->(verbose => 'yes')->{verbose}, 1, 'flags are read for truth');
+		like($object->{run_id}, qr/\A[0-9a-f]+\z/, 'a run id that is a plain name');
+		isa_ok($runner->(docker => undef)->{docker}, 'App::Actions::Docker', 'a Docker client of its own');
+		isa_ok($object->{$_->[0]}, $_->[1], "the $_->[0] part") for [ images => 'App::Actions::Runner::Images' ],
+			[ containers => 'App::Actions::Runner::Containers' ], [ report => 'App::Actions::Runner::Report' ];
+		memory_cycle_ok($object, 'no reference cycle between the runner and its parts');
+
+		throws_code(sub { App::Actions::Runner->new(project_dir => $project) }, 'runner.workflow_required', 'A workflow is required', 'no workflow');
+		throws_code(sub { App::Actions::Runner->new(workflow => $workflow) }, 'runner.project_dir_required', 'A project directory is required', 'no project');
+		my $gone = File::Spec->catdir($project, 'gone');
+		throws_code(sub { $runner->(project_dir => $gone) }, 'runner.project_dir_missing', "Project directory '$gone' does not exist", 'a project that is not there');
+		my $file = write_file('plain', 'x');
+		throws_code(sub { $runner->(project_dir => $file) }, 'runner.project_dir_missing', undef, 'a file is not a project');
+		throws_code(sub { $runner->(pull => 1, no_pull => 1) }, 'runner.pull_conflict', '--pull and --no-pull cannot be used together', 'pull and no-pull');
+		throws_ok { $runner->(colour => 1) } qr/\AInvalid arguments to App::Actions::Runner::new: Unknown parameter 'colour'/, 'an unknown option';
+		throws_ok { $runner->(workflow => Local::Logger->new) } qr/'workflow'/, 'a workflow that cannot expand its jobs';
+	};
+
+	subtest 'option_rules, json_schema, preflight_schema_version and workflow' => sub {
+		my $rules = App::Actions::Runner->option_rules;
+		is_deeply($rules->{quiet}, { type => 'string', optional => 1 }, 'a flag is an optional string');
+		$rules->{quiet}{type} = 'tampered';
+		is(App::Actions::Runner->option_rules->{quiet}{type}, 'string', 'and the table is a copy');
+		is(App::Actions::Runner->json_schema->{properties}{schema_version}{const}, App::Actions::Runner->preflight_schema_version,
+			'the schema names its own version');
+		is(App::Actions::Runner->json_schema->{version}, App::Actions::Runner->preflight_schema_version, 'in both places');
+		is($runner->()->workflow, $workflow, 'workflow');
+	};
+
+	subtest '_pull_concurrency and _job_parallelism' => sub {
+		local $ENV{ACTION_RUN_PULL_CONCURRENCY};
+		is(App::Actions::Runner->_pull_concurrency(undef), 4, 'four by default');
+		is(App::Actions::Runner->_pull_concurrency('7'), 7, 'the option');
+		$ENV{ACTION_RUN_PULL_CONCURRENCY} = 3;
+		is(App::Actions::Runner->_pull_concurrency(undef), 3, 'the environment');
+		is(App::Actions::Runner->_pull_concurrency(''), 3, 'an empty option falls through to it');
+		is(App::Actions::Runner->_pull_concurrency(9), 9, 'and the option wins over it');
+		for my $bad ('0', '-1', '1.5', 'two', ' 2', '02', "2\n") {
+			(my $shown = $bad) =~ s/\n/\\n/;
+			throws_code(sub { App::Actions::Runner->_pull_concurrency($bad) }, 'runner.pull_concurrency_invalid',
+				"pull concurrency must be a positive integer, not '$bad'", "'$shown' is refused");
+		}
+		throws_code(sub { App::Actions::Runner->_pull_concurrency([ 2 ]) }, 'runner.pull_concurrency_invalid', undef, 'a structure is refused');
+
+		is(App::Actions::Runner::_job_parallelism($_->[0]), $_->[1], "parallel '" . (defined $_->[0] ? $_->[0] : 'undef') . "'")
+			for [ undef, 1 ], [ 4, 4 ], [ '0', 1 ], [ 'x', 1 ], [ '-3', 1 ], [ [ 2 ], 1 ];
+	};
+
+	subtest '_shares_runner_files' => sub {
+		my $me = eval { (getpwuid $<)[0] };
+		is(App::Actions::Runner::_shares_runner_files($_), 0, "'" . (defined $_ ? $_ : 'undef') . "' needs no shared directory")
+			for (undef, '', 'root', '0', '0:0', "$<", "$<:100", ':1');
+		SKIP: {
+			skip 'no user name here', 2 unless defined $me && length $me;
+			is(App::Actions::Runner::_shares_runner_files($me), 0, 'nor does the user running this, by name');
+			is(App::Actions::Runner::_shares_runner_files("$me:staff"), 0, 'with a group too');
+		}
+		is(App::Actions::Runner::_shares_runner_files('nobody-' . $$), 1, 'another user does');
+		is(App::Actions::Runner::_shares_runner_files($< + 1), 1, 'and so does another uid');
+	};
+
+	subtest '_select_jobs and list_jobs' => sub {
+		my $object = $runner->();
+		my $instances = $workflow->expand_jobs;
+		my $selected = $object->_select_jobs($instances);
+		is(scalar @{$selected}, 5, 'every instance without a filter');
+		is_deeply($object->{job_order}, [ qw(build test windows) ], 'job ids in workflow order');
+		is(scalar @{ $object->{job_groups}{build} }, 3, 'grouped');
+
+		$object = $runner->(jobs => [ 'test', $instances->[1]{display_name} ]);
+		is_deeply([ map { $_->{display_name} } @{ $object->_select_jobs($instances) } ], [ $instances->[1]{display_name}, 'test' ],
+			'a filter by id or display name, kept in workflow order');
+		throws_code(sub { $runner->(jobs => [ 'deploy' ])->_select_jobs($instances) }, 'runner.no_job_matched', "No job matched 'deploy'",
+			'a filter that matches nothing');
+
+		my $text = $printed->(sub { is($runner->()->list_jobs, 0, 'list_jobs returns 0') });
+		is(scalar(() = $text =~ /\n/g), 5, 'one line per instance');
+		like($text, qr/\Abuild\t/, 'id, a tab, then the display name');
+	};
+
+	subtest '_truthy_scalar and _log_root' => sub {
+		is(App::Actions::Runner::_truthy_scalar($_->[0]), $_->[1], 'fail-fast ' . (defined $_->[0] ? "'$_->[0]'" : 'undef'))
+			for [ JSON::PP::true(), 1 ], [ JSON::PP::false(), 0 ], [ undef, 0 ], [ 'false', 0 ], [ 'No', 0 ], [ '0', 0 ],
+				[ 'true', 1 ], [ '', 1 ], [ 'maybe', 1 ];
+		is($runner->(log_dir => '/logs')->_log_root, '/logs', 'log_dir');
+		is($runner->(log_dir => '')->_log_root, App::Actions::Logs->default_directory, 'else the default');
+	};
+
+	subtest '_prepare_temp, _write_shim and _build_base_env' => sub {
+		my $object = $runner->();
+		$object->_prepare_temp;
+		my $temp = $object->{temp_path};
+		ok(-d File::Spec->catdir($temp, $_), "the $_ directory") for qw(_temp _tool home scripts env output summary path event bin aptbin);
+		is((stat $temp)[2] & oct('07777'), oct('0700'), 'private');
+		is((stat File::Spec->catfile($temp, 'bin', 'sudo'))[2] & oct('0777'), oct('0755'), 'the sudo shim is executable');
+		like(do { open my $h, '<', File::Spec->catfile($temp, 'aptbin', 'apt-get') or die $!; local $/; <$h> }, qr{exec /usr/bin/apt-get "\$\@"},
+			'the apt shims call the real program');
+
+		my $guard = mock_scoped('App::Actions::Runner::_git' => sub {
+			my (undef, @args) = @_;
+			return $args[0] eq 'config' ? "git\@github.com:owner/repo.git\n" : $args[0] eq 'symbolic-ref' ? "feature\n" : "abc123\n";
+		});
+		$object->_build_base_env;
+		my $env = $object->{base_env};
+		is_deeply([ @{$env}{qw(GITHUB_REPOSITORY GITHUB_REPOSITORY_OWNER GITHUB_REF GITHUB_SHA CI GITHUB_WORKFLOW HOME)} ],
+			[ 'owner/repo', 'owner', 'refs/heads/feature', 'abc123', 'true', 'CI', '/root' ], 'values from the checkout');
+		ok(!exists $env->{RUNNER_DEBUG}, 'no debug unless verbose');
+		my $event = JSON::PP->new->decode(do { open my $h, '<', File::Spec->catfile($temp, 'event.json') or die $!; local $/; <$h> });
+		is($event->{repository}{name}, 'repo', 'event.json is written');
+		is((stat File::Spec->catfile($temp, 'event.json'))[2] & oct('0777'), oct('0600'), 'privately');
+		# The run's own earlier event.json is removed and made afresh, never
+		# opened for writing as it stands (which would follow a planted link).
+		$object->_build_base_env;
+		is((stat File::Spec->catfile($temp, 'event.json'))[2] & oct('0777'), oct('0600'), 'a second build replaces it, still private');
+		undef $guard;
+
+		my $parallel_root = File::Spec->catdir(tempdir(CLEANUP => 1), 'job-1');
+		my $child = $runner->();
+		$child->_prepare_temp($parallel_root);
+		is($child->{temp_path}, $parallel_root, 'a parallel job uses the directory it is given');
+
+		my $shared = $runner->(user => 'nobody-' . $$, quiet => 0);
+		$shared->_prepare_temp;
+		is((stat $shared->{temp_path})[2] & oct('07777'), oct('1777'), 'a shared directory is sticky');
+		like($shared->{logger}{lines}[0][1], qr/nobody-$$/, 'and the user is told');
+		remove_tree_quietly($_) for $temp, $shared->{temp_path};
+	};
+
+	subtest '_repository_env' => sub {
+		my %remotes = (
+			'https://github.com/o/r.git' => 'o/r', 'git@github.com:o/r' => 'o/r', 'ssh://git@github.com/o/r/' => 'o/r',
+			'https://gitlab.com/o/r.git' => undef, '' => undef,
+		);
+		for my $remote (sort keys %remotes) {
+			my $object = $runner->();
+			my $guard = mock_scoped('App::Actions::Runner::_git' => sub { $_[1] eq 'config' ? $remote : '' });
+			my $env = $object->_repository_env;
+			is($env->{GITHUB_REPOSITORY}, defined $remotes{$remote} ? $remotes{$remote} : File::Basename::basename($object->{project_dir}),
+				"remote '$remote'");
+			is_deeply([ @{$env}{qw(GITHUB_REF_NAME GITHUB_SHA)} ], [ 'main', '0' x 40 ], 'with no git, main and a zero commit');
+			is($object->_repository_env, $env, 'and asked once');
+		}
+		my $started = time;
+		my $object = $runner->();
+		my $guard = mock_scoped('App::Actions::Runner::_git' => sub { $_[1] eq 'config' ? 'github.com:' . ('a/' x $config{big}) : '' });
+		$object->_repository_env;
+		ok(time - $started <= $config{time_limit}, 'a hostile remote is matched in linear time');
+	};
+
+	subtest '_github_context and _preflight_context' => sub {
+		my $object = $runner->();
+		my $guard = mock_scoped('App::Actions::Runner::_git' => sub { '' });
+		my $github = $object->_github_context({ base_id => 'build' });
+		is_deeply([ @{$github}{qw(job event_name ref workspace token)} ], [ 'build', 'push', 'refs/heads/main', '/github/workspace', '' ],
+			'a context before the base environment exists');
+		is($object->_github_context('test')->{job}, 'test', 'a job id is enough');
+		my $context = $object->_preflight_context({ matrix => { v => 1 }, matrix_index => 0, matrix_total => 3 });
+		is_deeply([ $context->{matrix}, $context->{needs}, $context->{strategy} ], [ { v => 1 }, {}, { 'job-index' => 0, 'job-total' => 3 } ],
+			'needs are unknown before the run');
+		$context->{env}{X} = 1;
+		ok(!exists $object->{env}{X}, 'and the env is a copy');
+	};
+
+	subtest '_plan_instance and _admit' => sub {
+		my $object = $runner->(secrets => { T => 'hunter2' });
+		my $guard = mock_scoped('App::Actions::Runner::_git' => sub { '' });
+		my $plan = $object->_plan_instance({ base_id => 'a', display_name => 'a hunter2', strategy => {} }, {}, 0, 1);
+		is_deeply([ @{$plan}{qw(display_name should_run error fail_fast)} ], [ 'a ***', 1, undef, 1 ], 'a plain job runs; its name is redacted');
+		is($object->_plan_instance({ base_id => 'a', strategy => {} }, {}, 1, 1)->{should_run}, 0, 'one whose needs failed does not');
+		is($object->_plan_instance({ base_id => 'a', if => 'always()', strategy => {} }, {}, 1, 1)->{should_run}, 1, 'unless it says always()');
+		is($object->_plan_instance({ base_id => 'a', if => 'true', strategy => {} }, {}, 1, 1)->{should_run}, 0, 'a condition with no status function is not enough');
+		is($object->_plan_instance({ base_id => 'a', if => "github.job == 'b'", strategy => {} }, {}, 0, 1)->{should_run}, 0, 'a false condition');
+		$plan = $object->_plan_instance({ base_id => 'a', display_name => 'a', if => 'nope(', strategy => {} }, {}, 0, 1);
+		ok(defined $plan->{error}, 'a condition that does not evaluate');
+
+		my $group = { result => 'skipped' };
+		$object = $runner->(quiet => 0);
+		my $out = $printed->(sub { is($object->_admit($plan, {}, $group), 0, 'is not admitted') });
+		is_deeply([ $group->{result}, $object->{report}->failed ], [ 'failure', 1 ], 'and fails the run');
+		like($object->{logger}{lines}[0][1], qr/\Aaction-run: unable to evaluate if for 'a': /, 'with a warning');
+		$out = $printed->(sub { $object->_admit({ instance => { display_name => 's' }, display_name => 's', should_run => 0 }, {}, $group) });
+		is($out, "==> Job: s (skipped)\n", 'a skipped job is said');
+		my $runs = { instance => { display_name => 'r' }, display_name => 'r', should_run => 1 };
+		is($object->_admit($runs, { x => 1 }, $group), 1, 'a runnable plan is admitted');
+		is_deeply($runs->{instance}{needs_results}, { x => 1 }, 'with its needs');
+	};
+
+	subtest '_record_instance_result' => sub {
+		my $object = $runner->();
+		my $group = { result => 'skipped', stop => 0 };
+		my $plan = { instance => { display_name => 'a' }, display_name => 'a', context => {}, fail_fast => 1 };
+		$object->_record_instance_result($plan, { result => 'success' }, $group);
+		is($group->{result}, 'success', 'a success');
+		$object->_record_instance_result($plan, { result => 'skipped' }, $group);
+		is($group->{result}, 'success', 'a skipped one changes nothing');
+		$object->_record_instance_result($plan, { result => 'failure' }, $group);
+		is_deeply([ @{$group}{qw(result stop)}, $object->{report}->failed ], [ 'failure', 1, 1 ], 'a failure stops a fail-fast group');
+
+		# continue-on-error lets the rest of the matrix go on, as on GitHub.
+		$object = $runner->();
+		$group = { result => 'skipped', stop => 0 };
+		my $continuing = { %{$plan}, instance => { display_name => 'b', 'continue-on-error' => 'true' } };
+		$object->_record_instance_result($continuing, { result => 'failure' }, $group);
+		is_deeply([ @{$group}{qw(result stop)}, $object->{report}->failed ], [ 'failure', 0, 0 ],
+			'a failure that may happen stops nothing and fails nothing');
+
+		$object = $runner->(quiet => 0);
+		$group = { result => 'skipped', stop => 0 };
+		$printed->(sub { $object->_record_instance_result({ %{$plan}, instance => { display_name => 'c', 'continue-on-error' => 'nope(' } }, { result => 'failure' }, $group) });
+		is_deeply([ $group->{stop}, $object->{report}->failed ], [ 1, 1 ], 'one that does not evaluate does not continue');
+		like($object->{logger}{lines}[0][1], qr/continue-on-error for 'a'/, 'and says so');
+	};
+
+	subtest '_run_base_job and _run_groups' => sub {
+		my @ran;
+		my %result = (build => 'success', test => 'success');
+		my $guard = mock_scoped('App::Actions::Runner::_run_instance' => sub { push @ran, $_[1]{display_name}; { result => $result{ $_[1]{base_id} } || 'skipped' } });
+		my $git = mock_scoped('App::Actions::Runner::_git' => sub { '' });
+		my $object = $runner->();
+		$object->_select_jobs($workflow->expand_jobs);
+		my $results = $object->_run_groups;
+		is_deeply([ map { $results->{$_}{result} } qw(build test windows) ], [ qw(success success skipped) ], 'every job, needs first');
+		is(scalar @ran, 5, 'each instance ran once');
+
+		@ran = ();
+		$result{build} = 'failure';
+		$object = $runner->();
+		$object->_select_jobs($workflow->expand_jobs);
+		$results = $object->_run_groups;
+		is(scalar(grep { /build/ } @ran), 1, 'fail-fast stops the rest of the matrix');
+		ok(!grep({ $_ eq 'test' } @ran), 'and a job that needs it is skipped');
+		is($results->{test}{result}, 'skipped', 'as its result says');
+
+		$object = $runner->(jobs => [ 'test' ], quiet => 0);
+		$object->_select_jobs($workflow->expand_jobs);
+		$printed->(sub { $object->_run_groups });
+		like($object->{logger}{lines}[0][1], qr/needs 'build', which was not selected; assuming it succeeded/, 'a need not selected is assumed');
+
+		my $cyclic = App::Actions::Workflow->load(write_file('cycle.yml', "on: push\njobs:\n  a: {needs: b, runs-on: x, steps: [{run: x}]}\n  b: {needs: a, runs-on: x, steps: [{run: x}]}\n"));
+		$object = eval { App::Actions::Runner->new(workflow => $cyclic, project_dir => $project, docker => Local::RunnerDocker->new, quiet => 1) };
+		SKIP: {
+			skip 'the workflow refuses a cycle itself', 1 unless $object && eval { $object->_select_jobs($cyclic->expand_jobs); 1 };
+			throws_code(sub { $object->_run_groups }, 'runner.dependency_cycle', undef, 'a dependency cycle is refused');
+		}
+		throws_code(sub { $runner->()->_run_base_job('ghost', { results => {}, visited => {}, running => {} }) }, 'runner.unknown_job',
+			"Unknown job 'ghost'", 'an unknown job');
+	};
+
+	subtest '_runs_in_parallel' => sub {
+		is($runner->(parallel => 4)->_runs_in_parallel, 1, 'parallel');
+		is($runner->()->_runs_in_parallel, 0, 'not by default');
+		is($runner->(parallel => 4, $_ => 1)->_runs_in_parallel, 0, "not with $_") for qw(keep dry_run explain);
+	};
+
+	subtest '_run_instance' => sub {
+		my $git = mock_scoped('App::Actions::Runner::_git' => sub { '' });
+		my $object = $runner->();
+		my $windows = $printed->(sub { is($object->_run_instance({ base_id => 'w', display_name => 'w', 'runs-on' => 'windows-latest' }, {})->{result},
+			'skipped', 'a job that is not for Linux is skipped') });
+
+		my (@cleaned, $steps_dies);
+		my $guards = [
+			mock_scoped('App::Actions::Runner::Images::prepare_job' => sub { { image => 'ubuntu:latest', deferred => [] } }),
+			mock_scoped('App::Actions::Runner::Containers::create_network' => sub { 'net' }),
+			mock_scoped('App::Actions::Runner::Containers::start_services' => sub { [] }),
+			mock_scoped('App::Actions::Runner::Containers::start_job' => sub { 'job-c' }),
+			mock_scoped('App::Actions::Runner::Containers::inspect' => sub { { path => '/bin', has_bash => 1 } }),
+			mock_scoped('App::Actions::Runner::Containers::check_services' => sub { $_[0] }),
+			mock_scoped('App::Actions::Runner::Containers::cleanup_job' => sub { push @cleaned, [ @_[1, 2] ]; $_[0] }),
+			mock_scoped('App::Actions::Runner::Steps::run' => sub { die "steps exploded\n" if $steps_dies; { result => 'success' } }),
+		];
+		$object = $runner->(env => { FROM_CLI => 'yes' });
+		$object->_prepare_temp;
+		$object->_build_base_env;
+		my $job = { base_id => 'b', display_name => 'b', 'runs-on' => 'ubuntu-latest', env => { JOB => '${{ github.job }}' } };
+		is($object->_run_instance($job, { github => { job => 'b' } })->{result}, 'success', 'a job that runs');
+		is_deeply(\@cleaned, [ [ 'net', [ 'job-c' ] ] ], 'and is cleaned up');
+
+		@cleaned = ();
+		$steps_dies = 1;
+		throws_ok { $object->_run_instance($job, { github => {} }) } qr/\Asteps exploded$/, 'an infrastructure failure propagates';
+		is_deeply(\@cleaned, [ [ 'net', [ 'job-c' ] ] ], 'after cleaning up');
+
+		my $no_image = mock_scoped('App::Actions::Runner::Images::prepare_job' => sub { { image => ' ', deferred => [] } });
+		throws_code(sub { $object->_run_instance($job, {}) }, 'runner.job.no_image', "Unable to determine a container image for job 'b'",
+			'a job with no image');
+		remove_tree_quietly($object->{temp_path});
+	};
+
+	subtest '_reach_docker, _run_check, _skipped_images and _preflight_result' => sub {
+		my $object = $runner->();
+		my $reached = $object->_reach_docker;
+		is_deeply([ @{$reached}{qw(reachable exit error)} ], [ 1, 0, undef ], 'a daemon that answers');
+		my $down = $runner->(docker => Local::RunnerDocker->new(down => 1))->_reach_docker;
+		is_deeply([ @{$down}{qw(reachable error)} ], [ 0, 'Cannot connect to the Docker daemon' ], 'one that does not');
+		is($down->{summary}{issues}[0]{problem}, 'Cannot connect to the Docker daemon', 'is the problem');
+		is($object->_docker_bin, 'docker', '_docker_bin');
+		is($runner->(docker => Local::SilentDocker->new)->_docker_bin, undef, 'a client that will not say');
+
+		my $result = $object->_preflight_result($down->{summary}, 0, $down->{summary}{issues}, [], 1, 'down');
+		is_deeply([ $result->{exit}, $result->{error}, $result->{summary}{ready} ], [ 2, 'down', JSON::PP::false() ], 'a JSON result, validated');
+		my $guard = mock_scoped('App::Actions::Schema::assert_valid' => sub { die "schema mismatch\n" });
+		throws_ok { $object->_preflight_result($down->{summary}, 0, [], [], 1, undef) } qr/\Aschema mismatch$/, 'a document that does not match';
+		is($object->_preflight_result({}, 1, [], [], 0, undef)->{exit}, 0, 'but a text result is not checked');
+		undef $guard;
+
+		my $git = mock_scoped('App::Actions::Runner::_git' => sub { '' });
+		$object->_select_jobs($workflow->expand_jobs);
+		my $skipped = $object->_skipped_images($object->{instances});
+		is_deeply([ map { $_->{status} } @{$skipped} ], [ 'skipped' ], 'what a run that is not ready would have needed');
+		$guard = mock_scoped('App::Actions::Check::run' => sub { 2 });
+		my $check = $object->_run_check($object->{instances}, 1);
+		is_deeply([ @{$check}{qw(reachable exit)} ], [ 1, 2 ], '_run_check');
+	};
+
+	subtest 'run and _cleanup' => sub {
+		my $git = mock_scoped('App::Actions::Runner::_git' => sub { '' });
+		my $base = mock_scoped('App::Actions::Runner::_check_environment' => sub { return });
+		my $groups = mock_scoped('App::Actions::Runner::_run_groups' => sub { $_[0]{report}->record('a', 'success'); {} });
+		my $object = $runner->();
+		is($object->run, 0, 'a run that succeeds is 0');
+		ok(!-d $object->{temp_path}, 'and leaves no temporary directory');
+		is($object->{cleaned_up}, 1, 'cleaned up once');
+		$object->_cleanup;
+		is($object->{cleaned_up}, 2, 'and a second cleanup does nothing');
+
+		undef $groups;
+		$groups = mock_scoped('App::Actions::Runner::_run_groups' => sub { $_[0]{report}->record('a', 'failure')->fail; {} });
+		is($runner->()->run, 1, 'a job that fails is 1');
+
+		undef $groups;
+		$groups = mock_scoped('App::Actions::Runner::_run_groups' => sub { die "daemon went away\n" });
+		$object = $runner->(quiet => 0);
+		$printed->(sub { is($object->run, 2, 'a run that breaks is 2') });
+		is_deeply($object->{logger}{lines}, [ [ error => 'action-run: daemon went away' ] ], 'and says why');
+		ok(!-d $object->{temp_path}, 'after cleaning up');
+
+		undef $groups;
+		$groups = mock_scoped('App::Actions::Runner::_run_groups' => sub { kill 'INT', $$; sleep 1; {} });
+		is($runner->()->run, 2, 'an interrupt becomes an error, and the run still cleans up');
+
+		undef $groups;
+		$groups = mock_scoped('App::Actions::Runner::_run_groups' => sub { {} });
+		$object = $runner->(keep_images => 0);
+		$object->{images}->note_pulled('pulled:1');
+		$object->run;
+		is_deeply($object->{docker}{removed}, [ 'pulled:1' ], 'a run not keeping its images removes what it pulled');
+		$object = $runner->(keep => 1);
+		my $out = '';
+		{
+			open my $h, '>', \$out or die $!;
+			my $old = select $h;
+			$object->run;
+			select $old;
+		}
+		ok(-d $object->{temp_path}, '--keep keeps the temporary directory');
+		like($out, qr/\Q$object->{temp_path}\E/, 'and says where it is');
+		remove_tree_quietly($object->{temp_path});
+	};
+};
+
+# Removes a directory a test made, ignoring one already gone.
+sub remove_tree_quietly {
+	my ($dir) = @_;
+	require File::Path;
+	File::Path::remove_tree($dir) if defined $dir && -d $dir;
+	return;
+}
+
+# ---------------------------------------------------------------------------
+# App::Actions
+# ---------------------------------------------------------------------------
+
+use App::Actions;
+
+subtest 'App::Actions' => sub {
+	# A repository with its workflow where GitHub keeps it, so the project
+	# directory can be worked out from the workflow's path.
+	my $repository = tempdir(CLEANUP => 1);
+	require File::Path;
+	File::Path::make_path(File::Spec->catdir($repository, '.github', 'workflows'));
+	my $file = write_file('ci.yml', "name: CI\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: echo}]\n",
+		File::Spec->catdir($repository, '.github', 'workflows'));
+	my $actions = sub { return App::Actions->new(workflow_file => $file, docker => Local::RunnerDocker->new, logger => 'NULL', @_) };
+
+	subtest 'new and the accessors' => sub {
+		my $object = $actions->();
+		is($object->project_dir, Cwd::abs_path($repository), 'the project is the repository the workflow is in');
+		is($object->workflow_file, Cwd::abs_path($file), 'the workflow file, absolute');
+		isa_ok($object->workflow, 'App::Actions::Workflow');
+		is_deeply($object->{jobs}, [], 'no job filter');
+		my $elsewhere = tempdir(CLEANUP => 1);
+		is($actions->(project_dir => $elsewhere)->project_dir, Cwd::abs_path($elsewhere), 'an explicit project wins');
+		memory_cycle_ok($object, 'no reference cycle');
+
+		throws_code(sub { App::Actions->new }, 'actions.workflow_file_required', 'workflow_file is required', 'no workflow');
+		my $missing = File::Spec->catfile($repository, 'none.yml');
+		throws_code(sub { App::Actions->new(workflow_file => $missing) }, 'actions.workflow_file_missing',
+			"Workflow file '$missing' does not exist", 'a workflow that is not there');
+		throws_code(sub { App::Actions->new(workflow_file => $repository) }, 'actions.workflow_file_missing', undef, 'a directory is not a workflow');
+		my $loose = write_file('loose.yml', "on: push\njobs:\n  a: {runs-on: x, steps: [{run: x}]}\n");
+		throws_code(sub { App::Actions->new(workflow_file => $loose) }, 'actions.project_dir_required',
+			'project_dir is required when the workflow is not inside .github/workflows', 'a workflow elsewhere needs a project');
+		my $gone = File::Spec->catdir($repository, 'gone');
+		throws_code(sub { $actions->(project_dir => $gone) }, 'actions.project_dir_missing', "Project directory '$gone' does not exist",
+			'a project that is not there');
+		throws_ok { $actions->(colour => 1) } qr/\AInvalid arguments to App::Actions::new: Unknown parameter 'colour'/, 'an unknown option';
+		throws_ok { $actions->(jobs => 'a') } qr/'jobs'/, 'a job filter must be a list';
+	};
+
+	subtest '_project_dir' => sub {
+		is(App::Actions->_project_dir(undef, "$repository/.github/workflows/ci.yml"), Cwd::abs_path($repository), 'from the workflow path');
+		is(App::Actions->_project_dir(undef, '/.github/workflows/ci.yml'), '/', 'a repository at the root is the root, not the current directory');
+		is(App::Actions->_project_dir(undef, "$repository/.github/workflows/odd\nname.yml"), Cwd::abs_path($repository),
+			'a file name with a newline in it is still in the workflows folder');
+		throws_code(sub { App::Actions->_project_dir(undef, "$repository/.github/workflows/sub/ci.yml") }, 'actions.project_dir_required', undef,
+			'nor does one in a folder below the workflows');
+		throws_code(sub { App::Actions->_project_dir(undef, "$repository/github/workflows/ci.yml") }, 'actions.project_dir_required', undef,
+			'nor one that only looks like it');
+	};
+
+	subtest '_logger' => sub {
+		my $object = Local::Logger->new;
+		is(App::Actions::_logger($object), $object, 'an object is used as it is');
+		my @lines;
+		my $array = App::Actions::_logger(\@lines);
+		isa_ok($array, 'Log::Abstraction');
+		$array->warn('collected');
+		ok(scalar(grep { /collected/ } map { ref $_ ? $_->{message} : $_ } @lines), 'an array collects the messages');
+		my $null = App::Actions::_logger('NULL');
+		isa_ok($null, 'Log::Abstraction');
+		my $stderr = '';
+		{
+			local *STDERR;
+			open STDERR, '>', \$stderr or die $!;
+			$null->error('never seen');
+		}
+		is($stderr, '', 'NULL is silent');
+		isa_ok(App::Actions::_logger({ level => 'error' }), 'Log::Abstraction', 'a hash of options');
+		throws_ok { App::Actions->new(workflow_file => $file, logger => sub { }) } qr/'logger'/, 'a code reference is not one of the forms';
+	};
+
+	subtest 'the logger argument wins over the configuration' => sub {
+		my $config = tempdir(CLEANUP => 1);
+		write_file('app-actions.yml', "App__Actions:\n  logger:\n    level: debug\n", $config);
+		local $ENV{CONFIG_DIR} = $config;
+		my $mine = Local::Logger->new;
+		is($actions->(logger => $mine)->{logger}, $mine, 'a logger given to new is kept');
+	};
+
+	subtest '_overrides and _runner' => sub {
+		my $object = $actions->(quiet => 1, image => 'mine:1');
+		is_deeply($object->_overrides('run', [ verbose => 1 ]), { verbose => 1 }, 'an override');
+		is_deeply($object->_overrides('run', []), {}, 'none');
+		throws_ok { $object->_overrides('run', [ colour => 1 ]) } qr/\AInvalid arguments to App::Actions::run: Unknown parameter 'colour'/,
+			'an unknown override names the method';
+		my $runner = $object->_runner({ image => undef, verbose => 1 });
+		isa_ok($runner, 'App::Actions::Runner');
+		is_deeply([ @{$runner}{qw(image verbose quiet)} ], [ undef, 1, 1 ], 'an override replaces, even with undef; the rest are the object\'s');
+		is($object->_runner({ docker => undef })->{docker}, $object->{docker}, 'an undef docker keeps the object\'s');
+	};
+
+	subtest 'run, preflight and list_jobs' => sub {
+		my $object = $actions->(quiet => 1);
+		my %seen;
+		my $guard = mock_scoped('App::Actions::Runner::run' => sub { $seen{run} = $_[0]{verbose}; 0 });
+		is($object->run(verbose => 1), 0, 'run is the runner\'s');
+		is($seen{run}, 1, 'with the overrides');
+		undef $guard;
+
+		$guard = mock_scoped('App::Actions::Runner::preflight' => sub { my (undef, %options) = @_; $seen{preflight} = { %options }; { exit => 0 } });
+		$object->preflight(json => 1, schema_line => 0);
+		is_deeply($seen{preflight}, { json => 1, schema_line => 0 }, 'json and schema_line go to the preflight');
+		throws_ok { $object->preflight(loud => 1) } qr/\AInvalid arguments to App::Actions::preflight: Unknown parameter 'loud'/, 'an unknown option';
+		undef $guard;
+
+		$guard = mock_scoped('App::Actions::Runner::list_jobs' => sub { $seen{list} = [ @{ $_[0] }{qw(dry_run quiet)} ]; 0 });
+		$object = $actions->();
+		$object->list_jobs(dry_run => 0);
+		is_deeply($seen{list}, [ 1, 1 ], 'listing never runs or prints anything but the list');
+	};
+
+	subtest 'json_schema' => sub {
+		for my $name (qw(check preflight cache logs)) {
+			is(ref App::Actions->json_schema($name), 'HASH', "the $name schema");
+		}
+		is_deeply(App::Actions->json_schema('preflight'), App::Actions::Runner->json_schema, 'each from its own module');
+		throws_code(sub { App::Actions->json_schema }, 'actions.document_required', 'A document name is required', 'no name');
+		throws_code(sub { App::Actions->json_schema('') }, 'actions.document_required', undef, 'an empty name');
+		throws_code(sub { App::Actions->json_schema('Check') }, 'actions.document_unknown',
+			"Unknown document 'Check'; expected check, preflight, cache or logs", 'names are exact');
+		throws_code(sub { App::Actions->json_schema('../etc/passwd') }, 'actions.document_unknown', undef, 'a path is just an unknown name');
+		throws_ok { App::Actions->json_schema([]) } qr/'name'/, 'a name that is not a string';
+	};
+};
+
 restore_all();
 done_testing();
