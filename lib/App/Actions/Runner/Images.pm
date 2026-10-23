@@ -146,7 +146,7 @@ None.
 
 	{
 		docker           => { type => 'object', can => 'image_exists' },
-		expression       => { type => 'object', can => 'interpolate' },
+		expression       => { type => 'object', can => [qw(interpolate interpolate_strict interpolate_known)] },
 		workflow         => { type => 'object', can => 'container_image' },
 		project_dir      => { type => 'string', min => 1 },
 		context          => { type => 'coderef' },
@@ -181,7 +181,7 @@ sub new {
 
 	my $params = validate_args(__PACKAGE__ . '::new', \@_, {
 		docker => { type => 'object', can => 'image_exists' },
-		expression => { type => 'object', can => 'interpolate' },
+		expression => { type => 'object', can => [qw(interpolate interpolate_strict interpolate_known)] },
 		workflow => { type => 'object', can => 'container_image' },
 		project_dir => { type => 'string', min => 1 },
 		context => { type => 'coderef' },
@@ -285,6 +285,9 @@ None; an expression that fails to resolve is reported in its entry.
 sub required {
 	my ($self, $instances) = @_;
 
+	# The resolving and the action walk use eval; the caller's $@ is theirs.
+	local $@;
+
 	my @entries;
 	my %seen;
 
@@ -357,6 +360,8 @@ None; a local action that cannot be read contributes no images.
 
 sub job_expressions {
 	my ($self, $job, $runs_on, $context) = @_;
+
+	local $@;
 
 	my $name = defined $job->{display_name} ? $job->{display_name} : $job->{base_id};
 	my @entries;
@@ -468,6 +473,8 @@ Pulls images, prints progress unless quiet, and remembers what it pulled.
 
 sub prepare {
 	my ($self, $instances, @options) = @_;
+
+	local $@;
 
 	my $params = validate_args(__PACKAGE__ . '::prepare', [ instances => $instances, @options ], {
 		instances => { type => 'arrayref' },
@@ -584,6 +591,8 @@ Pulls images that are not present.
 sub prepare_job {
 	my ($self, $job, $context) = @_;
 
+	local $@;
+
 	my $runs_on = $self->{workflow}->runs_on_text($job->{'runs-on'}, $job->{matrix} || {});
 
 	my ($job_image, @deferred, %seen);
@@ -645,6 +654,8 @@ None.
 
 sub probe {
 	my ($self, $instances) = @_;
+
+	local $@;
 
 	for my $instance (@{$instances}) {
 		my $runs_on = $self->_linux_runs_on($instance);
@@ -837,6 +848,8 @@ Writes the cache record; warns (when verbose) if it cannot.
 sub remember {
 	my ($self, $cache_file) = @_;
 
+	local $@;
+
 	my @images = @{ $self->pulled };
 	return $self if !@images || $self->{dry_run};
 
@@ -1012,15 +1025,16 @@ sub _collect_step_images {
 
 	# What this context can resolve is resolved now - usually a composite
 	# action's inputs.  An expression that still needs a value only the job
-	# will have is kept as written, so the caller recognises it as deferred
-	# rather than mistaking an empty string for an image name.
+	# will have is left as written (interpolate would make it an empty
+	# string), so the caller recognises it as deferred rather than taking
+	# "alpine:" for an image name.
 	my $resolve = sub {
 		my ($text) = @_;
-		my $value = eval { $self->{expression}->interpolate($text, $context) };
-		return (defined $value && length $value && $value !~ /\{\{/) ? $value : $text;
+		my $value = eval { $self->{expression}->interpolate_known($text, $context) };
+		return (defined $value && length $value) ? $value : $text;
 	};
 
-	my $action = $uses =~ m{\Adocker://}s ? $uses : eval { $self->{expression}->interpolate($uses, $context) };
+	my $action = $uses =~ m{\Adocker://}s ? $uses : eval { $self->{expression}->interpolate_known($uses, $context) };
 	return unless defined $action && length $action;
 
 	if ($action =~ m{\A\.\.?/}) {
@@ -1125,7 +1139,7 @@ job.  Call L</ensure> freely.
 L</note_pulled> with them (the parallel runner does this for its children).
 
 =item * B<L</remember> never fails the run.>  If the cache file cannot be
-written, a warning is printed and the run goes on.
+written, the run goes on; with C<verbose> a warning is logged.
 
 =back
 

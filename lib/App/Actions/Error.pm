@@ -196,23 +196,34 @@ sub new {
 	# The validator is called directly rather than through
 	# App::Actions::I18N::validate_args, because that module throws these
 	# objects and so loads this one first.
-	my $params = eval {
-		# The validator takes a key that holds undef as given; an exception
-		# with no code or no message is a mistake, so undef counts as left out.
-		my $given = get_params(undef, @_);
-		delete @{$given}{ grep { !defined $given->{$_} } keys %{$given} };
-		validate_strict({
-			args => $given,
-			schema => {
-				code => { type => 'string', matches => $CODE },
-				message => { type => 'string' },
-				args => { type => 'hashref', optional => 1 },
-				location => { type => 'string', optional => 1 },
-			},
-		});
-	};
+	# $@ is localised: an exception is often made while the caller is still
+	# looking at the one it caught.
+	my @arguments = @_;
+	my ($params, $failure);
+	{
+		local $@;
+		$params = eval {
+			# The validator takes a key that holds undef as given; an exception
+			# with no code or no message is a mistake, so undef counts as left out.
+			my $given = get_params(undef, @arguments);
+			delete @{$given}{ grep { !defined $given->{$_} } keys %{$given} };
+			validate_strict({
+				args => $given,
+				schema => {
+					code => { type => 'string', matches => $CODE },
+					message => { type => 'string' },
+					args => { type => 'hashref', optional => 1 },
+					location => { type => 'string', optional => 1 },
+				},
+			});
+		};
+		$failure = $@;
+	}
 	if (!$params) {
-		(my $reason = $@) =~ s/\s+\z//;
+		# The innermost "validate_strict:" clause is the reason; the
+		# validator's own name and its " at FILE line N." suffixes are not.
+		(my $reason = $failure || 'invalid') =~ s/\A.*validate_strict:\s*//s;
+		1 while $reason =~ s/\s+at \S+ line \d+\.?\s*\z//s;
 		croak("Invalid arguments to ${class}::new: $reason");
 	}
 

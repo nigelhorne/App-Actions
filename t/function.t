@@ -793,7 +793,9 @@ subtest 'App::Actions::Process' => sub {
 	};
 
 	subtest 'capture' => sub {
-		my ($output, $status) = App::Actions::Process::capture(perl_command('print qq{a\r\nb}; exit 3'));
+		# binmode, so a Windows child writes the CRLF itself rather than its
+		# text layer turning the \n into a second one.
+		my ($output, $status) = App::Actions::Process::capture(perl_command('binmode STDOUT; print qq{a\r\nb}; exit 3'));
 		is($output, "a\nb", 'standard output is captured with CRLF made LF');
 		is($status, $STATUS{failed}, 'with the status');
 		($output) = App::Actions::Process::capture(perl_command('print STDERR q{noise}; print q{data}'), quiet_stderr => 1);
@@ -843,11 +845,71 @@ subtest 'App::Actions::Process' => sub {
 	};
 
 	subtest '_spawn_args' => sub {
-		is_deeply([ App::Actions::Process::_spawn_args([ 'prog', 'a b', '' ]) ], [ 'prog', 'a b', '' ],
-			'elsewhere the arguments are passed as they are');
+		{
+			# Set, not assumed: on Windows itself $^O is already MSWin32.
+			local $^O = 'linux';
+			is_deeply([ App::Actions::Process::_spawn_args([ 'prog', 'a b', '' ]) ], [ 'prog', 'a b', '' ],
+				'elsewhere the arguments are passed as they are');
+		}
 		local $^O = 'MSWin32';
 		is_deeply([ App::Actions::Process::_spawn_args([ 'prog', 'a b', '' ]) ], [ 'prog', '"a b"', '""' ],
 			'on Windows they are quoted, the program name is not');
+	};
+
+	subtest '_windows_program_found' => sub {
+		# Windows would retry a program it cannot start through cmd.exe, so
+		# the program is looked for first, the way Windows looks: a bare name
+		# in the current directory and on PATH with a PATHEXT extension, a
+		# name with an extension as it is, a path where it says.
+		my $dir = tempdir(CLEANUP => 1);
+		write_file('tool.EXE', '', $dir);
+		write_file('script.pl', '', $dir);
+		mkdir File::Spec->catdir($dir, 'folder.EXE') or die $!;
+		local $ENV{PATH} = $dir;
+		local $ENV{PATHEXT} = '.EXE;.BAT';
+		my $found = sub { App::Actions::Process::_windows_program_found($_[0]) };
+		is($found->('tool'), 1, 'a bare name is found on PATH with a PATHEXT extension');
+		is($found->('tool.EXE'), 1, 'a name with its own extension is found as it is');
+		is($found->('script.pl'), 1, 'whatever that extension is');
+		is($found->('script'), 0, 'but no extension outside PATHEXT is added');
+		is($found->('tool.COM'), 0, 'an extension is never swapped for another');
+		is($found->(File::Spec->catfile($dir, 'tool')), 1, 'a path is looked for where it says, with an extension added');
+		is($found->(File::Spec->catfile(tempdir(CLEANUP => 1), 'tool')), 0, 'and only there, not on PATH');
+		is($found->('folder'), 0, 'a directory is not a program');
+		is($found->($_), 0, 'missing: ' . explain($_)) for undef, '', 'missing', 'tool & calc', 'tool | x';
+		{
+			local $ENV{PATHEXT} = '';
+			is($found->('tool'), 1, 'an empty PATHEXT means the Windows default list');
+		}
+		{
+			local $ENV{PATH} = '';
+			is($found->('tool'), 0, 'nothing on PATH, nothing found');
+		}
+		returns_ok($found->('tool'), { type => 'integer', min => 0, max => 1 }, 'a plain yes or no');
+		keeps_topic(sub { $found->('tool') }, '_windows_program_found');
+	};
+
+	subtest '_system on Windows' => sub {
+		# A program that is not there is never handed to system(), so no
+		# shell sees its arguments; the result is a program that could not
+		# start, as everywhere else.
+		local $^O = 'MSWin32';
+		local $ENV{PATH} = tempdir(CLEANUP => 1);
+		local ($!, $?);
+		is(App::Actions::Process::_system([ 'missing', '& echo pwned' ]), -1, 'a missing program is -1');
+		is($?, -1, 'with $? saying it did not start');
+		is($! + 0, POSIX::ENOENT(), 'and $! saying why');
+		is(App::Actions::Process::exit_code($?), $STATUS{not_started}, 'which is status 255');
+
+		# Windows adds an extension to a path that has none, so Perl must be
+		# named as perl.exe; where $^X has no extension, a link gives it one.
+		my $perl = $^X;
+		if ($perl !~ /\.exe\z/i) {
+			$perl = File::Spec->catfile(tempdir(CLEANUP => 1), 'perl.EXE');
+			symlink($^X, $perl) or return plan(skip_all => "no symbolic links: $!");
+		}
+		App::Actions::Process::_system([ $perl, '-eexit(3)' ]);
+		is(App::Actions::Process::exit_code($?), $STATUS{failed}, 'a program given by its path still runs');
 	};
 
 	subtest '_system' => sub {
@@ -1421,7 +1483,7 @@ subtest 'App::Actions::Expression' => sub {
 		throws_ok { $new->()->evaluate('1 ==') } qr/\AUnexpected end of expression at /, 'a missing operand';
 		throws_ok { $new->()->evaluate(q{'open}) } qr/\AUnterminated string in expression ''open' at /, 'an unclosed string';
 		throws_ok { $new->()->evaluate('a.(b)') } qr/\AExpected a property name after dot at /, 'a parenthesis after a dot';
-		throws_ok { $new->()->evaluate('a.1') } qr/\AUnexpected '0\.1' in expression 'a\.1' at /, 'a number after a dot';
+		throws_ok { $new->()->evaluate('a.1') } qr/\AExpected a property name after dot at /, 'a number after a dot is not a property name';
 		throws_ok { $new->()->evaluate('a; rm -rf /') } qr/\AUnexpected character ';' in expression /, 'shell syntax is not an expression';
 		throws_ok { $new->()->evaluate('system("id")') } qr/\AUnexpected character '"' in expression /, 'nor is Perl';
 		throws_ok { $new->()->evaluate('exec(1)') } qr/\AUnknown function 'exec\(\)' in expression at /, 'an unknown function is refused';
@@ -1491,6 +1553,8 @@ subtest 'App::Actions::Expression' => sub {
 		is($expression->condition('${{ matrix.os == \'ubuntu-latest\' }}', $context), 1, 'a wrapped condition');
 		is($expression->condition("github.event_name == 'pull_request'", $context), 0, 'a bare one');
 		is($expression->condition(JSON::PP::false()), 0, 'a YAML false is false');
+		is($expression->condition(!!0), 0, "Perl's own false, as YAML::PP loads it from 5.36, is false");
+		is($expression->condition(!!1), 1, 'and its true is true');
 		is($expression->condition('matrix.flag', $context), 0, 'a false boolean value is false');
 		is($expression->condition("'0'", $context), 0, 'the string 0 is false');
 		is($expression->condition("'false'", $context), 1, 'the string false is true, as on GitHub');
@@ -1602,6 +1666,14 @@ subtest 'App::Actions::Expression' => sub {
 		my $before = [ '{0}', 'x' ];
 		$expression->_call_function('format', $before);
 		is_deeply($before, [ '{0}', 'x' ], 'format does not consume the caller\'s argument list');
+	};
+
+	subtest '_is_core_boolean' => sub {
+		SKIP: {
+			skip 'Perl has no booleans of its own before 5.36', 2 if $] < 5.036;
+			is(App::Actions::Expression::_is_core_boolean($_), 1, 'a boolean: ' . ($_ ? 'true' : 'false')) for !!1, !!0;
+		}
+		is(App::Actions::Expression::_is_core_boolean($_), 0, "not a boolean: '$_'") for '', 0, 1, 'false';
 	};
 
 	subtest '_truthy' => sub {
@@ -3904,7 +3976,7 @@ subtest 'App::Actions::Runner::Containers' => sub {
 			'' => undef,
 		);
 		is($object->_start_fault($_, image => 'img', entrypoint => '/entry'), $faults{$_}, "fault in '$_'") for sort keys %faults;
-		is($object->_start_fault('pull access denied'), 'the image', 'an unnamed image');
+		is($object->_start_fault('pull access denied', image => 'x:1'), "the image 'x:1'", 'pull access denied blames the image');
 		is($object->_start_fault(undef), undef, 'no message');
 
 		my $error = $object->_with_output('x.y', 'S', "a\r\nb\r\n  \n", 'runner.container.silent', 'runner.container.output');
@@ -4133,7 +4205,7 @@ subtest 'App::Actions::Runner::Steps' => sub {
 	subtest '_run_docker_action and _action_arguments' => sub {
 		my $object = $steps->();
 		my $result = $object->_run_docker_action({ id => 'd', uses => 'docker://alpine:3', with => { args => q{echo "a b" ${{ github.repository }}}, entrypoint => '/bin/sh' } },
-			1, 'alpine:${{ 3 }}', { E => 1 }, { github => { repository => 'o/r' } }, {});
+			1, 'alpine:3', { E => 1 }, { github => { repository => 'o/r' } }, {});
 		is($result->{outcome}, 'success', 'it ran');
 		is_deeply($object->{images}{ensured}, [ 'alpine:3' ], 'the image is prepared first');
 		my $run = $object->{containers}{runs}[0];
@@ -4141,9 +4213,9 @@ subtest 'App::Actions::Runner::Steps' => sub {
 			'image, network, entrypoint and arguments split as a shell would');
 		is($run->{env}{E}, 1, 'with the step env');
 
-		throws_code(sub { $object->_run_docker_action({ uses => 'docker://${{ x }}' }, 1, '${{ x }}', {}, {}, {}) }, 'runner.docker_action.no_image',
+		throws_code(sub { $object->_run_docker_action({ uses => 'docker://${{ x }}' }, 1, '', {}, {}, {}) }, 'runner.docker_action.no_image',
 			q{Docker action 'docker://${{ x }}' in job 'build' has no image name; check the expression it uses}, 'an image that is empty');
-		throws_code(sub { $object->_run_docker_action({ uses => 'docker://a' }, 1, "\${{ '\${{' }}", {}, {}, {}) }, 'runner.docker_action.bad_image',
+		throws_code(sub { $object->_run_docker_action({ uses => 'docker://a' }, 1, 'x:${{ y }}', {}, {}, {}) }, 'runner.docker_action.bad_image',
 			undef, 'an image that still holds an expression');
 		throws_code(sub { $object->_action_arguments({ uses => 'docker://a' }, q{--token "${{ secrets.TOKEN }}}, { secrets => { TOKEN => 'hunter2' } }, {}) },
 			'runner.docker_action.bad_args', q{Unable to read the args of 'docker://a' ('--token "${{ secrets.TOKEN }}'): a quote is not closed},
@@ -4461,7 +4533,7 @@ YAML
 	subtest '_truthy_scalar and _log_root' => sub {
 		is(App::Actions::Runner::_truthy_scalar($_->[0]), $_->[1], 'fail-fast ' . (defined $_->[0] ? "'$_->[0]'" : 'undef'))
 			for [ JSON::PP::true(), 1 ], [ JSON::PP::false(), 0 ], [ undef, 0 ], [ 'false', 0 ], [ 'No', 0 ], [ '0', 0 ],
-				[ 'true', 1 ], [ '', 1 ], [ 'maybe', 1 ];
+				[ 'true', 1 ], [ '', 0 ], [ !!0, 0 ], [ !!1, 1 ], [ 'maybe', 1 ];
 		is($runner->(log_dir => '/logs')->_log_root, '/logs', 'log_dir');
 		is($runner->(log_dir => '')->_log_root, App::Actions::Logs->default_directory, 'else the default');
 	};

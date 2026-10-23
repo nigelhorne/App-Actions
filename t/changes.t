@@ -81,13 +81,14 @@ for my $index (1 .. $#releases) {
 		"$newer->{version} is listed above the older $older->{version}");
 }
 
-# A release that has been uploaded carries its date; only the newest may be
-# undated, while it is being worked on, and not when the release is tested.
+# The newest entry is dated by hand when it is released to CPAN, so until
+# then it may be undated.  Every older one has been released and carries
+# its date.
 for my $index (0 .. $#releases) {
 	my $release = $releases[$index];
 	if (!defined $release->{date}) {
-		ok($index == 0 && !$ENV{RELEASE_TESTING}, "$release->{version} is dated, or is the release being worked on")
-			or diag("set the date of $release->{version} (line $release->{line}) before releasing it");
+		ok($index == 0, "$release->{version} is dated, or is the newest release")
+			or diag("set the date of $release->{version} (line $release->{line}): only the newest release may be undated");
 		next;
 	}
 	like($release->{date}, $DATE, "$release->{version} has a date in the form date(1) prints");

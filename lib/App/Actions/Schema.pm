@@ -10,7 +10,7 @@ use App::Actions::Schema::Invalid;
 
 our $VERSION = '0.002.0';
 
-our @EXPORT_OK = qw(validate assert_valid describe_errors);
+our @EXPORT_OK = qw(validate assert_valid describe_errors invalid_exit);
 
 # A small JSON Schema subset: type, const, enum, properties, required, items
 # and oneOf.  An object whose schema names properties also rejects keys the

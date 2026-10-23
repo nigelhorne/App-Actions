@@ -3,6 +3,7 @@ package App::Actions::Runner::Support::Env;
 use strict;
 use warnings;
 
+use App::Actions::Error;
 use App::Actions::I18N qw(throw);
 
 our $VERSION = '0.002.0';
@@ -26,16 +27,22 @@ sub FETCH {
 	return undef unless exists $self->{raw}{$key};    ## no critic (ProhibitExplicitReturnUndef)
 	$self->fail('runner.env_cycle', { name => $key }) if $self->{busy}{$key};
 
+	# The caller's $@ is left as it was when the value is worked out.
 	local $self->{busy}{$key} = 1;
-	my $value;
-	eval { $value = $self->{resolve}->($key); 1 } and return $self->{resolved}{$key} = $value;
+	my ($value, $failure);
+	{
+		local $@;
+		eval { $value = $self->{resolve}->($key); 1 } or $failure = $@;
+	}
+	return $self->{resolved}{$key} = $value unless defined $failure;
 
 	# The evaluator turns an error raised inside a lookup into text, so by
 	# the time a failure reaches the variables that referred to it, its code
 	# is gone.  The first failure is kept and raised again, so the caller
 	# sees what went wrong rather than every link of the chain.
 	die $self->{failure} if $self->{failure};
-	(my $error = "$@") =~ s/\s+\z//;
+	# Without its source line: the message is about the workflow.
+	my $error = App::Actions::Error->describe($failure);
 
 	return $self->fail('runner.env_failed', { name => $key, error => $error });
 }

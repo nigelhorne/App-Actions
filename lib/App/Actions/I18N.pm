@@ -313,6 +313,9 @@ sub new {
 		$wanted = $DEFAULT_LANGUAGE;
 	}
 
+	# Return::Set clears $@, and a caller's own error must survive the
+	# translator that the first message of a language creates.
+	local $@;
 	return set_return(bless({ language => $wanted }, $class), { type => 'object', isa => __PACKAGE__ });
 }
 
@@ -554,7 +557,8 @@ gendered form, where the entry has them.
 
 The rendered message as a character string.  Placeholders without a value
 render as an empty string (or 0 for a numeric conversion), never as a
-warning.
+warning.  A key that is in no catalogue is warned about and returned as
+it is, so the reader still sees which message was meant.
 
 =head3 SIDE EFFECTS
 
@@ -919,11 +923,12 @@ sub _render {
 	my $params = validate_args(__PACKAGE__ . '::load', \@_, \%schema, 'file');
 
 Normalises a routine's arguments with L<Params::Get> and validates them with
-L<Params::Validate::Strict>, croaking with the catalogue's
-C<actions.invalid_arguments> message when they do not match.  It is the one
-place the distribution turns a validator failure into a user-facing message,
-so every public routine reports bad arguments in the same words and the same
-language.
+L<Params::Validate::Strict>.  When they do not match, it throws an
+L<App::Actions::Error> with the code C<actions.invalid_arguments>, which
+reads (as a string) as the catalogue's message and the caller's line, as
+a C<croak> would.  It is the one place the distribution turns a validator
+failure into a user-facing message, so every public routine reports bad
+arguments in the same words and the same language.
 
 =head3 ARGUMENTS
 
@@ -951,7 +956,7 @@ The validated hash reference.
 
 =head3 SIDE EFFECTS
 
-None; croaks on invalid arguments.
+None; throws an App::Actions::Error on invalid arguments.
 
 =head3 EXAMPLE
 
@@ -1018,23 +1023,37 @@ sub validate_args {
 		} keys %{$given};
 	}
 
-	my $params = eval {
-		validate_strict({
-			args => $given,
-			schema => $schema,
-		});
-	};
+	# $@ is localised: every public routine validates its arguments here, and
+	# a caller's own error must survive a call that succeeds.
+	my ($params, $failure);
+	{
+		local $@;
+		$params = eval {
+			validate_strict({
+				args => $given,
+				schema => $schema,
+			});
+		};
+		$failure = $@;
+	}
 	return $params if $params;
 
 	# The innermost "validate_strict:" clause is the specific reason, and the
 	# validator may append more than one " at FILE line N." to it.
-	(my $reason = $@ || 'invalid') =~ s/\A.*validate_strict:\s*//s;
+	(my $reason = $failure || 'invalid') =~ s/\A.*validate_strict:\s*//s;
 	1 while $reason =~ s/\s+at \S+ line \d+\.?\s*\z//s;
 
 	# Reported from the caller of the routine that was called wrongly, which
-	# is where the mistake is.
+	# is where the mistake is.  It is an error with a code, like every other
+	# failure, and reads as the croak it replaced.
 	local our @CARP_NOT = (scalar caller);
-	croak(shared()->message('actions.invalid_arguments', { routine => $routine, reason => $reason }));
+	my $details = { routine => $routine, reason => $reason };
+	die App::Actions::Error->new(
+		code => 'actions.invalid_arguments',
+		message => shared()->message('actions.invalid_arguments', $details),
+		args => $details,
+		location => Carp::shortmess(''),
+	);
 }
 
 # _named_pairs

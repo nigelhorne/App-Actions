@@ -91,5 +91,6 @@ t/schema.t
 t/self_test.t
 t/smoke.t
 t/space-path.t
+t/unit.t
 t/util.t
 t/workflow.t

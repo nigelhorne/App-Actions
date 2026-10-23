@@ -166,7 +166,6 @@ my %MESSAGES = (
 	'runner.job.if_failed' => "action-run: 无法求值 '%(name)s' 的 if：%(error)s",
 	'runner.job.skipped' => '==> 作业：%(name)s（已跳过）',
 	'runner.job.fail_fast' => '==> 作业：%(name)s（因 fail-fast 跳过）',
-	'runner.job.no_result' => '作业未报告结果',
 	'runner.job.continue_failed' => "action-run: 无法求值 '%(name)s' 的 continue-on-error：%(error)s",
 	'runner.job.continued' => '!! 作业失败，但设置了 continue-on-error：%(name)s',
 	'runner.job.not_linux' => "==> 作业：%(name)s（已跳过：runs-on '%(runs_on)s' 不是 Linux）",
@@ -175,7 +174,6 @@ my %MESSAGES = (
 	'runner.job.no_image' => "无法确定作业 '%(name)s' 的容器镜像",
 	'runner.job.image' => '    镜像：%(image)s',
 	'runner.job.deferred' => '  延后      %(expression)s（%(source)s）',
-	'runner.job.did_not_run' => '作业未运行',
 
 	'runner.parallel.did_not_run' => "作业 '%(name)s' 未运行",
 	'runner.parallel.dup_failed' => '无法复制 %(handle)s',
@@ -207,7 +205,6 @@ my %MESSAGES = (
 	'runner.container.daemon_silent' => '%(state)s；守护进程没有给出任何信息',
 	'runner.container.daemon_said' => '%(state)s；守护进程报告：',
 	'runner.fault.image' => "镜像 '%(image)s'",
-	'runner.fault.image_unnamed' => '镜像',
 	'runner.fault.port' => '发布的端口',
 	'runner.fault.entrypoint' => "入口点 '%(entrypoint)s'",
 

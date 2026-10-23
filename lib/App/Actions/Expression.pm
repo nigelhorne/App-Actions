@@ -7,6 +7,7 @@ use JSON::PP ();
 use Readonly;
 use Scalar::Util qw(looks_like_number);
 
+use App::Actions::Error;
 use App::Actions::Util ();
 
 # The tokenizer matches each token where the previous one ended (\G with
@@ -172,7 +173,10 @@ sub condition {
     my ($self, $condition, $context, $status) = @_;
 
     return 1 unless defined $condition;
-    return $condition ? 1 : 0 if ref $condition;
+    # A YAML boolean (if: false) is used as it is: a JSON::PP::Boolean, or,
+    # from Perl 5.36, one of Perl's own, which reads as '' for false and
+    # would otherwise be taken for an empty condition, which runs.
+    return $condition ? 1 : 0 if ref $condition || _is_core_boolean($condition);
 
     my $text = "$condition";
     $text =~ s/^\s+//;
@@ -186,6 +190,22 @@ sub condition {
     }
 
     return _truthy($self->evaluate($text, $context, $status));
+}
+
+# _is_core_boolean
+# Purpose:     Say whether a value is one of Perl's own booleans (5.36 and
+#              later), as YAML::PP loads true and false.
+# Entry:       $value - any defined scalar.
+# Exit status: Returns 1 or 0; always 0 before Perl 5.36.
+# Side effects: None.
+sub _is_core_boolean {
+    my ($value) = @_;
+
+    return 0 if $] < 5.036;
+
+    # builtin::is_bool is experimental in 5.36 and 5.38.
+    no warnings;
+    return builtin::is_bool($value) ? 1 : 0;
 }
 
 # _closing
@@ -253,8 +273,14 @@ sub _tokenize {
             next;
         }
 
+        # After a name, ) or ], a dot reads a property, so "a.1" is a dot
+        # with no property name after it, not "a" followed by the number .1.
+        my $previous = @tokens ? $tokens[-1] : { type => '', value => '' };
+        my $after_value = $previous->{type} eq 'ident'
+            || ($previous->{type} eq 'punct' && ($previous->{value} eq ')' || $previous->{value} eq ']'));
+
         pos($text) = $pos;
-        if ($text =~ /$NUMBER/gc) {
+        if (!($char eq '.' && $after_value) && $text =~ /$NUMBER/gc) {
             my $number = $1;
             push @tokens, { type => 'num', value => $number + 0 };
             $pos += length($number);
@@ -579,8 +605,20 @@ sub _call_function {
 
     if ($function eq 'fromjson') {
         croak 'fromJSON() expects one argument' unless @$args == 1;
-        my $value = eval { $self->{json}->decode(_stringify($args->[0])) };
-        croak "fromJSON() failed: $@" if $@;
+        # The caller's $@ is left alone, and JSON::PP's reason is given
+        # without its own file and line: croak names the caller's.
+        my ($value, $failure);
+        {
+            local $@;
+            eval { $value = $self->{json}->decode(_stringify($args->[0])); 1 }
+                or $failure = $@ || 'unknown error';
+        }
+        if (defined $failure) {
+            # describe() takes the last " at FILE line N.", so a path with
+            # spaces in it, or JSON::PP's own ", at character offset", is
+            # handled.
+            croak 'fromJSON() failed: ' . App::Actions::Error->describe($failure);
+        }
         return $value;
     }
 

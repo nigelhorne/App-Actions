@@ -14,7 +14,7 @@ use Sub::Private ();
 
 use App::Actions::Access;
 use App::Actions::I18N qw(i18n validate_args);
-use App::Actions::Runner::Support qw(chomp_error default_logger redact);
+use App::Actions::Runner::Support qw(default_logger redact);
 
 our $VERSION = '0.002.0';
 
@@ -405,38 +405,60 @@ sub keep_logs {
 
 	my $directory = File::Spec->catdir($root, POSIX::strftime('%Y%m%d-%H%M%S', localtime) . "-$run_id");
 
-	my $kept = eval {
-		# The parallel runner makes these names safe, but this method is
-		# public: a name such as ../x would copy a log out of the private
-		# directory, and so it is refused before anything is made.
-		for my $name ($run_id, map { $_->{file} } @present) {
-			die $self->i18n('runner.logs.bad_name', { name => defined $name ? $name : '' }), "\n"
-				unless defined $name && $name =~ $PLAIN_NAME;
-		}
+	# The parallel runner makes these names safe, but this method is public:
+	# a name such as ../x would copy a log out of the private directory, and
+	# so it is refused before anything is made.
+	my @bad = grep { !(defined $_ && $_ =~ $PLAIN_NAME) } ($run_id, map { $_->{file} } @present);
+	my $problem = @bad
+		? $self->i18n('runner.logs.bad_name', { name => defined $bad[0] ? $bad[0] : '' })
+		: $self->_copy_logs(\@present, $directory);
 
-		# A filesystem that will not take the mode still holds the logs, so
-		# a failed chmod does not cost the copies.
-		no autodie qw(chmod);
-		make_path($directory);
-		chmod $DIRECTORY_MODE, $directory;
-		for my $entry (@present) {
-			my $target = File::Spec->catfile($directory, $entry->{file});
-			copy($entry->{path}, $target)
-				or die $self->i18n('runner.logs.copy_failed', { from => $entry->{path}, to => $target, error => "$!" }), "\n";
-			chmod $FILE_MODE, $target;
-			$entry->{kept} = $target;
-		}
-		1;
-	};
-
-	if ($kept) {
-		$self->{kept_dir} = $directory;
-		$self->{kept_logs} = [ grep { $_->{kept} } @present ];
-	} else {
-		$self->{logger}->warn($self->i18n('runner.logs.keep_failed', { error => chomp_error($@) }));
+	if (defined $problem) {
+		$self->{logger}->warn($self->i18n('runner.logs.keep_failed', { error => $problem }));
+		return $self;
 	}
 
+	$self->{kept_dir} = $directory;
+	$self->{kept_logs} = [ grep { $_->{kept} } @present ];
+
 	return $self;
+}
+
+# _copy_logs
+# Purpose:     Copy the logs into the directory keep_logs chose for the run.
+# Entry:       $self - the report; $present - the log entries whose files
+#              exist; $directory - the run's log directory (not made yet).
+# Exit status: Returns undef when every log was copied, else the reason, in
+#              the catalogue's words: the first log could not be copied to a
+#              directory that could not be made, or a log could not be copied.
+# Side effects: Makes the directory, copies the logs (owner-only modes where
+#              the filesystem takes them) and sets each copied entry's kept.
+sub _copy_logs {
+	my ($self, $present, $directory) = @_;
+
+	# make_path reports a directory it could not make in its own words and
+	# with its own line; the reader needs the log that could not be kept.
+	make_path($directory, { error => \my $problems });
+	if (!-d $directory) {
+		my ($reason) = map { values %{$_} } @{ $problems || [] };
+		return $self->i18n('runner.logs.copy_failed', {
+			from => $present->[0]{path}, to => $directory, error => defined $reason ? $reason : 'unknown error',
+		});
+	}
+
+	# A filesystem that will not take the mode still holds the logs, so a
+	# failed chmod does not cost the copies.
+	no autodie qw(chmod);
+	chmod $DIRECTORY_MODE, $directory;
+	for my $entry (@{$present}) {
+		my $target = File::Spec->catfile($directory, $entry->{file});
+		copy($entry->{path}, $target)
+			or return $self->i18n('runner.logs.copy_failed', { from => $entry->{path}, to => $target, error => "$!" });
+		chmod $FILE_MODE, $target;
+		$entry->{kept} = $target;
+	}
+
+	return;
 }
 
 =head2 print_kept_logs

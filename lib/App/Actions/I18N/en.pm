@@ -197,7 +197,6 @@ my %MESSAGES = (
 	'runner.job.if_failed' => "action-run: unable to evaluate if for '%(name)s': %(error)s",
 	'runner.job.skipped' => '==> Job: %(name)s (skipped)',
 	'runner.job.fail_fast' => '==> Job: %(name)s (skipped by fail-fast)',
-	'runner.job.no_result' => 'the job did not report a result',
 	'runner.job.continue_failed' => "action-run: unable to evaluate continue-on-error for '%(name)s': %(error)s",
 	'runner.job.continued' => '!! Job failed but continue-on-error is set: %(name)s',
 	'runner.job.not_linux' => "==> Job: %(name)s (skipped: runs-on '%(runs_on)s' is not Linux)",
@@ -206,7 +205,6 @@ my %MESSAGES = (
 	'runner.job.no_image' => "Unable to determine a container image for job '%(name)s'",
 	'runner.job.image' => '    image: %(image)s',
 	'runner.job.deferred' => '  deferred  %(expression)s (%(source)s)',
-	'runner.job.did_not_run' => 'job did not run',
 
 	'runner.parallel.did_not_run' => "job '%(name)s' did not run",
 	'runner.parallel.dup_failed' => 'Unable to duplicate %(handle)s',
@@ -238,7 +236,6 @@ my %MESSAGES = (
 	'runner.container.daemon_silent' => '%(state)s; the daemon said nothing',
 	'runner.container.daemon_said' => '%(state)s; the daemon said:',
 	'runner.fault.image' => "the image '%(image)s'",
-	'runner.fault.image_unnamed' => 'the image',
 	'runner.fault.port' => 'the published port',
 	'runner.fault.entrypoint' => "the entrypoint '%(entrypoint)s'",
 

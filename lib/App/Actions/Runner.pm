@@ -27,7 +27,7 @@ use App::Actions::Runner::Parallel;
 use App::Actions::Runner::Report;
 use App::Actions::Runner::Steps;
 use App::Actions::Runner::Support qw(
-	boolean_value chomp_error default_logger has_status_function redact resolve_env status_flags trim_error
+	boolean_value default_logger has_status_function redact resolve_env status_flags trim_error
 	write_container_file
 );
 use App::Actions::Schema;
@@ -743,6 +743,9 @@ standard error, and the run exits 2.  The commonest:
 sub run {
 	my ($self) = @_;
 
+	# The run is one eval, and its parts use more; the caller's $@ is its own.
+	local $@;
+
 	my $exit_code = 0;
 
 	# A signal becomes an error, so the run still removes its containers.
@@ -766,7 +769,10 @@ sub run {
 	};
 
 	if (!$ran) {
-		my $error = chomp_error($@);
+		# Without a source line: the message is for the person running the
+		# workflow, and an error of this program's own says where it is.
+		my $error = trim_error($@);
+		$error = '' unless defined $error;
 		# Whatever the run printed belongs before the error, even when the
 		# two are written through different buffers.
 		STDOUT->flush;
@@ -870,6 +876,8 @@ report unless C<json> is set.
 sub preflight {
 	my ($self, %options) = @_;
 
+	local $@;
+
 	my $json = $options{json} ? 1 : 0;
 	my $schema_line = (defined $options{schema_line} && !$options{schema_line}) ? 0 : 1;
 
@@ -943,6 +951,9 @@ sub _shares_runner_files {
 	my ($user) = @_;
 
 	my ($who) = (defined $user && length $user) ? split(/:/, $user, 2) : ();
+
+	# Asked inside an eval, which must not clear the caller's $@.
+	local $@;
 
 	# The user running this may be named as well as numbered.  getpwuid is
 	# not implemented everywhere (Windows), and then no name matches.
@@ -1432,8 +1443,7 @@ sub _run_base_job {
 	if ($outcomes) {
 		for my $outcome (@{$outcomes}) {
 			if ($outcome->{started}) {
-				$self->_record_instance_result($outcome->{plan},
-					$outcome->{result} || { result => 'failure', reason => $self->i18n('runner.job.no_result') }, $group);
+				$self->_record_instance_result($outcome->{plan}, $outcome->{result}, $group);
 			} else {
 				$self->_skip_fail_fast($outcome->{plan});
 			}
@@ -1586,7 +1596,8 @@ sub _plan_instance {
 		if (defined $condition) {
 			$plan->{should_run} = ($condition && $needs_failed && !has_status_function($instance->{if})) ? 0 : $condition;
 		} else {
-			$plan->{error} = chomp_error($@);
+			$plan->{error} = trim_error($@);
+			$plan->{error} = '' unless defined $plan->{error};
 		}
 	}
 
@@ -1606,7 +1617,7 @@ sub _record_instance_result {
 	my $continue = 0;
 	if (defined $instance->{'continue-on-error'}) {
 		$continue = eval { boolean_value($self->{expression}, $instance->{'continue-on-error'}, $plan->{context}, status_flags(0)) };
-		$self->_complain('runner.job.continue_failed', { name => $plan->{display_name}, error => chomp_error($@) })
+		$self->_complain('runner.job.continue_failed', { name => $plan->{display_name}, error => trim_error($@) })
 			unless defined $continue;
 	}
 
@@ -1697,7 +1708,7 @@ sub _run_instance {
 	$containers->cleanup_job($network, \@started) if defined $network;
 	die $error if defined $error;
 
-	return $result || { result => 'failure', reason => $self->i18n('runner.job.did_not_run') };
+	return $result;
 }
 
 # _github_context
@@ -1813,6 +1824,8 @@ sub _log_root {
 
 # _truthy_scalar
 # Purpose:     Read fail-fast: a YAML boolean, or anything but false/no/0.
+#              Perl's own false (YAML::PP's, from 5.36) reads as '', and an
+#              empty value is false too.
 # Entry:       $value.
 # Exit status: Returns 1 or 0.
 # Side effects: None.
@@ -1821,7 +1834,7 @@ sub _truthy_scalar {
 
 	return ref $value ? ($value ? 1 : 0)
 		: !defined $value ? 0
-		: $value =~ /\A(?:false|no|0)\z/i ? 0
+		: (!length $value || $value =~ /\A(?:false|no|0)\z/i) ? 0
 		: 1;
 }
 

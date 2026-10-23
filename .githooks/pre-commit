@@ -58,10 +58,13 @@ my $explicit = $staged || $worktree;
 
 # The checks, in the order they run and are reported.
 my @check_names = ('schema', 'live knobs');
-my %check_path = (
-    'schema'     => File::Spec->catfile('t', 'schema.t'),
-    'live knobs' => File::Spec->catfile('t', 'live-knobs.t'),
+# Each check's test file as it is shown (with / on every platform, so the
+# report reads the same everywhere) and as it is run (the native path).
+my %check_label = (
+    'schema'     => 't/schema.t',
+    'live knobs' => 't/live-knobs.t',
 );
+my %check_path = map { $_ => File::Spec->catfile(split m{/}, $check_label{$_}) } keys %check_label;
 
 # The files whose staging can change what each check looks at.  A commit that
 # touches neither set has nothing for these checks to say, which keeps an
@@ -139,14 +142,14 @@ sub outcome_lines {
     for my $name (@check_names) {
         my $result = $results->{$name};
         if (!$result) {
-            push @lines, "  $name ($check_path{$name}): skipped - nothing staged "
+            push @lines, "  $name ($check_label{$name}): skipped - nothing staged "
                 . 'could change what it reads';
             next;
         }
 
         my $tests = $result->{tests};
         my $count = defined $tests ? " ($tests tests)" : '';
-        push @lines, "  $name ($check_path{$name}): "
+        push @lines, "  $name ($check_label{$name}): "
             . ($result->{passed} ? 'passed' : 'FAILED') . $count;
     }
 

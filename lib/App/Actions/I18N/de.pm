@@ -207,7 +207,6 @@ my %MESSAGES = (
 	'runner.job.if_failed' => "action-run: if für '%(name)s' kann nicht ausgewertet werden: %(error)s",
 	'runner.job.skipped' => '==> Job: %(name)s (übersprungen)',
 	'runner.job.fail_fast' => '==> Job: %(name)s (wegen fail-fast übersprungen)',
-	'runner.job.no_result' => 'der Job hat kein Ergebnis gemeldet',
 	'runner.job.continue_failed' => "action-run: continue-on-error für '%(name)s' kann nicht ausgewertet werden: %(error)s",
 	'runner.job.continued' => '!! Job fehlgeschlagen, aber continue-on-error ist gesetzt: %(name)s',
 	'runner.job.not_linux' => "==> Job: %(name)s (übersprungen: runs-on '%(runs_on)s' ist nicht Linux)",
@@ -216,7 +215,6 @@ my %MESSAGES = (
 	'runner.job.no_image' => "Für Job '%(name)s' lässt sich kein Container-Image bestimmen",
 	'runner.job.image' => '    Image: %(image)s',
 	'runner.job.deferred' => '  später    %(expression)s (%(source)s)',
-	'runner.job.did_not_run' => 'der Job ist nicht gelaufen',
 
 	'runner.parallel.did_not_run' => "Job '%(name)s' ist nicht gelaufen",
 	'runner.parallel.dup_failed' => '%(handle)s kann nicht dupliziert werden',
@@ -248,7 +246,6 @@ my %MESSAGES = (
 	'runner.container.daemon_silent' => '%(state)s; der Daemon hat nichts gemeldet',
 	'runner.container.daemon_said' => '%(state)s; der Daemon meldete:',
 	'runner.fault.image' => "das Image '%(image)s'",
-	'runner.fault.image_unnamed' => 'das Image',
 	'runner.fault.port' => 'der veröffentlichte Port',
 	'runner.fault.entrypoint' => "der Entrypoint '%(entrypoint)s'",
 

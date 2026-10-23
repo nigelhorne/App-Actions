@@ -399,8 +399,12 @@ sub resolve_env {
 	$with_env{env} = \%lazy;
 
 	# Sorted, so a cycle is reported from the same variable on every run.
+	# The caller's $@ is left as it was.
 	my $failure;
-	eval { my $value; $value = $lazy{$_} for sort keys %env; 1 } or $failure = $@;
+	{
+		local $@;
+		eval { my $value; $value = $lazy{$_} for sort keys %env; 1 } or $failure = $@;
+	}
 
 	# The tie and %with_env refer to each other through the closure; untie
 	# breaks that loop, failure or not.  The tie's first failure wins, and

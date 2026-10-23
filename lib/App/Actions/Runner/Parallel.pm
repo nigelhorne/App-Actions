@@ -253,12 +253,15 @@ sub run {
 		capacity => $capacity,
 	};
 
-	my $watched = eval {
-		$self->_start_more($group);
-		$self->_watch($group, $fail_fast);
-		1;
-	};
-	$group->{error} = $@ unless $watched;
+	# The caller's $@ is left as it was when the group runs to the end.
+	{
+		local $@;
+		eval {
+			$self->_start_more($group);
+			$self->_watch($group, $fail_fast);
+			1;
+		} or $group->{error} = $@;
+	}
 
 	if (defined $group->{error}) {
 		# An interrupted or broken run should not leave jobs working behind
@@ -576,7 +579,7 @@ sub _collect {
 	my $json = _read_from($path, 0);
 	$self->throw('runner.file_read_failed', { file => $path, error => "$!" }) unless defined $json;
 
-	my $result = eval { JSON::PP->new->decode($json) };
+	my $result = do { local $@; eval { JSON::PP->new->decode($json) } };
 	return unless ref $result eq 'HASH';
 
 	$entry->{result} = $result;

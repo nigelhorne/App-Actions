@@ -371,31 +371,27 @@ sub prune {
     my @failed;
 
     for my $run (@$runs) {
-        my $count = @{ $run->{logs} };
-        my $size  = 0;
-        $size += $_->{size} for @{ $run->{logs} };
-
-        my $ok = eval {
-            for my $log (@{ $run->{logs} }) {
-                $self->_unlink($log->{path})
-                    or die "cannot remove '$log->{path}': $!\n";
+        # Each log is counted as it goes, so one that was removed before
+        # another in the same run failed is still reported as removed.
+        my $error;
+        for my $log (@{ $run->{logs} }) {
+            if ($self->_unlink($log->{path})) {
+                $removed++;
+                $freed += $log->{size};
+                next;
             }
+            $error = "cannot remove '$log->{path}': $!";
+            last;
+        }
 
-            # A directory holding something else is left in place; its logs
-            # are gone, so the next listing has nothing to say about it.
-            rmdir $run->{directory};
-            1;
-        };
-
-        if ($ok) {
-            $removed += $count;
-            $freed   += $size;
+        if (defined $error) {
+            push @failed, { run => $run->{name}, error => $error };
             next;
         }
 
-        my $error = $@;
-        $error =~ s/\s+$//;
-        push @failed, { run => $run->{name}, error => $error };
+        # A directory holding something else is left in place; its logs are
+        # gone, so the next listing has nothing to say about it.
+        rmdir $run->{directory};
     }
 
     $out .= __PACKAGE__->i18n('logs.removed', {
@@ -1105,7 +1101,9 @@ returns.
     │ ∀ r ∈ S • r.directory empty after removal ⇒ r.directory ∉ dirs'
     │ files not in S are unchanged
     │ second(r!) = 0 ⇔ failed = ∅
-    │ third(r!).removed = Σ { #r.logs | r ∈ S \ failed }
+    │ gone = { l | r ∈ S ∧ l ∈ ran r.logs ∧ l.path ∉ files' }
+    │ third(r!).removed = #gone
+    │ third(r!).freed = Σ { l.size | l ∈ gone }
     └───────────────────────────────────────────────────
 
 =head2 document

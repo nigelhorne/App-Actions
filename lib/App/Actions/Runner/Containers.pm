@@ -198,7 +198,9 @@ sub new {
 
 Makes a Docker resource name that is unique within the run and says what it
 is: C<action-run-RUN-N-KIND-JOB-INDEX[-SUFFIX]>, with unsafe characters
-replaced and cut to 63 characters.
+replaced and cut to 63 characters.  RUN is the last eight characters of the
+run id, N counts the names made so far, JOB is the job id (at most 20
+characters), and INDEX is the job's C<matrix_index> (0 when it has none).
 
 =head3 EXAMPLE
 
@@ -233,7 +235,9 @@ sub name {
 	(my $base = $job->{base_id}) =~ s/$NAME_UNSAFE/-/g;
 	$base = substr($base, 0, $JOB_NAME_LENGTH);
 
-	my $name = "action-run-$short_id-$counter-$kind-$base-$job->{matrix_index}";
+	# A job that is not one of a matrix has no index; it is the first.
+	my $index = defined $job->{matrix_index} ? $job->{matrix_index} : 0;
+	my $name = "action-run-$short_id-$counter-$kind-$base-$index";
 	$name .= "-$suffix" if defined $suffix && length $suffix;
 	$name =~ s/$NAME_UNSAFE/-/g;
 
@@ -1094,7 +1098,7 @@ sub _start_fault {
 	# it is looked for first; an entrypoint is only blamed when the message
 	# names the one this container was given.
 	return (grep { index($lowered, $_) >= 0 } @IMAGE_COMPLAINTS)
-		? (defined $ran{image} ? $self->i18n('runner.fault.image', { image => $ran{image} }) : $self->i18n('runner.fault.image_unnamed'))
+		? $self->i18n('runner.fault.image', { image => $ran{image} })
 		: $said =~ /port is already allocated|address already in use/i
 		? $self->i18n('runner.fault.port')
 		: (defined $entrypoint && length $entrypoint && index($said, $entrypoint) >= 0

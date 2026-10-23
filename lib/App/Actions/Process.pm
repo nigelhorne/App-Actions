@@ -20,7 +20,7 @@ sub exit_code {
     # A signal is reported as a shell reports it, 128 plus its number.
     return !$status ? 0
         : ($status & 127) ? 128 + ($status & 127)
-        : $status >> 8;
+        : ($status >> 8) & 255;
 }
 
 # How many jobs this machine can usefully run at once.  Linux reports the
@@ -131,18 +131,65 @@ sub _spawn_args {
     return $^O eq 'MSWin32' ? ($args[0], map { quote_win32($_) } @args[1 .. $#args]) : @args;
 }
 
+# Purpose:     say whether Windows would find $program to start it: as a
+#              path when it names a directory, otherwise in the current
+#              directory or on PATH; with a PATHEXT extension added when it
+#              has none of its own.
+# Entry:       $program - the program name or path.
+# Exit:        1 when a file is found, 0 when not.
+# Side effects: none; reads PATH and PATHEXT.
+sub _windows_program_found {
+    my ($program) = @_;
+
+    return 0 unless defined $program && length $program;
+
+    # A name with its own extension is looked for as it is; Windows adds an
+    # extension only to a bare name.
+    my @extensions = $program =~ /\.[^.\\\/:]+\z/
+        ? ('')
+        : split /;/, (defined $ENV{PATHEXT} && length $ENV{PATHEXT} ? $ENV{PATHEXT} : '.COM;.EXE;.BAT;.CMD');
+
+    my @directories = $program =~ m{[\\/:]}
+        ? ('')
+        : (File::Spec->curdir, File::Spec->path);
+
+    for my $directory (@directories) {
+        my $base = length $directory ? File::Spec->catfile($directory, $program) : $program;
+        for my $extension (@extensions) {
+            return 1 if -f "$base$extension";
+        }
+    }
+
+    return 0;
+}
+
 # Start $command and wait for it.  A list of one element is handed to the
 # shell by system() when it contains a shell metacharacter, so the program
 # is named separately (system PROGRAM LIST), which never uses a shell:
 # whatever the arguments hold, they are arguments.  Windows keeps the plain
 # list, because there the arguments are already quoted into one command line
 # by _spawn_args and Perl starts the program itself.
+#
+# When Windows cannot start the program, Perl tries the command line again
+# through cmd.exe, which would read & and | in the arguments as commands and
+# report a missing program as status 1.  So a program that is not there is
+# never handed to system() on Windows: the result is that of a program that
+# could not start, as it is elsewhere.
 sub _system {
     my ($command) = @_;
 
     my @args = _spawn_args($command);
 
-    return $^O eq 'MSWin32' ? system(@args) : system { $args[0] } @args;
+    if ($^O eq 'MSWin32') {
+        if (!_windows_program_found($args[0])) {
+            $! = POSIX::ENOENT();
+            $? = -1;
+            return -1;
+        }
+        return system(@args);
+    }
+
+    return system { $args[0] } @args;
 }
 
 # Run $command with both streams discarded.
@@ -423,7 +470,12 @@ C<$>, C<;> or C<|>.  So text from a workflow cannot run a second command.
 Windows has no separate arguments: a program gets one command line and
 splits it up itself.  On Windows this module quotes each argument with
 L</quote_win32> so that it is split back correctly.  On other systems the
-arguments are passed as they are.
+arguments are passed as they are.  When Windows cannot start a program,
+Perl would retry the whole command line through F<cmd.exe>, which reads C<&>
+and C<|> as commands; this module looks for the program first (in the
+current directory and on C<PATH>, adding a C<PATHEXT> extension to a bare
+name) and, when it is not there, never starts anything, so the result is
+the status 255 of a program that could not start, as on other systems.
 
 Every function returns an I<exit status> as a shell shows it:
 
@@ -860,7 +912,11 @@ C<$? E<gt>E<gt> 8>.
 
 =item * B<A missing program is status 255, not an exception.>  Perl also
 prints a "Can't exec" warning, except in L</run>, L</run_quiet> and
-L</capture>, which hide it.
+L</capture>, which hide it.  On Windows it is 255 too, rather than the
+status 1 and "is not recognized" message of F<cmd.exe>, because the
+program is looked for before anything is started.  A program Windows finds
+somewhere this module does not look (such as the folder of the running
+program, when it is not on C<PATH>) counts as missing.
 
 =item * B<Output from parallel programs is mixed.>  Without C<stdout>,
 L</run_parallel> lets every program write to the same terminal, so their

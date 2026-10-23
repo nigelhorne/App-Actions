@@ -209,8 +209,9 @@ sub load {
         $text = '' unless defined $text;
 
         # A cache that cannot be read is not worth failing a run over: the
-        # images are still there, and the next run records them again.
-        my $decoded = eval { JSON::PP->new->decode($text) };
+        # images are still there, and the next run records them again.  The
+        # caller's $@ is left as it was.
+        my $decoded = do { local $@; eval { JSON::PP->new->decode($text) } };
         if ($decoded && ref $decoded eq 'HASH' && ref $decoded->{images} eq 'HASH') {
             for my $image (keys %{ $decoded->{images} }) {
                 my $entry = $decoded->{images}{$image};
@@ -243,17 +244,37 @@ sub save {
         return 1;
     }
 
+    # A directory that cannot be made is reported as the folder the record
+    # cannot be written in, not with File::Path's own words and line.
     my $dir = dirname($path);
-    make_path($dir) unless -d $dir;
+    if (!-d $dir) {
+        make_path($dir, { error => \my $problems });
+        if (!-d $dir) {
+            my ($reason) = map { values %{$_} } @{ $problems || [] };
+            croak "cannot write a new cache file in '$dir': " . (defined $reason && length $reason ? $reason : 'unknown error');
+        }
+    }
 
     # The new contents go to a file File::Temp creates exclusively, with a
     # name nobody can predict, and replace the old by rename.  A name made of
     # the PID and rand() can be guessed, and open '>' follows a symbolic link
     # someone placed there, so in a shared directory (ACTION_RUN_CACHE_FILE
     # can point anywhere) the write would land in whatever file it named.
-    my $handle = eval {
-        File::Temp->new(TEMPLATE => '.cache-XXXXXXXXXX', DIR => $dir, SUFFIX => '.tmp', UNLINK => 0);
-    } or croak "cannot write a new cache file in '$dir': " . (length $@ ? $@ =~ s/\s+\z//r : 'unknown error');
+    # The caller's $@ is left as it was, and File::Temp's reason is given
+    # without its own file and line.
+    my ($handle, $failure);
+    {
+        local $@;
+        $handle = eval {
+            File::Temp->new(TEMPLATE => '.cache-XXXXXXXXXX', DIR => $dir, SUFFIX => '.tmp', UNLINK => 0);
+        };
+        $failure = $@;
+    }
+    if (!$handle) {
+        $failure = 'unknown error' unless defined $failure && length $failure;
+        1 while $failure =~ s/\s+at \S+ line \d+\.?\s*\z//;
+        croak "cannot write a new cache file in '$dir': $failure";
+    }
     my $temp = $handle->filename;
     binmode $handle;
     print {$handle} JSON::PP->new->canonical->pretty->encode($data);
