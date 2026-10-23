@@ -34,7 +34,7 @@ WriteMakefile(
         'IPC::System::Simple' => 0,
         'JSON::PP'         => 0,
         'Log::Abstraction' => 0.41,
-        'Object::Configure' => 0,
+        'Object::Configure' => 0.24,
         'Params::Get'      => 0.17,
         'Params::Validate::Strict' => 0.33,
         'Pod::Usage'       => 0,

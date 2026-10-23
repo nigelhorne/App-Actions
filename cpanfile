@@ -15,7 +15,7 @@ requires 'IO::Handle';
 requires 'IPC::System::Simple';
 requires 'JSON::PP';
 requires 'Log::Abstraction', '0.41';
-requires 'Object::Configure';
+requires 'Object::Configure', '0.24';
 requires 'POSIX';
 requires 'Params::Get', '0.17';
 requires 'Params::Validate::Strict', '0.33';
@@ -47,8 +47,8 @@ on 'test' => sub {
 	requires 'FindBin';
 	requires 'JSON::PP';
 	requires 'Test::Exception';
-	requires 'Test::Mockingbird', '0.14';
 	requires 'Test::Memory::Cycle', '1.06';
+	requires 'Test::Mockingbird', '0.14';
 	requires 'Test::Most';
 	requires 'Test::Returns', '0.05';
 };
