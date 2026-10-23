@@ -46,13 +46,11 @@ on 'test' => sub {
 	requires 'File::Temp';
 	requires 'FindBin';
 	requires 'JSON::PP';
-	requires 'Test::DescribeMe';
 	requires 'Test::Exception';
-	requires 'Test::Mockingbird';
-	requires 'Test::Memory::Cycle';
+	requires 'Test::Mockingbird', '0.14';
+	requires 'Test::Memory::Cycle', '1.06';
 	requires 'Test::Most';
-	requires 'Test::Returns';
-	requires 'Test::Warn';
+	requires 'Test::Returns', '0.05';
 };
 
 on 'develop' => sub {

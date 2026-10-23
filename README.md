@@ -668,7 +668,9 @@ spaces are covered on every platform.  The copy is made from `MANIFEST`, so it
 holds exactly what the distribution ships and a test that reads a new file
 finds it there as soon as that file is listed.  That doubles the running time;
 set `SPACE_PATH=0` to skip it, or run just that check with
-`prove -l t/space-path.t`.
+`prove -l t/space-path.t`.  It is skipped when `AUTOMATED_TESTING` is set
+(continuous integration, CPAN testers) unless `SPACE_PATH` is set to a true
+value.
 
 `t/locales.t` covers the message catalogue: the country-to-language table
 for GB, US, FR, DE and CN, and the error paths under the `en_US.UTF-8`,

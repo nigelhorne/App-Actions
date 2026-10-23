@@ -8,6 +8,8 @@ use File::Temp ();
 use IO::Handle ();
 use POSIX ();
 
+use App::Actions::I18N qw(i18n);
+
 our $VERSION = '0.002.0';
 
 # Turn Perl's $? into an exit code.  Windows reports $? in the same
@@ -177,7 +179,9 @@ sub _redirect_child {
 
         my $handle = $stream eq 'stdout' ? \*STDOUT : \*STDERR;
         open $handle, $redirect{append} ? '>>' : '>', $file or do {
-            print STDERR "Unable to redirect $stream to '$file': $!\n";
+            print STDERR __PACKAGE__->i18n('process.redirect_failed', {
+                stream => $stream, file => $file, error => "$!",
+            }), "\n";
             POSIX::_exit(127);
         };
 
@@ -264,7 +268,9 @@ sub run_parallel {
                 my @command = @{ $commands->[$index] };
                 no warnings 'exec';
                 exec { $command[0] } @command or do {
-                    print STDERR "Unable to run '$commands->[$index][0]': $!\n";
+                    print STDERR __PACKAGE__->i18n('process.exec_failed', {
+                        program => $command[0], error => "$!",
+                    }), "\n";
                     POSIX::_exit(127);
                 };
             }
@@ -872,7 +878,10 @@ non-ASCII characters or emoji (for example with
 C<Encode::encode('UTF-8', $text)>) before you put it in a command, and decode
 captured output if you need characters.  On Windows, the program receives the
 command line through the Windows "ANSI" code page, so characters outside it
-may be lost.  An argument cannot contain a NUL character.
+may be lost.  An argument cannot contain a NUL character.  The line a child
+prints when it cannot redirect its output or start its program is in the
+current language of L<App::Actions::I18N>, encoded as the standard error
+handle is.
 
 =head1 AUTHOR
 

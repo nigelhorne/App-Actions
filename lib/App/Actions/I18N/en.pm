@@ -117,6 +117,34 @@ my %MESSAGES = (
 	'logs.remove_failed' => {
 		plural => { one => 'Could not remove %(count)d run:', other => 'Could not remove %(count)d runs:' },
 	},
+	# The text listings of the cache and logs commands.  The column headings
+	# are padded to the widest entry, so a longer translation still lines up.
+	'span.just_now' => 'just now',
+	'span.ago' => '%(span)s ago',
+	'cache.file' => 'Cache file: %(file)s',
+	'cache.empty' => 'No images have been cached yet.',
+	'cache.none_older' => 'No cached images are older than %(span)s.',
+	'cache.only_older' => 'Only images older than %(span)s.',
+	'cache.unreachable' => 'The Docker daemon is not reachable, so the sizes are unknown.',
+	'cache.prune_hint' => 'Remove them with "action-run cache --prune".',
+	'cache.unknown' => 'unknown',
+	'cache.size_missing' => 'missing',
+	'cache.heading.image' => 'IMAGE',
+	'cache.heading.size' => 'SIZE',
+	'cache.heading.last_used' => 'LAST USED',
+	'cache.heading.age' => 'AGE',
+	'logs.directory' => 'Logs directory: %(directory)s',
+	'logs.empty' => 'No job logs have been kept yet.',
+	'logs.none_older' => 'No job logs are older than %(span)s.',
+	'logs.only_older' => 'Only job logs older than %(span)s.',
+	'logs.prune_hint' => 'Remove them with "action-run logs --prune".',
+	'logs.heading.run' => 'RUN',
+	'logs.heading.log' => 'LOG',
+	'logs.heading.size' => 'SIZE',
+	'logs.heading.age' => 'AGE',
+	# Printed by a child process between fork and exec.
+	'process.redirect_failed' => "Unable to redirect %(stream)s to '%(file)s': %(error)s",
+	'process.exec_failed' => "Unable to run '%(program)s': %(error)s",
 	# The runner and its parts.  A text that begins with "action-run: " is a
 	# warning printed as it stands; the others are part of a longer line or
 	# are reported by the caller, which adds the prefix.

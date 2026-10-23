@@ -253,6 +253,34 @@ sub format_age {
     return App::Actions::Cache::format_age($_[0]);
 }
 
+# Purpose:     the first line of a listing or a prune, naming the directory.
+# Entry:       $self - a Logs.
+# Exit:        the line, with its newline.
+# Side effects: none.
+sub _heading_line {
+    my ($self) = @_;
+
+    return __PACKAGE__->i18n('logs.directory', { directory => $self->{directory} }) . "\n";
+}
+
+# Purpose:     what a listing or a prune says when it selected nothing: that
+#              no log is old enough when there are logs, or that none has
+#              been kept at all.
+# Entry:       $self - a Logs; $older_than - seconds, or undef.
+# Exit:        the sentence, with its newline.
+# Side effects: none.
+sub _nothing_selected {
+    my ($self, $older_than) = @_;
+
+    my $text = (defined $older_than && @{ $self->entries })
+        ? __PACKAGE__->i18n('logs.none_older', {
+            span => App::Actions::Cache::format_span($older_than),
+        })
+        : __PACKAGE__->i18n('logs.empty');
+
+    return "$text\n";
+}
+
 # The listing: one line per kept job log, with the size it takes and how long
 # ago the run wrote it.  Everything is read from the files themselves, so a
 # log removed outside the tool simply stops being listed.
@@ -265,7 +293,7 @@ sub report {
         older_than => $older_than, now => $now,
     );
 
-    my $out = "Logs directory: $self->{directory}\n";
+    my $out = $self->_heading_line;
 
     my @rows;
     for my $run (@$runs) {
@@ -276,19 +304,18 @@ sub report {
     }
 
     unless (@rows) {
-        if (defined $older_than && @{ $self->entries }) {
-            return $out . 'No job logs are older than '
-                . App::Actions::Cache::format_span($older_than) . ".\n";
-        }
-
-        return $out . "No job logs have been kept yet.\n";
+        return $out . $self->_nothing_selected($older_than);
     }
 
-    $out .= 'Only job logs older than '
-        . App::Actions::Cache::format_span($older_than) . ".\n"
-        if defined $older_than;
+    $out .= __PACKAGE__->i18n('logs.only_older', {
+        span => App::Actions::Cache::format_span($older_than),
+    }) . "\n" if defined $older_than;
 
-    my ($run_width, $log_width) = (3, 3);
+    # Each column is as wide as its widest entry or its heading, whichever
+    # is longer, so a translated heading still lines up.
+    my %heading = map { $_ => __PACKAGE__->i18n("logs.heading.$_") }
+        qw(run log size age);
+    my ($run_width, $log_width) = (length $heading{run}, length $heading{log});
     for my $row (@rows) {
         $run_width = length $row->[0] if length $row->[0] > $run_width;
         $log_width = length $row->[1] if length $row->[1] > $log_width;
@@ -300,7 +327,8 @@ sub report {
     $out .= "\n";
     $out .= sprintf(
         "  %-*s  %-*s  %10s  %s\n",
-        $run_width, 'RUN', $log_width, 'LOG', 'SIZE', 'AGE',
+        $run_width, $heading{run}, $log_width, $heading{log},
+        $heading{size}, $heading{age},
     );
     for my $row (@rows) {
         $out .= sprintf(
@@ -313,7 +341,7 @@ sub report {
     $out .= "\n" . __PACKAGE__->i18n('logs.summary', {
         count => scalar @rows, size => App::Actions::Cache::format_size($total),
     }) . "\n";
-    $out .= "Remove them with \"action-run logs --prune\".\n";
+    $out .= __PACKAGE__->i18n('logs.prune_hint') . "\n";
 
     return $out;
 }
@@ -332,21 +360,11 @@ sub prune {
     my $runs = $self->_selected_runs(
         older_than => $older_than, now => $now,
     );
-    my $out = "Logs directory: $self->{directory}\n";
+    my $out = $self->_heading_line;
 
     unless (@$runs) {
         my $data = { removed => 0, freed => 0, failed => [] };
-
-        if (defined $older_than && @{ $self->entries }) {
-            return (
-                $out . 'No job logs are older than '
-                    . App::Actions::Cache::format_span($older_than) . ".\n",
-                0,
-                $data,
-            );
-        }
-
-        return ($out . "No job logs have been kept yet.\n", 0, $data);
+        return ($out . $self->_nothing_selected($older_than), 0, $data);
     }
 
     my ($removed, $freed) = (0, 0);
@@ -879,7 +897,8 @@ None.
 
 Says how old something is, in words: C<just now>, C<3 minutes ago>, C<2
 hours ago>, C<5 days ago>, C<2 months ago> or C<1 year ago>.  It uses the
-largest whole unit, so 90 minutes is C<1 hour ago>.
+largest whole unit, so 90 minutes is C<1 hour ago>.  These are the
+English words; another language of L<App::Actions::I18N> says it its own way.
 
 =head3 ARGUMENTS
 
@@ -987,7 +1006,10 @@ Run and log names are ASCII by construction (job names are made safe before
 they are used in file names).  The log directory path may contain any
 characters your system allows, including non-ASCII and emoji; it is used and
 reported as bytes.  The log files themselves are read only for their size
-and time, never for their content.
+and time, never for their content.  The text that L</report> and L</prune>
+return, and the words of L</format_age>, are in the current language of
+L<App::Actions::I18N> and may contain non-ASCII characters; encode them
+when you print.  The JSON document is never translated.
 
 =head1 AUTHOR
 

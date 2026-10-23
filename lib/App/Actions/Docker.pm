@@ -15,13 +15,13 @@ use App::Actions::Process;
 # it would change where the client connects, what it trusts or where it
 # finds programs.
 my $CLIENT_VARIABLE = qr/
-	\A (?:
-		DOCKER_\w* | BUILDKIT_\w* | COMPOSE_\w*
-		| PATH | PATHEXT | HOME | USERPROFILE | APPDATA | LOCALAPPDATA
-		| TMPDIR | TMP | TEMP | XDG_\w+
-		| (?: HTTPS? | NO | ALL | FTP ) _PROXY
-		| SSL_CERT_(?: FILE | DIR )
-	) \z
+    \A (?:
+        DOCKER_\w* | BUILDKIT_\w* | COMPOSE_\w*
+        | PATH | PATHEXT | HOME | USERPROFILE | APPDATA | LOCALAPPDATA
+        | TMPDIR | TMP | TEMP | XDG_\w+
+        | (?: HTTPS? | NO | ALL | FTP ) _PROXY
+        | SSL_CERT_(?: FILE | DIR )
+    ) \z
 /xi;
 
 # A name a process environment can carry on every platform.  - and . are
@@ -32,7 +32,7 @@ my $VARIABLE_NAME = qr/\A[A-Za-z_][A-Za-z0-9_.-]*\z/;
 our $VERSION = '0.002.0';
 
 sub new {
-	my ($class, %args) = @_;
+    my ($class, %args) = @_;
 
     my %secret_names;
     my %secret_values;
@@ -67,12 +67,12 @@ sub new {
 # executable bit cannot be started on Unix either, so a Perl wrapper is run
 # with the current interpreter.  Anything else is used as given.
 sub _interpreter_prefix {
-	my ($bin) = @_;
+    my ($bin) = @_;
 
-	return () unless defined $bin && length $bin && !ref $bin;
-	return () unless -f $bin;
-	return () if $bin =~ /\.(?:exe|com|bat|cmd)\z/i;
-	return ($^X) if $bin =~ /\.pl\z/i;
+    return () unless defined $bin && length $bin && !ref $bin;
+    return () unless -f $bin;
+    return () if $bin =~ /\.(?:exe|com|bat|cmd)\z/i;
+    return ($^X) if $bin =~ /\.pl\z/i;
 
     # Only the first line matters, and the command may be a large binary, so
     # read a bounded amount rather than a whole line.

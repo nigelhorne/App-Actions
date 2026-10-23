@@ -4634,9 +4634,15 @@ YAML
 
 	subtest '_run_instance' => sub {
 		my $git = mock_scoped('App::Actions::Runner::_git' => sub { '' });
-		my $object = $runner->();
-		my $windows = $printed->(sub { is($object->_run_instance({ base_id => 'w', display_name => 'w', 'runs-on' => 'windows-latest' }, {})->{result},
+		# The skip is reported, naming the job and the runner it asked for, so
+		# a reader knows why it did not run; quiet says nothing.
+		my $windows_job = { base_id => 'w', display_name => 'w', 'runs-on' => 'windows-latest' };
+		my $object = $runner->(quiet => 0);
+		my $windows = $printed->(sub { is($object->_run_instance($windows_job, {})->{result},
 			'skipped', 'a job that is not for Linux is skipped') });
+		is($windows, "==> Job: w (skipped: runs-on 'windows-latest' is not Linux)\n", 'and the skip says why');
+		$object = $runner->();
+		is($printed->(sub { $object->_run_instance($windows_job, {}) }), '', 'but not when quiet');
 
 		my (@cleaned, $steps_dies);
 		my $guards = [
@@ -4871,6 +4877,108 @@ subtest 'App::Actions' => sub {
 			"Unknown document 'Check'; expected check, preflight, cache or logs", 'names are exact');
 		throws_code(sub { App::Actions->json_schema('../etc/passwd') }, 'actions.document_unknown', undef, 'a path is just an unknown name');
 		throws_ok { App::Actions->json_schema([]) } qr/'name'/, 'a name that is not a string';
+	};
+};
+
+# ---------------------------------------------------------------------------
+# The cache and logs listings, and the lines a child process prints, in the
+# chosen language
+# ---------------------------------------------------------------------------
+
+subtest 'translated listings and child messages' => sub {
+	# The listings were English text written into the code; they now come
+	# from the catalogues.  English must read exactly as before, another
+	# language must replace every sentence and heading, and the columns must
+	# still line up when a heading is longer than its English one.  Only
+	# ASCII French is compared, so this file stays ASCII.
+	my $fresh = sub {
+		my $cache = App::Actions::Cache->new(file => File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json'));
+		$cache->{data} = { format => 1, images => {} };
+		return $cache;
+	};
+
+	subtest 'Cache::_heading_line and _nothing_selected' => sub {
+		my $cache = $fresh->();
+		is($cache->_heading_line, "Cache file: $cache->{file}\n", 'the first line names the record');
+		is($cache->_nothing_selected(undef), "No images have been cached yet.\n", 'an empty record');
+		is($cache->_nothing_selected($DAY), "No images have been cached yet.\n",
+			'a threshold over an empty record still says nothing was cached, not that nothing is old');
+		$cache->{data}{images}{'perl:5.40'} = { pulls => 1, last_used => time };
+		is($cache->_nothing_selected($DAY), "No cached images are older than 1 day.\n", 'images, none old enough');
+		is($cache->_nothing_selected(undef), "No images have been cached yet.\n",
+			'without a threshold there is nothing to be too young for');
+		my $file = $cache->{file};
+		$cache->{file} = "a\nb";
+		is($cache->_heading_line, "Cache file: a\nb\n", 'a name is shown as it is, not interpreted');
+		$cache->{file} = $file;
+		memory_cycle_ok($cache, 'no reference cycle');
+	};
+
+	subtest 'Logs::_heading_line and _nothing_selected' => sub {
+		my $dir = tempdir(CLEANUP => 1);
+		my $logs = App::Actions::Logs->new(directory => $dir);
+		is($logs->_heading_line, "Logs directory: $dir\n", 'the first line names the directory');
+		is($logs->_nothing_selected(undef), "No job logs have been kept yet.\n", 'nothing kept');
+		is($logs->_nothing_selected($DAY), "No job logs have been kept yet.\n", 'a threshold over nothing');
+		my $guard = mock_scoped('App::Actions::Logs::entries' => sub { [ { name => 'run' } ] });
+		is($logs->_nothing_selected($DAY), "No job logs are older than 1 day.\n", 'logs, none old enough');
+	};
+
+	subtest 'a French listing' => sub {
+		local $ENV{ACTION_RUN_LANG} = 'fr';
+		my $cache = $fresh->();
+		my $now = time;
+		$cache->{data}{images}{'ubuntu:latest'} = { pulls => 1, last_used => $now - 2 * 3600 };
+		my $out = $cache->report(now => $now);
+		like($out, qr/\AFichier du cache : /, 'the first line is French');
+		like($out, qr/il y a 2 heures$/m, 'and so is the age');
+		unlike($out, qr/Cache file|LAST USED|\bago\b|not reachable|unknown/, 'no English is left');
+
+		# The heading row and the image row put each column at the same
+		# place, though "DERNIERE UTILISATION" is wider than a date.
+		my ($heading, $row) = grep { /\A  \S/ } split /\n/, $out;
+		my $at = sub { my ($line, $word) = @_; return index($line, $word) };
+		ok($at->($heading, 'TAILLE') >= 0, 'the size heading is translated');
+		my @heading_starts = map { $-[0] } $heading =~ /(?<=  )\S/g;
+		my @row_starts = map { $-[0] } $row =~ /(?<=  )\S/g;
+		is($row_starts[0], $heading_starts[0], 'the image column starts where its heading does');
+		is($row_starts[-1], $heading_starts[-1], 'and so does the age column, after the widened date column');
+
+		my $empty = $fresh->();
+		like($empty->report, qr/^Aucune image n.a encore/m, 'an empty record says so in French');
+		my $json = $cache->document(now => $now);
+		is($json->{images}[0]{image}, 'ubuntu:latest', 'the JSON document is not translated');
+	};
+
+	subtest 'a French child process message' => sub {
+		local $ENV{ACTION_RUN_LANG} = 'fr';
+		my $dir = tempdir(CLEANUP => 1);
+		my $err = File::Spec->catfile($dir, 'err');
+		my $missing = File::Spec->catfile($dir, 'missing');
+		# Two commands at once, so each runs in a child of its own; a single
+		# command is run in this process, where a missing program is 255.
+		my $codes = App::Actions::Process::run_parallel([ [ $missing ], perl_command('exit 0') ],
+			concurrency => 2, stderr => $err);
+		is_deeply($codes, [ $STATUS{not_found}, 0 ], 'a program that cannot run is still 127');
+		open my $handle, '<', $err or die $!;
+		like(do { local $/; <$handle> }, qr/\AImpossible d.ex.cuter '\Q$missing\E' : /, 'and the child says why in French');
+		close $handle;
+
+		# run_parallel opens the output files before it forks, so a file the
+		# child cannot open is only reached by calling the child's routine in
+		# a child: a directory is not a file it can write.
+		my $pid = fork;
+		die "fork: $!" unless defined $pid;
+		if ($pid == 0) {
+			open STDERR, '>', $err or POSIX::_exit(2);
+			App::Actions::Process::_redirect_child(stdout => $dir);
+			POSIX::_exit(0);
+		}
+		waitpid $pid, 0;
+		is($? >> 8, $STATUS{not_found}, 'an output the child cannot open stops it with 127');
+		open $handle, '<', $err or die $!;
+		like(do { local $/; <$handle> }, qr/\AImpossible de rediriger stdout vers '\Q$dir\E' : /, 'and says so in French');
+		close $handle;
 	};
 };
 

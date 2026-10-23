@@ -47,6 +47,7 @@ t/archive-crlf.t
 t/bin/check-archive-crlf
 t/bin/fake-docker
 t/cache.t
+t/changes.t
 t/check.t
 t/cli.t
 t/docker.t

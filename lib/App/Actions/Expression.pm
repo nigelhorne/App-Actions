@@ -17,14 +17,14 @@ use App::Actions::Util ();
 # a minus sign.  The language has no subtraction, so a minus that starts a
 # token can only be a sign (a dash inside a name is part of the name).
 Readonly::Scalar my $NUMBER => qr/
-	\G
-	(
-		-?                         # a sign
-		(?: \d++ (?: \. \d*+ )?    # 12, 1.5 or 1.
-		  | \. \d++               # .5
-		)
-		(?: [eE] [+-]? \d++ )?     # an exponent
-	)
+    \G
+    (
+        -?                         # a sign
+        (?: \d++ (?: \. \d*+ )?    # 12, 1.5 or 1.
+          | \. \d++               # .5
+        )
+        (?: [eE] [+-]? \d++ )?     # an exponent
+    )
 /x;
 
 # An identifier: a letter or underscore, then letters, digits, _ and -.

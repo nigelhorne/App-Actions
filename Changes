@@ -85,6 +85,21 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	- t/space-path.t is skipped when AUTOMATED_TESTING is set, unless
 	  SPACE_PATH is true: under Devel::Cover its second run of the suite took
 	  most of an hour of the dashboard job.
+	- The cache and logs listings (their headings, column names and
+	  "just now" / "ago" ages) and the two lines a child process prints when
+	  it cannot redirect its output or start its program now come from the
+	  message catalogues, so they are in French, German or Chinese when that
+	  language is chosen.  The English text is unchanged.  The JSON documents
+	  are not translated.
+	- New test dependencies: Test::Mockingbird 0.14, Test::Returns 0.05 and
+	  Test::Memory::Cycle 1.06, for t/function.t.  Test::DescribeMe and
+	  Test::Warn are no longer listed; no test used them directly.
+	- Added t/changes.t, which checks the shape of this file: the newest
+	  release is the modules' version, every release has items and a date
+	  in date(1)'s form (only the newest may be undated, and not under
+	  RELEASE_TESTING), and versions and dates go one way.
+	- META: the repository URL is https (GitHub no longer serves git://),
+	  and keys the META spec does not define are gone.
 
 0.001.0	Thu Oct 22 12:40:02 PM EDT 2026
 	- First release
