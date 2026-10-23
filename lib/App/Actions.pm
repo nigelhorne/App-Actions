@@ -910,7 +910,9 @@ spaces are covered on every platform.  The copy is made from F<MANIFEST>, so it
 holds exactly what the distribution ships and a test that reads a new file
 finds it there as soon as that file is listed.  That doubles the running time;
 set C<SPACE_PATH=0> to skip it, or run just that check with
-C<prove -l t/space-path.t>.
+C<prove -l t/space-path.t>.  It is skipped when C<AUTOMATED_TESTING> is set
+(continuous integration, CPAN testers) unless C<SPACE_PATH> is set to a true
+value.
 
 F<t/locales.t> covers the message catalogue: the country-to-language table
 for GB, US, FR, DE and CN, and the error paths under the C<en_US.UTF-8>,

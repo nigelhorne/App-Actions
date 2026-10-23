@@ -82,6 +82,9 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  current user's name is not treated as a different user.
 	- App::Actions: a workflow in /.github/workflows has / as its project
 	  directory, not the current directory.
+	- t/space-path.t is skipped when AUTOMATED_TESTING is set, unless
+	  SPACE_PATH is true: under Devel::Cover its second run of the suite took
+	  most of an hour of the dashboard job.
 
 0.001.0	Thu Oct 22 12:40:02 PM EDT 2026
 	- First release
