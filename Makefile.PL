@@ -55,6 +55,7 @@ WriteMakefile(
         'YAML::PP::Common' => 0,
         'autodie'          => 0,
         'utf8'             => 0,
+	'version' => 0
     },
     CONFIGURE_REQUIRES => {
         'ExtUtils::MakeMaker' => 6.64,

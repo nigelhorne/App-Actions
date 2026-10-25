@@ -1,6 +1,6 @@
 Revision history for App-Actions - run GitHub Actions workflows locally
 
-0.002.1
+0.002.1	Sun Oct 25 07:56:17 PM EDT 2026
 	- t/regex.t checks that tokenizing four times the expression takes less
 	  than eight times as long, rather than holding it to two seconds,
 	  which a slower or busy machine went past.

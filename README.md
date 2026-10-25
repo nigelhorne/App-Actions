@@ -566,10 +566,6 @@ The schemas live in [App::Actions::Check](https://metacpan.org/pod/App%3A%3AActi
 [App::Actions::Cache](https://metacpan.org/pod/App%3A%3AActions%3A%3ACache) and [App::Actions::Logs](https://metacpan.org/pod/App%3A%3AActions%3A%3ALogs), so the contract is
 available from an installed distribution.
 
-#### Side Effects
-
-None.
-
 #### Example
 
 ```perl

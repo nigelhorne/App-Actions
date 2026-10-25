@@ -36,6 +36,7 @@ requires 'YAML::PP::Common';
 requires 'autodie';
 requires 'overload';
 requires 'utf8';
+requires 'version';
 
 on 'configure' => sub {
 	requires 'ExtUtils::MakeMaker', '6.64';
