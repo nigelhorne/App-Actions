@@ -61,11 +61,11 @@ App::Actions - run GitHub Actions workflows locally
 
 =head1 VERSION
 
-0.002.0
+0.002.1
 
 =cut
 
-our $VERSION = '0.002.0';
+our $VERSION = '0.002.1';
 
 =head1 SYNOPSIS
 

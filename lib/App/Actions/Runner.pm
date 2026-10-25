@@ -33,7 +33,7 @@ use App::Actions::Runner::Support qw(
 use App::Actions::Schema;
 use App::Actions::Util ();
 
-our $VERSION = '0.002.0';
+our $VERSION = '0.002.1';
 
 # The shape of the preflight JSON document, which is the check document with
 # an images array and the pull concurrency added.  It is versioned separately

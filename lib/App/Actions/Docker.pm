@@ -29,7 +29,7 @@ my $CLIENT_VARIABLE = qr/
 # them (INPUT_GITHUB-TOKEN), and such a value is often a secret.
 my $VARIABLE_NAME = qr/\A[A-Za-z_][A-Za-z0-9_.-]*\z/;
 
-our $VERSION = '0.002.0';
+our $VERSION = '0.002.1';
 
 sub new {
     my ($class, %args) = @_;
