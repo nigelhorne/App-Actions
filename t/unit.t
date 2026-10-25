@@ -3057,7 +3057,10 @@ subtest 'App::Actions::Runner::Parallel' => sub {
 			like(ref $error && $error->message, qr/\AUnable to read '.+job-\d\.json': \S/, 'and names the file');
 		}
 		{
-			local $FAIL{open} = sub { $_[1] eq '>' && defined $_[2] && $_[2] =~ /job-\d+\.json\z/ };
+			# Only a's result is unwritable: the first job reaped without one is
+			# the one named, and when both failed that was whichever finished
+			# first.
+			local $FAIL{open} = sub { $_[1] eq '>' && defined $_[2] && $_[2] =~ /job-1\.json\z/ };
 			my $object = $parallel->();
 			my $error;
 			output_of(stdout => sub { $error = caught { $object->run([ $plan->('a'), $plan->('b') ]) } });

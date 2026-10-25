@@ -4,6 +4,8 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	- t/regex.t checks that tokenizing four times the expression takes less
 	  than eight times as long, rather than holding it to two seconds,
 	  which a slower or busy machine went past.
+	- t/unit.t no longer depends on which of two parallel jobs finishes
+	  first when checking a result that cannot be written.
 
 0.002.0	Fri Oct 23 02:52:55 PM EDT 2026
 	- Security: an environment value is interpolated only once, so ${{ }}
