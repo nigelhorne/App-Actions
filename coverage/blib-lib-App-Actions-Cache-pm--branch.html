@@ -20,7 +20,7 @@ https://pjcj.net
 <h1>Branch Coverage</h1>
 <table>
 <tr><td class="h" align="right">File:</td><td align="left">blib/lib/App/Actions/Cache.pm</td></tr>
-<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">96.2%</td></tr>
+<tr><td class="h" align="right">Coverage:</td><td align="left" class="c2">96.5%</td></tr>
 </table>
 <div><br/></div>
 <table>
@@ -52,55 +52,62 @@ https://pjcj.net
 <tr><td class="h"><a id="L283">283</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (rename $temp, $path)</td></tr>
 <tr><td class="h"><a id="L302">302</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $image and length $image</td></tr>
 <tr><td class="h"><a id="L311">311</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $count</td></tr>
-<tr><td class="h"><a id="L341">341</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $image</td></tr>
-<tr><td class="h"><a id="L342">342</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if delete $data-&gt;{&#39;images&#39;}{$image}</td></tr>
-<tr><td class="h"><a id="L345">345</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $count</td></tr>
-<tr><td class="h"><a id="L353">353</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $bytes and $bytes &gt; 0</td></tr>
-<tr><td class="h"><a id="L363">363</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $unit</td></tr>
-<tr><td class="h"><a id="L406">406</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $text</td></tr>
-<tr><td class="h"><a id="L407">407</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $text =~ /\A\s*(\d+)\s*([A-Za-z]+)\s*\z/</td></tr>
-<tr><td class="h"><a id="L410">410</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless exists $DURATION_SECONDS{$unit}</td></tr>
-<tr><td class="h"><a id="L418">418</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $seconds and $seconds =~ /\A-?\d+\z/</td></tr>
-<tr><td class="h"><a id="L419">419</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seconds &lt; 0</td></tr>
-<tr><td class="h"><a id="L434">434</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seconds &lt; $units[$next][0]</td></tr>
-<tr><td class="h"><a id="L449">449</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $seconds and $seconds =~ /\A-?\d+\z/</td></tr>
-<tr><td class="h"><a id="L450">450</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seconds &lt; 0</td></tr>
-<tr><td class="h"><a id="L452">452</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$seconds &lt; 60 ? :</td></tr>
-<tr><td class="h"><a id="L464">464</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $args{&#39;older_than&#39;}</td></tr>
-<tr><td class="h"><a id="L466">466</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L471">471</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $_-&gt;{&#39;last_used&#39;}</td></tr>
-<tr><td class="h"><a id="L478">478</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $epoch and $epoch =~ /\A\d+\z/</td></tr>
-<tr><td class="h"><a id="L506">506</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $older_than &amp;&amp; @{$self-&gt;entries;} ? :</td></tr>
-<tr><td class="h"><a id="L521">521</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L529">529</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (@$entries)</td></tr>
-<tr><td class="h"><a id="L533">533</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $older_than</td></tr>
-<tr><td class="h"><a id="L542">542</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if length $entry-&gt;{&#39;image&#39;} &gt; $width</td></tr>
-<tr><td class="h"><a id="L546">546</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $stamp_width &lt; $STAMP_WIDTH</td></tr>
-<tr><td class="h"><a id="L553">553</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($docker)</td></tr>
-<tr><td class="h"><a id="L555">555</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $size) { }</td></tr>
-<tr><td class="h"><a id="L567">567</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $entry-&gt;{&#39;last_used&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L584">584</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$sized ? :</td></tr>
-<tr><td class="h"><a id="L589">589</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (not $docker) { }</td></tr>
+<tr><td class="h"><a id="L328">328</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $image and length $image and $data-&gt;{&#39;images&#39;}{$image}</td></tr>
+<tr><td class="h"><a id="L334">334</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $count</td></tr>
+<tr><td class="h"><a id="L364">364</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $image</td></tr>
+<tr><td class="h"><a id="L365">365</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if delete $data-&gt;{&#39;images&#39;}{$image}</td></tr>
+<tr><td class="h"><a id="L368">368</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $count</td></tr>
+<tr><td class="h"><a id="L376">376</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $bytes and $bytes &gt; 0</td></tr>
+<tr><td class="h"><a id="L386">386</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $unit</td></tr>
+<tr><td class="h"><a id="L429">429</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $text</td></tr>
+<tr><td class="h"><a id="L430">430</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless $text =~ /\A\s*(\d+)\s*([A-Za-z]+)\s*\z/</td></tr>
+<tr><td class="h"><a id="L433">433</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless exists $DURATION_SECONDS{$unit}</td></tr>
+<tr><td class="h"><a id="L441">441</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $seconds and $seconds =~ /\A-?\d+\z/</td></tr>
+<tr><td class="h"><a id="L442">442</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seconds &lt; 0</td></tr>
+<tr><td class="h"><a id="L457">457</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seconds &lt; $units[$next][0]</td></tr>
+<tr><td class="h"><a id="L472">472</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $seconds and $seconds =~ /\A-?\d+\z/</td></tr>
+<tr><td class="h"><a id="L473">473</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $seconds &lt; 0</td></tr>
+<tr><td class="h"><a id="L475">475</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$seconds &lt; 60 ? :</td></tr>
+<tr><td class="h"><a id="L487">487</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $args{&#39;older_than&#39;}</td></tr>
+<tr><td class="h"><a id="L489">489</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L494">494</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $_-&gt;{&#39;last_used&#39;}</td></tr>
+<tr><td class="h"><a id="L501">501</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $epoch and $epoch =~ /\A\d+\z/</td></tr>
+<tr><td class="h"><a id="L522">522</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $size</td></tr>
+<tr><td class="h"><a id="L524">524</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$docker-&gt;image_exists($image) ? :</td></tr>
+<tr><td class="h"><a id="L546">546</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $older_than &amp;&amp; @{$self-&gt;entries;} ? :</td></tr>
+<tr><td class="h"><a id="L561">561</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L569">569</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (@$entries)</td></tr>
+<tr><td class="h"><a id="L573">573</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $older_than</td></tr>
+<tr><td class="h"><a id="L582">582</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if length $entry-&gt;{&#39;image&#39;} &gt; $width</td></tr>
+<tr><td class="h"><a id="L586">586</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $stamp_width &lt; $STAMP_WIDTH</td></tr>
+<tr><td class="h"><a id="L593">593</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($docker)</td></tr>
+<tr><td class="h"><a id="L595">595</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $size) { }</td></tr>
+<tr><td class="h"></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">elsif (not $present) { }</td></tr>
+<tr><td class="h"><a id="L607">607</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $entry-&gt;{&#39;last_used&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L624">624</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$sized ? :</td></tr>
+<tr><td class="h"><a id="L629">629</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (not $docker) { }</td></tr>
 <tr><td class="h"></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">elsif ($missing) { }</td></tr>
-<tr><td class="h"><a id="L595">595</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $sized</td></tr>
-<tr><td class="h"><a id="L607">607</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless my $docker = $args{&#39;docker&#39;}</td></tr>
-<tr><td class="h"><a id="L609">609</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L616">616</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (@$entries)</td></tr>
-<tr><td class="h"><a id="L632">632</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (defined $size)</td></tr>
-<tr><td class="h"><a id="L638">638</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($docker-&gt;image_remove($image) == 0) { }</td></tr>
-<tr><td class="h"><a id="L647">647</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if @forget</td></tr>
-<tr><td class="h"><a id="L656">656</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $removed</td></tr>
-<tr><td class="h"><a id="L658">658</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $gone</td></tr>
-<tr><td class="h"><a id="L660">660</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (@failed)</td></tr>
-<tr><td class="h"><a id="L676">676</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L679">679</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$args{&#39;reachable&#39;} ? :</td></tr>
-<tr><td class="h"><a id="L686">686</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if not defined $bin &amp;&amp; length $bin and $docker</td></tr>
-<tr><td class="h"><a id="L688">688</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $bin and length $bin</td></tr>
-<tr><td class="h"><a id="L694">694</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($reachable and $docker)</td></tr>
-<tr><td class="h"><a id="L696">696</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $size) { }</td></tr>
-<tr><td class="h"><a id="L707">707</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $entry-&gt;{&#39;last_used&#39;})</td></tr>
-<tr><td class="h"><a id="L709">709</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $age &lt; 0</td></tr>
-<tr><td class="h"><a id="L738">738</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$reachable ? :</td></tr>
+<tr><td class="h"><a id="L635">635</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $sized</td></tr>
+<tr><td class="h"><a id="L647">647</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless my $docker = $args{&#39;docker&#39;}</td></tr>
+<tr><td class="h"><a id="L649">649</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L656">656</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless (@$entries)</td></tr>
+<tr><td class="h"><a id="L673">673</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless ($present)</td></tr>
+<tr><td class="h"><a id="L679">679</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($docker-&gt;image_remove($image) == 0) { }</td></tr>
+<tr><td class="h"><a id="L682">682</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $size</td></tr>
+<tr><td class="h"><a id="L688">688</a></td><td class="c0">50</td><td class="c3">T</td><td class="c0">F</td><td class="s">if @forget</td></tr>
+<tr><td class="h"><a id="L697">697</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $removed</td></tr>
+<tr><td class="h"><a id="L699">699</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $gone</td></tr>
+<tr><td class="h"><a id="L701">701</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (@failed)</td></tr>
+<tr><td class="h"><a id="L717">717</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">defined $args{&#39;now&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L720">720</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$args{&#39;reachable&#39;} ? :</td></tr>
+<tr><td class="h"><a id="L727">727</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if not defined $bin &amp;&amp; length $bin and $docker</td></tr>
+<tr><td class="h"><a id="L729">729</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">unless defined $bin and length $bin</td></tr>
+<tr><td class="h"><a id="L735">735</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($reachable and $docker)</td></tr>
+<tr><td class="h"><a id="L738">738</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if ($there) { }</td></tr>
+<tr><td class="h"><a id="L739">739</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if defined $size</td></tr>
+<tr><td class="h"><a id="L749">749</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if (defined $entry-&gt;{&#39;last_used&#39;})</td></tr>
+<tr><td class="h"><a id="L751">751</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">if $age &lt; 0</td></tr>
+<tr><td class="h"><a id="L780">780</a></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$reachable ? :</td></tr>
 <tr><td class="h"></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$reachable ? :</td></tr>
 <tr><td class="h"></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$reachable ? :</td></tr>
 <tr><td class="h"></td><td class="c3">100</td><td class="c3">T</td><td class="c3">F</td><td class="s">$reachable ? :</td></tr>
