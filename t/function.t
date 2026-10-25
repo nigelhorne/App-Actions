@@ -2019,6 +2019,21 @@ YAML
 			'workflow.defaults_run_invalid', "defaults of job 'j' run must be a mapping", 'the place is named');
 	};
 
+	subtest '_copy' => sub {
+		my $job = { if => !!0, strategy => { 'fail-fast' => !!0 }, steps => [ { run => 'x', env => { A => 1 } } ], name => undef };
+		my $copy = App::Actions::Workflow::_copy($job);
+		is_deeply($copy, $job, 'the same values');
+		$copy->{steps}[0]{env}{A} = 2;
+		push @{ $copy->{steps} }, {};
+		is_deeply($job->{steps}, [ { run => 'x', env => { A => 1 } } ], 'but none of the containers is shared');
+		SKIP: {
+			skip 'Perl has its own booleans from 5.36', 2 if $] < 5.036;
+			no warnings;
+			ok(builtin::is_bool($copy->{if}), 'a core boolean stays one (Storable 3.26, in Perl 5.36, made it a string)');
+			ok(builtin::is_bool($copy->{strategy}{'fail-fast'}), 'however deep it is');
+		}
+	};
+
 	subtest '_expand_matrix' => sub {
 		is_deeply(App::Actions::Workflow::_expand_matrix(undef), [ {} ], 'no matrix is one run');
 		is_deeply(App::Actions::Workflow::_expand_matrix({ b => [ 1, 2 ], a => 'x' }),
@@ -2294,6 +2309,36 @@ subtest 'App::Actions::Cache' => sub {
 			'only old enough, and never one whose age is unknown');
 		like(App::Actions::Cache::_stamp(0), qr/\A\d{4}-\d\d-\d\d \d\d:\d\d\z/, 'a time stamp');
 		is(App::Actions::Cache::_stamp($_), '-', 'no stamp for ' . explain($_)) for (undef, 'x', -1, '1.5');
+	};
+
+	subtest 'touch' => sub {
+		my $cache = $fresh->();
+		$cache->load->{images} = { kept => { pulls => 3, last_used => 0 } };
+		my $saves = 0;
+		my $guard = mock_scoped('App::Actions::Cache::save' => sub { $saves++; 1 });
+		is($cache->touch('kept', 'kept', 'other', undef, ''), 2, 'each recorded name counts, others are skipped');
+		is_deeply([ sort keys %{ $cache->load->{images} } ], [ 'kept' ], 'nothing is added');
+		is($cache->load->{images}{kept}{pulls}, 3, 'the count stays');
+		cmp_ok($cache->load->{images}{kept}{last_used}, '>', 0, 'the last use moves on');
+		is($saves, 1, 'and it is saved once');
+		is($cache->touch('other'), 0, 'nothing recorded, nothing touched');
+		is($saves, 1, 'and nothing saved');
+	};
+
+	subtest '_presence' => sub {
+		my ($size, $exists, @asked) = (undef, 1);
+		my $docker = bless {}, 'App::Actions::Docker';
+		my $sized = mock_scoped('App::Actions::Docker::image_size' => sub { push @asked, 'size'; $size });
+		my $there = mock_scoped('App::Actions::Docker::image_exists' => sub { push @asked, 'exists'; $exists });
+
+		$size = 10;
+		is_deeply([ App::Actions::Cache::_presence($docker, 'i') ], [ 10, 1 ], 'a size means the image is there');
+		is_deeply(\@asked, [ 'size' ], 'without asking again');
+		($size, @asked) = (undef);
+		is_deeply([ App::Actions::Cache::_presence($docker, 'i') ], [ undef, 1 ], 'no size, but there: present, size unknown');
+		is_deeply(\@asked, [ 'size', 'exists' ], 'which is asked about');
+		$exists = 0;
+		is_deeply([ App::Actions::Cache::_presence($docker, 'i') ], [ undef, 0 ], 'no size and not there: missing');
 	};
 
 	subtest 'report' => sub {
@@ -3570,6 +3615,7 @@ subtest 'App::Actions::Runner::Images' => sub {
 			'a present image is used, a missing one pulled');
 		is_deeply($result->{failures}, [], 'nothing failed');
 		is_deeply($object->pulled, [ 'postgres:16' ], 'and the pulled one is remembered');
+		is_deeply($object->used, [ 'postgres:16', 'ubuntu:latest' ], 'both are used, the present one too');
 		is_deeply($object->{docker}{many}, [ [ 'postgres:16' ], { concurrency => $object->concurrency } ], 'all at once, at the concurrency');
 		ok(!grep({ exists $_->{present} } @{ $result->{records} }), 'the working field is removed');
 
@@ -3635,9 +3681,11 @@ subtest 'App::Actions::Runner::Images' => sub {
 		$object = $images->(docker => Local::ImageDocker->new(present => { 'x:1' => 1 }));
 		is($object->ensure('x:1'), 1, 'a present image');
 		is_deeply($object->{docker}{pulls}, [], 'is not pulled');
+		is_deeply($object->used, [ 'x:1' ], 'but is used');
 		$object->ensure('y:1');
 		$object->ensure('y:1');
 		is_deeply($object->{docker}{pulls}, [ 'y:1' ], 'a missing one is pulled once per run');
+		is_deeply($object->used, [ 'x:1', 'y:1' ], 'and used');
 		$object = $images->(docker => Local::ImageDocker->new(present => { 'x:1' => 1 }), pull => 1);
 		$object->ensure('x:1');
 		is_deeply([ $object->{docker}{pulls}, $object->pulled ], [ [ 'x:1' ], [] ], '--pull refreshes, without marking it for removal');
@@ -3646,6 +3694,7 @@ subtest 'App::Actions::Runner::Images' => sub {
 		$object = $images->(dry_run => 1);
 		is($object->ensure('z:1'), 1, 'a dry run does nothing');
 		is_deeply($object->{docker}{pulls}, [], 'and pulls nothing');
+		is_deeply($object->used, [], 'or uses');
 	};
 
 	subtest 'probe' => sub {
@@ -3673,6 +3722,18 @@ subtest 'App::Actions::Runner::Images' => sub {
 		$images->()->remember($cache);
 		$images->(dry_run => 1)->note_pulled('c:1')->remember($cache);
 		is_deeply(\@remembered, [], 'nothing pulled, or a dry run, records nothing');
+
+		my @touched;
+		my $touch = mock_scoped('App::Actions::Cache::touch' => sub { shift; push @touched, @_; 1 });
+		$images->()->note_pulled('a:1')->note_used('a:1', 'c:1')->remember($cache);
+		is_deeply([ \@remembered, \@touched ], [ [ 'a:1' ], [ 'c:1' ] ], 'a pulled image is remembered, a reused one touched');
+		@remembered = @touched = ();
+		$images->()->note_used('c:1')->remember($cache);
+		is_deeply([ \@remembered, \@touched ], [ [], [ 'c:1' ] ], 'with nothing pulled, only touched');
+		@touched = ();
+		$images->(dry_run => 1)->note_used('c:1')->remember($cache);
+		is_deeply(\@touched, [], 'and not in a dry run');
+		undef $touch;
 		undef $guard;
 
 		$guard = mock_scoped('App::Actions::Cache::remember' => sub { die "disk full\n" });

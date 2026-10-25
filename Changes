@@ -6,6 +6,23 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  which a slower or busy machine went past.
 	- t/unit.t no longer depends on which of two parallel jobs finishes
 	  first when checking a result that cannot be written.
+	- action-run cache no longer reports an image as missing when Docker
+	  has it but gives no size for it, and --prune removes such an image
+	  instead of forgetting it (which left it on the daemon and out of the
+	  record).
+	- if: false and fail-fast: false work on Perl 5.36 again: each matrix
+	  instance's copy of its job was made with Storable, whose version in
+	  5.36 (3.26) turns a core boolean into an empty string, which ran the
+	  job.
+	- A run that uses a kept image without pulling it again updates the
+	  image's last use in the record (App::Actions::Cache->touch), so
+	  "action-run cache --prune --older-than" no longer removes an image
+	  that runs still use.  An image the record does not hold is still never
+	  added.  Jobs run in parallel report the images they used too.
+	- Added t/integration.t: end-to-end tests across the modules, with
+	  unwritable and unsearchable directories, an unreachable daemon, slow
+	  and failing pulls, and malformed answers and files.  It needs
+	  Test::Permissions and Test::Without::Module.
 
 0.002.0	Fri Oct 23 02:52:55 PM EDT 2026
 	- Security: an environment value is interpolated only once, so ${{ }}

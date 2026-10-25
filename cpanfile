@@ -50,7 +50,9 @@ on 'test' => sub {
 	requires 'Test::Memory::Cycle', '1.06';
 	requires 'Test::Mockingbird', '0.14';
 	requires 'Test::Most';
+	requires 'Test::Permissions', '0.001.2';
 	requires 'Test::Returns', '0.05';
+	requires 'Test::Without::Module', '0.23';
 };
 
 on 'develop' => sub {

@@ -2000,6 +2000,16 @@ subtest 'App::Actions::Cache' => sub {
 		is($again->remember(), 0, 'nothing to remember');
 		is($again->forget(), 0, 'or to forget');
 		ok(!-e $cache->file, 'and nothing is written');
+		my $kept = $cache_at->({ x => { pulls => 2, last_used => 1 } });
+		returns_ok($kept->touch('x', 'mine', undef, ''), { type => 'integer', min => 0 }, 'touch: a count');
+		is($kept->touch('x', 'mine'), 1, 'of the names the record holds');
+		my $touched = App::Actions::Cache->new(file => $kept->file)->entries;
+		is_deeply([ map { [ $_->{image}, $_->{pulls} ] } @{$touched} ], [ [ 'x', 2 ] ],
+			'which keep their count, and no other name is added');
+		cmp_ok(abs($touched->[0]{last_used} - time), '<=', $config{time_limit}, 'and saves their last use as now');
+		my $untouched = $cache_at->();
+		is($untouched->touch('mine'), 0, 'touching a name the record lacks is nothing');
+		ok(!-e $untouched->file, 'and writes nothing');
 		my $older = $cache_at->({ x => { pulls => 1 } });
 		is_deeply($older->entries, [ { image => 'x', pulls => 1, last_used => undef } ], 'an unknown last use is undef');
 		keeps_globals(sub { $cache_at->({ x => { pulls => 1 } })->save }, 'save', io => 1);
@@ -3380,6 +3390,20 @@ subtest 'App::Actions::Runner::Images' => sub {
 		$images->()->remember($other);
 		$images->(dry_run => 1)->note_pulled('x')->remember($other);
 		ok(!-e $other, 'nothing pulled, or a dry run, writes nothing');
+
+		my $using = $images->();
+		is_returned($using->used, { type => 'arrayref' }, [], 'nothing used yet');
+		is($using->note_used('b', undef, '', 'mine'), $using, 'note_used returns the object');
+		is_deeply($using->used, [ 'b', 'mine' ], 'used lists what was noted, sorted, nothing empty');
+		my $reused = App::Actions::Cache->new(file => File::Spec->catfile(tempdir(CLEANUP => 1), 'cache.json'));
+		$reused->remember('b');
+		$reused->load->{images}{b}{last_used} = 1;
+		$reused->save;
+		$using->remember($reused->file);
+		my $after = App::Actions::Cache->new(file => $reused->file)->entries;
+		is_deeply([ map { [ $_->{image}, $_->{pulls} ] } @{$after} ], [ [ 'b', 1 ] ],
+			'remember: a recorded image used again keeps its count, and an unrecorded one stays out');
+		cmp_ok(abs($after->[0]{last_used} - time), '<=', $config{time_limit}, 'but its last use is now');
 
 		my $blocked = write_file('file', '');
 		my $bad = File::Spec->catfile($blocked, 'cache.json');
