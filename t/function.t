@@ -40,11 +40,13 @@ use App::Actions::I18N qw(i18n throw validate_args);
 use App::Actions::Util qw(load_yaml_mapping mapping normalize_step stringify trim);
 
 # These are white-box tests: they call the _private helpers directly, which
-# Sub::Private forbids everywhere else.  prove bypasses the check through
+# Sub::Private forbids everywhere else, and App::Actions::_runner, which
+# Sub::Protected keeps to subclasses.  prove bypasses both checks through
 # HARNESS_ACTIVE; this makes "perl -Ilib t/function.t" behave the same.
 {
 	no warnings 'once';
 	$Sub::Private::BYPASS = 1;
+	$Sub::Protected::BYPASS = 1;
 }
 
 # Values the tests share, named so that a failure says what was meant.
