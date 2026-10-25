@@ -894,15 +894,20 @@ subtest 'App::Actions::Process' => sub {
 		# shell sees its arguments; the result is a program that could not
 		# start, as everywhere else.
 		local $^O = 'MSWin32';
-		local $ENV{PATH} = tempdir(CLEANUP => 1);
 		local ($!, $?);
-		is(App::Actions::Process::_system([ 'missing', '& echo pwned' ]), -1, 'a missing program is -1');
-		is($?, -1, 'with $? saying it did not start');
-		is($! + 0, POSIX::ENOENT(), 'and $! saying why');
-		is(App::Actions::Process::exit_code($?), $STATUS{not_started}, 'which is status 255');
+		{
+			local $ENV{PATH} = tempdir(CLEANUP => 1);
+			is(App::Actions::Process::_system([ 'missing', '& echo pwned' ]), -1, 'a missing program is -1');
+			is($?, -1, 'with $? saying it did not start');
+			is($! + 0, POSIX::ENOENT(), 'and $! saying why');
+			is(App::Actions::Process::exit_code($?), $STATUS{not_started}, 'which is status 255');
+		}
 
 		# Windows adds an extension to a path that has none, so Perl must be
 		# named as perl.exe; where $^X has no extension, a link gives it one.
+		# PATH is the real one again: an empty PATH is what makes the program
+		# above missing, but Perl itself may need it to find its DLLs, and
+		# when Windows cannot start it Perl retries through cmd.exe.
 		my $perl = $^X;
 		if ($perl !~ /\.exe\z/i) {
 			$perl = File::Spec->catfile(tempdir(CLEANUP => 1), 'perl.EXE');

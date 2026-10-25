@@ -9,6 +9,7 @@ use warnings;
 # subtest sees what an earlier one left behind, as with a real daemon.
 
 use Capture::Tiny qw(capture);
+use Cwd ();
 use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use File::Spec;
@@ -53,6 +54,8 @@ Readonly::Hash my %config => (
 Readonly::Scalar my $FAKE_DOCKER => File::Spec->rel2abs(File::Spec->catfile(dirname(__FILE__), 'bin', 'fake-docker'));
 Readonly::Scalar my $LIB => File::Spec->rel2abs(File::Spec->catdir(dirname(__FILE__), File::Spec->updir, 'lib'));
 Readonly::Scalar my $NO_FORK => $^O eq 'MSWin32';
+# Runner::Images pulls one image at a time there, whatever pull_concurrency says.
+Readonly::Scalar my $SERIAL_PULLS => $^O eq 'MSWin32';
 
 # Object::Configure reads the developer's own configuration files, where a
 # UNIVERSAL logger would take the messages these tests read; an empty
@@ -621,9 +624,11 @@ subtest 'an unreachable daemon stops the run before any job' => sub {
 subtest 'slow and failing pulls overlap and stop the run before any job' => sub {
 	# Injected latency: every pull takes a while.  The images of a job are
 	# pulled several at a time, so the run is not as slow as its slowest
-	# pulls added together, and a failed pull is reported against the job
-	# before any container starts.  Overlap is read from the daemon's own
-	# timestamps rather than a wall clock, so a slow machine cannot fail it.
+	# pulls added together - except on Windows, where Runner::Images
+	# documents that they are pulled one at a time.  A failed pull is
+	# reported against the job before any container starts.  Overlap is read
+	# from the daemon's own timestamps rather than a wall clock, so a slow
+	# machine cannot fail it.
 	my @images = @{ $config{service_images} };
 	my %knobs = (FAKE_PULL_SLEEP => $config{pull_sleep}, FAKE_PULL_TIMING => 1);
 
@@ -636,7 +641,11 @@ subtest 'slow and failing pulls overlap and stop the run before any job' => sub 
 	is_deeply([ sort keys %{$end} ], [ sort $config{image}, @images ], 'every image was pulled');
 	my $last_start = (sort { $b <=> $a } map { $start->{$_} } @images)[0];
 	my $first_end = (sort { $a <=> $b } map { $end->{$_} } @images)[0];
-	cmp_ok($last_start, '<', $first_end, 'and the service images were all under way before the first finished');
+	if ($SERIAL_PULLS) {
+		cmp_ok($last_start, '>=', $first_end, 'and the service images were pulled one at a time, as documented here');
+	} else {
+		cmp_ok($last_start, '<', $first_end, 'and the service images were all under way before the first finished');
+	}
 
 	my $failing = daemon();
 	my @logger;
@@ -709,7 +718,9 @@ subtest 'malformed files are survived or refused, as documented' => sub {
 		'a workflow that is not YAML is refused';
 	$error = $@;
 	ok($error->is('workflow.parse_failed'), 'with the code that says why');
-	like($error->message, qr/\Q$broken->{workflow}\E/, 'naming the file');
+	# new() names the workflow by its absolute path, which on Windows is
+	# written with forward slashes.
+	like($error->message, qr/\Q@{[ Cwd::abs_path($broken->{workflow}) ]}\E/, 'naming the file');
 };
 
 subtest 'no optional module is needed, and none changes the outcome' => sub {
@@ -719,7 +730,9 @@ subtest 'no optional module is needed, and none changes the outcome' => sub {
 	# Perl each time, and check that a run and a schema lookup behave alike.
 	my @optional = @{ $config{optional_modules} };
 	my $project = project($PASSING);
-	my $program = <<'PERL';
+	# A script file, not perl -e: Windows rebuilds a command line from the
+	# arguments, and a program of several lines does not survive that.
+	my $program = write_file(File::Spec->catfile(tempdir(CLEANUP => 1), 'optional.pl'), <<'PERL');
 use App::Actions;
 my ($workflow, $docker) = @ARGV;
 my $schema = App::Actions->json_schema('check');
@@ -732,7 +745,7 @@ PERL
 		my @hidden = map { $optional[$_] } grep { $mask & (1 << $_) } 0 .. $#optional;
 		my @switches = @hidden ? ('-MTest::Without::Module=' . join(',', @hidden)) : ();
 		my ($stdout, $stderr, $status) = capture {
-			system($^X, "-I$LIB", @switches, '-e', $program, $project->{workflow}, $FAKE_DOCKER);
+			system($^X, "-I$LIB", @switches, $program, $project->{workflow}, $FAKE_DOCKER);
 		};
 		my $label = @hidden ? 'without ' . join(', ', @hidden) : 'with everything installed';
 		is($status, 0, "a run $label works") or diag($stderr);

@@ -6,6 +6,9 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  which a slower or busy machine went past.
 	- t/unit.t no longer depends on which of two parallel jobs finishes
 	  first when checking a result that cannot be written.
+	- t/function.t's test that _system on Windows runs a program given by
+	  its path no longer empties PATH for it, which kept Perl from starting
+	  on GitHub's Windows runners.
 	- action-run cache no longer reports an image as missing when Docker
 	  has it but gives no size for it, and --prune removes such an image
 	  instead of forgetting it (which left it on the daemon and out of the
