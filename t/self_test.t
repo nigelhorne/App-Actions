@@ -87,6 +87,9 @@ BAIL_OUT("cannot find '$script'; the self test would have nothing to run it with
         or die "Unable to read '$cli_workflow': $!";
     my $text = do { local $/; <$handle> };
     close $handle;
+    # A CRLF checkout (git with core.autocrlf, as on Windows) would otherwise
+    # leave a \r before each line break the patterns below look for.
+    $text =~ s/\r\n/\n/g;
 
     my ($image) = $text =~ /^\s*image:\s*(\S+)\s*$/m;
     $image = '' unless defined $image;

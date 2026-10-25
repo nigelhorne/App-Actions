@@ -153,7 +153,6 @@ Readonly::Array my @DOCUMENTED => (
 	'text Schema: WHAT: FIRST (and N more)',
 	"text Docker: Docker executable 'BIN' was not found or is not usable",
 	'text Docker: Cannot connect to the Docker daemon',
-	"text Docker: Failed to pull Docker image 'IMAGE' (exit N)",
 	'text Docker: No images given',
 	(map { "text Expression: $_" }
 		'Cannot evaluate an undefined expression', 'Cannot evaluate an empty expression', 'Unterminated string',
@@ -1166,8 +1165,8 @@ subtest 'App::Actions::Docker' => sub {
 		with_docker([ [ '^pull', 3 ] ], sub {
 			throws_ok { docker()->pull('nope') } qr/\AFailed to pull Docker image 'nope' \(exit 3\)\n\z/,
 				'a failed pull dies with advice, not a line number';
+			ok($@->is('runner.image.pull_failed'), 'as runner.image.pull_failed');
 		});
-		settle("text Docker: Failed to pull Docker image 'IMAGE' (exit N)");
 
 		my $results;
 		$log = with_docker([ [ 'pull bad', 2 ] ], sub {

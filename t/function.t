@@ -957,7 +957,11 @@ subtest 'App::Actions::Process' => sub {
 	};
 
 	subtest '_redirect_child' => sub {
-		# The routine is for a forked child, so it is tested in one.
+		# The routine is for a forked child, so it is tested in one.  Windows
+		# emulates fork() with a thread of this process, so the child's
+		# redirection would take this test's own standard output and error,
+		# and POSIX::_exit would end the whole test; Process never forks there.
+		return plan(skip_all => 'Process does not fork on Windows') if $^O eq 'MSWin32';
 		my $dir = tempdir(CLEANUP => 1);
 		my $out = File::Spec->catfile($dir, 'child.out');
 		my $pid = fork();
@@ -2553,11 +2557,30 @@ subtest 'App::Actions::Check' => sub {
 	my $daemon = sub {
 		@answers = @_;
 		@asked = ();
-		my $answer = sub { push @asked, [ @_[ 1 .. $#_ ] ]; return @{ shift(@answers) || [ '', 1 ] } };
+		my $answer = sub { 
+			push @asked, [ @_[ 1 .. $#_ ] ];
+			my ($output, $status) = @{ shift(@answers) || [ '', 1 ] };
+			return (ref $output eq 'CODE' ? $output->(@_[ 1 .. $#_ ]) : $output, $status);
+		};
 		return mock_scoped(
 			'App::Actions::Docker::capture_silent' => $answer,
 			'App::Actions::Docker::capture' => $answer,
 		);
+	};
+	# The probe container's answer: the token the check wrote, read back from
+	# the directory it mounts as a container would, then the rest.  The check
+	# makes its token as it runs, so one made beforehand differed whenever a
+	# second ticked over in between.
+	my $marker = sub {
+		my ($rest) = @_;
+		return sub {
+			my ($mount) = grep { m{:/action-run-check\z} } @_;
+			(my $host = $mount) =~ s{:/action-run-check\z}{};
+			open my $handle, '<', File::Spec->catfile($host, 'marker') or die "cannot read the marker: $!";
+			my $token = do { local $/; <$handle> };
+			close $handle;
+			return "$token\n$rest";
+		};
 	};
 	my $text = '';
 	my $check = sub {
@@ -2578,7 +2601,7 @@ subtest 'App::Actions::Check' => sub {
 	};
 
 	subtest 'run' => sub {
-		my $guard = $daemon->([ "27.0\n", 0 ], [ "27.0\n", 0 ], [ "linux\n", 0 ], [ (join '-', time, $$) . "\n", 0 ]);
+		my $guard = $daemon->([ "27.0\n", 0 ], [ "27.0\n", 0 ], [ "linux\n", 0 ], [ $marker->(''), 0 ]);
 		my $object = $check->();
 		is($object->run, 0, 'everything ready is 0');
 		like($text, qr/\Aaction-run check\n/, 'the report has a title');
@@ -2590,7 +2613,7 @@ subtest 'App::Actions::Check' => sub {
 		like($text, qr/^  problem   the Docker command 'docker' could not be run$/m, 'and is printed even when quiet');
 		like($text, qr/^Result: not ready \(1 problem\)$/m, 'with a count');
 
-		$guard = $daemon->([ "27.0\n", 0 ], [ "27.0\n", 0 ], [ "linux\n", 0 ], [ (join '-', time, $$) . "\n", 0 ]);
+		$guard = $daemon->([ "27.0\n", 0 ], [ "27.0\n", 0 ], [ "linux\n", 0 ], [ $marker->(''), 0 ]);
 		$object = $check->(quiet => 1);
 		is($object->run, 0, 'a quiet check that passes');
 		is($text, '', 'prints nothing');
@@ -2654,9 +2677,8 @@ subtest 'App::Actions::Check' => sub {
 
 	subtest '_check_mounts' => sub {
 		my $docker = App::Actions::Docker->new(bin => 'docker');
-		my $token = join '-', time, $$;
 		{
-			my $guard = $daemon->([ "$token\n0\n", 0 ]);
+			my $guard = $daemon->([ $marker->("0\n"), 0 ]);
 			is($check->()->_check_mounts($docker), 1, 'the marker comes back');
 			like($text, qr{^  mount     .+ -> /action-run-check: OK$}m, 'the mount is reported');
 			ok(grep({ $_ eq '--network' } @{ $asked[0] }), 'the probe has no network');
@@ -2675,19 +2697,19 @@ subtest 'App::Actions::Check' => sub {
 		my $project = tempdir(CLEANUP => 1);
 		write_file($_, 'x', $project) for qw(a b);
 		{
-			my $guard = $daemon->([ "$token\n2\n", 0 ]);
+			my $guard = $daemon->([ $marker->("2\n"), 0 ]);
 			is($check->(directory => $project)->_check_mounts($docker), 1, 'the project shows the same entries');
 			like($text, qr/OK \(2 entries\)/, 'and says how many');
 		}
 		{
-			my $guard = $daemon->([ "$token\n0\n", 0 ]);
+			my $guard = $daemon->([ $marker->("0\n"), 0 ]);
 			my $object = $check->(directory => $project);
 			is($object->_check_mounts($docker), 0, 'an empty project mount');
 			like($text, qr/sees 0 entries, the host has 2/, 'is a problem');
 			is($object->{data}{mounts}[-1]{ok}, JSON::PP::false(), 'and the mount is marked not OK');
 		}
 		{
-			my $guard = $daemon->([ "$token\nlots\n", 0 ]);
+			my $guard = $daemon->([ $marker->("lots\n"), 0 ]);
 			is($check->(directory => $project)->_check_mounts($docker), 0, 'a count that is not a number');
 			like($text, qr/could not count the entries/, 'is a problem');
 		}
@@ -3283,6 +3305,12 @@ subtest 'App::Actions::Runner::Parallel' => sub {
 		is($parallel->()->run($plans->(1)), undef, 'one job is run serially');
 		is($parallel->(capacity => 1)->run($plans->(1, 2)), undef, 'so is a capacity of one');
 		is($parallel->()->run([]), undef, 'and no jobs at all');
+		{
+			local $^O = 'MSWin32';
+			is($parallel->()->run($plans->(1 .. 3)), undef, 'and every group on Windows, which has no reliable fork()');
+		}
+		# Everything below forks.
+		return if $^O eq 'MSWin32';
 
 		my @seen;
 		my $object = $parallel->(

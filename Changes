@@ -26,6 +26,18 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  unwritable and unsearchable directories, an unreachable daemon, slow
 	  and failing pulls, and malformed answers and files.  It needs
 	  Test::Permissions and Test::Without::Module.
+	- YAML::PP 0.38 is required: older versions do not load true and false
+	  as Perl's own booleans, which if: false and fail-fast: false rely on
+	  from Perl 5.36.
+	- A pull that fails while a job runs is reported in the chosen language
+	  (App::Actions::Error runner.image.pull_failed), as the preflight's
+	  already was.
+	- The core modules the tool and its tests use are all declared as
+	  prerequisites.
+	- The tests pass from a checkout with CRLF line endings (t/changes.t,
+	  t/self_test.t), t/function.t no longer fails now and then when a
+	  second passes during the mount check, and its fork() tests no longer
+	  end the test on Windows, where Process and parallel jobs do not fork.
 
 0.002.0	Fri Oct 23 02:52:55 PM EDT 2026
 	- Security: an environment value is interpolated only once, so ${{ }}
