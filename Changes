@@ -38,6 +38,11 @@ Revision history for App-Actions - run GitHub Actions workflows locally
 	  t/self_test.t), t/function.t no longer fails now and then when a
 	  second passes during the mount check, and its fork() tests no longer
 	  end the test on Windows, where Process and parallel jobs do not fork.
+	- t/self_test.t runs the fake daemon's steps with the Perl under test:
+	  where the first perl on PATH was another one, without the tool's
+	  dependencies, the second workflow fell back to cpanm and failed
+	  (a CPAN Testers report on Perl 5.44.0).
+	  Fixes https://matrix.perl-magpie.org/results/fbe62b68-cfbc-11f1-b73e-b510376a2ca8
 
 0.002.0	Fri Oct 23 02:52:55 PM EDT 2026
 	- Security: an environment value is interpolated only once, so ${{ }}
