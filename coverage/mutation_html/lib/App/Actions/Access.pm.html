@@ -1,0 +1,660 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>File: lib/App/Actions/Access.pm</title>
+<style>
+
+/* --------------------------------------------------
+   CSS Variables (Light Mode Default)
+-------------------------------------------------- */
+
+:root {
+    --bg: #ffffff;
+    --text: #000000;
+    --table-header: #333;
+    --table-header-text: #ffffff;
+
+    --survived-1: #f8d7da;
+    --survived-2: #f5b7b1;
+    --survived-3: #ec7063;
+
+    --killed: #d4edda;
+    --border: #cccccc;
+}
+
+/* --------------------------------------------------
+   Dark Mode Overrides
+-------------------------------------------------- */
+
+html[data-theme='dark'] {
+    --bg: #1e1e1e;
+    --text: #dddddd;
+    --table-header: #222;
+    --table-header-text: #ffffff;
+
+    --survived-1: #5c2b2e;
+    --survived-2: #7b2c2f;
+    --survived-3: #a93226;
+
+    --killed: #1e4620;
+    --border: #555;
+}
+
+/* --------------------------------------------------
+   Global Styles
+-------------------------------------------------- */
+
+body {
+	font-family: sans-serif;
+	background: var(--bg);
+	color: var(--text);
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+th {
+    background: var(--table-header);
+    color: var(--table-header-text);
+}
+
+.survived-1 { background-color: var(--survived-1); }
+.survived-2 { background-color: var(--survived-2); }
+.survived-3 { background-color: var(--survived-3); }
+
+.killed { background-color: var(--killed); }
+
+.legend {
+    border: 1px solid #ccc;
+    background: #fafafa;
+    padding: 10px;
+    margin: 15px 0;
+    font-size: 0.9em;
+}
+
+.legend pre {
+    background: #f4f4f4;
+    padding: 5px;
+}
+
+.legend-box {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    margin: 0 6px 0 20px;
+    vertical-align: middle;
+    border: 1px solid var(--border);
+}
+
+/* White box for non-mutated lines */
+.legend-box.none {
+	background-color: var(--bg);
+}
+
+/* --------------------------------------------------
+   Suggested Test Box Styling
+   Theme-aware and readable in light & dark modes
+-------------------------------------------------- */
+
+.suggested-test {
+    margin-top: 6px;
+    margin-bottom: 12px;
+
+    /* Use theme variables instead of hardcoded colors */
+    background: var(--bg);
+    color: var(--text);
+
+    padding: 8px;
+    border-radius: 4px;
+
+    /* Subtle border for visual separation */
+    border: 1px solid var(--border);
+}
+
+/* Label styling */
+.suggest-label {
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+/* Ensure the test code block inherits readable colors */
+.suggested-test pre {
+    background: transparent;   /* Prevent nested dark blocks */
+    color: inherit;            /* Match theme text color */
+    margin: 0;
+    font-family: monospace;
+}
+
+pre { line-height: 1.4; }
+
+pre > details {
+    margin: 0.2em 0;
+}
+
+pre > details:first-child {
+    margin-top: 0;
+}
+
+pre > details:last-child {
+    margin-bottom: 0;
+}
+
+pre details,
+pre summary,
+pre ul,
+pre li {
+    white-space: normal;
+    margin: 0;
+    padding: 0;
+    line-height: 1.2;
+}
+
+.nav { margin-bottom: 1em; }
+
+.toggle {
+    float: right;
+    cursor: pointer;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+/* Tooltip container */
+.tooltip {
+	position: relative;
+	cursor: help;
+}
+
+/* Tooltip bubble */
+.tooltip:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 0;
+    top: 100%;
+    background: var(--table-header);
+    color: var(--table-header-text);
+    padding: 6px 10px;
+    white-space: normal;
+    max-width: 300px;
+    min-width: 30ch;
+    font-size: 12px;
+    border-radius: 6px;
+    z-index: 1000;
+    margin-left: 10ch;   /* move tooltip ~10 characters to the right */
+}
+
+.mutant-details {
+	margin-left: 2em;
+	font-size: 0.9em;
+}
+
+/* Indent the list of mutations that displays when expanding by 8 characters */
+pre details.mutant-details ul {
+	padding-left: 8ch;
+	margin: 0.2em 0;
+}
+
+.mutant-details summary {
+	cursor: pointer;
+	font-weight: bold;
+}
+
+.lcsaj-dot {
+    color: #5555ff;
+    font-size: 10px;
+    margin-right: 3px;
+}
+
+.lcsaj-dot-uncovered {
+    color: #cc4444;
+    font-size: 10px;
+    margin-right: 3px;
+}
+
+.lcsaj-tip {
+	position: relative;
+	display: inline-block;
+}
+
+.lcsaj-tip .lcsaj-tip-text {
+	visibility: hidden;
+	background-color: #333;
+	color: #fff;
+	padding: 4px 8px;
+	border-radius: 4px;
+	font-size: 11px;
+	white-space: nowrap;
+	position: fixed;
+	z-index: 9999;
+	pointer-events: none;
+}
+
+.lcsaj-tip:hover .lcsaj-tip-text {
+	visibility: visible;
+}
+
+.cpd-dot {
+    color: #cc8800;
+    font-size: 10px;
+    margin-right: 3px;
+    cursor: help;
+    text-decoration: none;
+}
+a.cpd-dot { cursor: pointer; }
+a.cpd-dot:hover { color: #ff8800; }
+
+.cpd-tip {
+    position: relative;
+    display: inline-block;
+}
+
+.cpd-tip .cpd-tip-text {
+    visibility: hidden;
+    background-color: #333;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: nowrap;
+    position: fixed;
+    z-index: 9999;
+    pointer-events: none;
+}
+
+.cpd-tip:hover .cpd-tip-text {
+    visibility: visible;
+}
+
+/* CPD drill-down page styles */
+.dup-line { background-color: #fff3cd; display: block; }
+.dup-line:hover { background-color: #ffe082; }
+.intra-dot { color: #9944cc; margin-right: 4px; cursor: help; text-decoration: none; }
+a.intra-dot { cursor: pointer; }
+a.intra-dot:hover { color: #7700bb; }
+.cpd-legend {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    display: inline-block;
+    padding: 6px 10px;
+    margin-bottom: 1em;
+    font-size: 0.9em;
+}
+
+</style>
+</head>
+<body>
+<button class="toggle" onclick="toggleTheme()">🌙 Toggle Theme</button>
+<h1>lib/App/Actions/Access.pm</h1>
+<div class="nav"><a href="../../../../index.html">Index</a>
+ <a href="Docker/Variable.pm.html">Next ➡</a></div><div class='summary'>
+<strong>Structural Coverage (Approximate)</strong><p>
+TER1 (Statement): 100.00%<br>
+TER2 (Branch): 100.00%<br>
+TER3 (LCSAJ): 100.0% (1/1)<br>
+Approximate LCSAJ segments: 11<br>
+</div>
+
+    <div class="legend">
+        <h3>LCSAJ Legend</h3>
+
+        <p>
+        <span class="lcsaj-dot">●</span>
+        <b>Covered</b> — this LCSAJ path was executed during testing.
+        </p>
+
+        <p>
+        <span class="lcsaj-dot-uncovered">●</span>
+        <b>Not covered</b> — this LCSAJ path was never executed. These are the paths to focus on.
+        </p>
+
+        <p>
+        Multiple dots on a line indicate that multiple control-flow paths begin at that line.
+        Hovering over any dot shows:
+        </p>
+
+        <pre>
+        start → end → jump
+        </pre>
+
+        <ul>
+        <li><b>start</b> – first line of the linear sequence</li>
+        <li><b>end</b> – last line before control flow changes</li>
+        <li><b>jump</b> – line execution jumps to next</li>
+        </ul>
+
+        <p>
+        Uncovered paths show <b>[NOT COVERED]</b> in the tooltip.
+	</p>
+    </div>
+
+		<div class="legend">
+			<h3>Mutant Testing Legend</h3>
+			<span class="legend-box survived-1"></span> Survived (tests missed this)
+			<span class="legend-box killed"></span> Killed (tests detected this)
+			<span class="legend-box none"></span> No mutation
+		</div>
+	<pre>
+<span class="">    1: package App::Actions::Access;
+</span><span class="">    2: 
+</span><span class="">    3: use strict;
+</span><span class="">    4: use warnings;
+</span><span class="">    5: use autodie qw(:all);
+</span><span class="">    6: 
+</span><span class="">    7: use Carp qw(croak);
+</span><span class="">    8: use Readonly;
+</span><span class="">    9: use Sub::Identify qw(get_code_info);
+</span><span class="">   10: 
+</span><span class="">   11: our $VERSION = &#39;0.002.1&#39;;
+</span><span class="">   12: 
+</span><span class="">   13: # A routine whose name starts with this is private to its package.
+</span><span class="">   14: Readonly::Scalar my $PRIVATE =&gt; qr/\A_[A-Za-z0-9]\w*\z/;
+</span><span class="">   15: 
+</span><span class="">   16: =encoding utf-8
+</span><span class="">   17: 
+</span><span class="">   18: =head1 NAME
+</span><span class="">   19: 
+</span><span class="">   20: App::Actions::Access - list the private routines of a package for Sub::Private
+</span><span class="">   21: 
+</span><span class="">   22: =head1 SYNOPSIS
+</span><span class="">   23: 
+</span><span class="">   24: 	package App::Actions::Example;
+</span><span class="">   25: 
+</span><span class="">   26: 	use Sub::Private ();
+</span><span class="">   27: 	use Sub::Protected ();
+</span><span class="">   28: 	use App::Actions::Access;
+</span><span class="">   29: 
+</span><span class="">   30: 	sub run { my $self = shift; return $self-&gt;_step }
+</span><span class="">   31: 	sub _step { ... }
+</span><span class="">   32: 	sub _runner { ... }    # protected: subclasses may call it
+</span><span class="">   33: 
+</span><span class="">   34: 	# At the end of the file, once every routine above is compiled.
+</span><span class="">   35: 	BEGIN {
+</span><span class="">   36: 		Sub::Protected-&gt;import(&#39;_runner&#39;);
+</span><span class="">   37: 		local $Sub::Private::config{mode} = &#39;enforce&#39;;
+</span><span class="">   38: 		Sub::Private-&gt;import(@{ App::Actions::Access-&gt;private_names(__PACKAGE__, &#39;_runner&#39;) });
+</span><span class="">   39: 	}
+</span><span class="">   40: 
+</span><span class="">   41: See which routines would be made private:
+</span><span class="">   42: 
+</span><span class="">   43: 	use App::Actions::Access;
+</span><span class="">   44: 	use App::Actions::Runner;
+</span><span class="">   45: 
+</span><span class="">   46: 	my $names = App::Actions::Access-&gt;private_names(&#39;App::Actions::Runner&#39;);
+</span><span class="">   47: 	print join(&quot;\n&quot;, @{$names}), &quot;\n&quot;;
+</span><span class="">   48: 
+</span><span class="">   49: Leave some names out:
+</span><span class="">   50: 
+</span><span class="">   51: 	my $names = App::Actions::Access-&gt;private_names(__PACKAGE__, &#39;_runner&#39;, &#39;_docker&#39;);
+</span><span class="">   52: 
+</span><span class="">   53: =head1 DESCRIPTION
+</span><span class="">   54: 
+</span><span class="">   55: In Perl, a routine whose name starts with C&lt;_&gt; is private by convention
+</span><span class="">   56: only: any code can still call it.  L&lt;Sub::Private&gt; makes the rule real.  In
+</span><span class="">   57: C&lt;enforce&gt; mode, a call to a private routine from outside its own package
+</span><span class="">   58: dies.
+</span><span class="">   59: 
+</span><span class="">   60: There is a catch.  L&lt;Sub::Private&gt;&#39;s mode is one setting for the whole
+</span><span class="">   61: program.  If one module set it to C&lt;enforce&gt; for good, every module loaded
+</span><span class="">   62: after it would be switched too, even modules that did not ask for it.
+</span><span class="">   63: 
+</span><span class="">   64: So this distribution never changes the setting for good.  Each module, at
+</span><span class="">   65: the end of its file, sets the mode with C&lt;local&gt; for just one call to
+</span><span class="">   66: L&lt;Sub::Private&gt;, and gives that call the list of its private routines.  This
+</span><span class="">   67: module makes that list.  Because the list is made from the code, a private
+</span><span class="">   68: routine added later is protected automatically; nobody has to remember to
+</span><span class="">   69: add it to a list.
+</span><span class="">   70: 
+</span><span class="">   71: =head1 METHODS
+</span><span class="">   72: 
+</span><span class="">   73: =head2 private_names
+</span><span class="">   74: 
+</span><span class="">   75: Lists the routines of a package whose names start with an underscore, which
+</span><span class="">   76: the package itself defined (not ones it imported), less the ones named as
+</span><span class="">   77: exceptions.
+</span><span class="">   78: 
+</span><span class="">   79: =head3 ARGUMENTS
+</span><span class="">   80: 
+</span><span class="">   81: =over 4
+</span><span class="">   82: 
+</span><span class="">   83: =item * C&lt;$package&gt; - the package whose routines are listed.
+</span><span class="">   84: 
+</span><span class="">   85: =item * C&lt;@except&gt; - optional; names to leave out, such as the protected
+</span><span class="">   86: routines a subclass may call.
+</span><span class="">   87: 
+</span><span class="">   88: =back
+</span><span class="">   89: 
+</span><span class="">   90: =head3 RETURNS
+</span><span class="">   91: 
+</span><span class="">   92: A sorted array reference of names.
+</span><span class="">   93: 
+</span><span class="">   94: =head3 SIDE EFFECTS
+</span><span class="">   95: 
+</span><span class="">   96: None.
+</span><span class="">   97: 
+</span><span class="">   98: =head3 EXAMPLE
+</span><span class="">   99: 
+</span><span class="">  100: 	my $names = App::Actions::Access-&gt;private_names(&#39;App::Actions::Runner&#39;);
+</span><span class="">  101: 	print &quot;@$names\n&quot;;    # _build_base_env _check_environment ...
+</span><span class="">  102: 
+</span><span class="">  103: =head3 API SPECIFICATION
+</span><span class="">  104: 
+</span><span class="">  105: =head4 INPUT
+</span><span class="">  106: 
+</span><span class="">  107: 	{
+</span><span class="">  108: 		package =&gt; { type =&gt; &#39;string&#39;, matches =&gt; qr/\A\w+(?:::\w+)*\z/ },
+</span><span class="">  109: 		except  =&gt; { type =&gt; &#39;arrayref&#39;, optional =&gt; 1 },
+</span><span class="">  110: 	}
+</span><span class="">  111: 
+</span><span class="">  112: =head4 OUTPUT
+</span><span class="">  113: 
+</span><span class="">  114: 	{ type =&gt; &#39;arrayref&#39; }
+</span><span class="">  115: 
+</span><span class="">  116: =head3 MESSAGES
+</span><span class="">  117: 
+</span><span class="">  118: 	+---------------------------+------------------------------+-----------------------------+
+</span><span class="">  119: 	| Message                   | Meaning                      | Resolution                  |
+</span><span class="">  120: 	+---------------------------+------------------------------+-----------------------------+
+</span><span class="">  121: 	| A package name is required| No package, or not a name    | Pass __PACKAGE__            |
+</span><span class="">  122: 	+---------------------------+------------------------------+-----------------------------+
+</span><span class="">  123: 
+</span><span class="">  124: =cut
+</span><span class="">  125: 
+</span><span class="">  126: sub private_names {
+</span><span class=""><span class="lcsaj-tip"><span class="lcsaj-dot">●</span><span class="lcsaj-tip-text">127 → 138 → 151</span></span>  127: 	my (undef, $package, @except) = @_;
+</span><span class="">  128: 
+</span><span class="">  129: 	# Called from a BEGIN block with a literal, so a bad name is a mistake
+</span><span class="">  130: 	# in this distribution and is reported in plain English.
+</span><span class="">  131: 	croak &#39;A package name is required&#39;
+</span><span class="">  132: 		unless defined $package &amp;&amp; $package =~ /\A\w+(?:::\w+)*\z/;
+</span><span class="">  133: 
+</span><span class="">  134: 	my %skip = map { $_ =&gt; 1 } @except;
+</span><span class="">  135: 	my $stash = do { no strict &#39;refs&#39;; \%{&quot;${package}::&quot;} };
+</span><span class="">  136: 
+</span><span class="">  137: 	my @names;
+</span><span class="">  138: 	for my $name (sort keys %{$stash}) {
+</span><span class="">  139: 		next if $skip{$name} || $name !~ $PRIVATE;
+</span><span class="">  140: 
+</span><span class="">  141: 		# A glob may hold only a scalar or a hash of that name.
+</span><span class="">  142: 		my $code = do { no strict &#39;refs&#39;; defined &amp;{&quot;${package}::$name&quot;} ? \&amp;{&quot;${package}::$name&quot;} : undef };
+</span><span class="">  143: 		next unless $code;
+</span><span class="">  144: 
+</span><span class="">  145: 		# A routine imported from another package belongs to that package,
+</span><span class="">  146: 		# which decides for itself whether it is private.
+</span><span class="">  147: 		my ($owner) = get_code_info($code);
+</span><span class="">  148: 		push @names, $name if defined $owner &amp;&amp; $owner eq $package;
+</span><span class="">  149: 	}
+</span><span class="">  150: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  151: 	return \@names;
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  152: }
+</span><span class="">  153: 
+</span><span class="">  154: 1;
+</span><span class="">  155: 
+</span><span class="">  156: __END__
+</span><span class="">  157: 
+</span><span class="">  158: =head1 LIMITATIONS
+</span><span class="">  159: 
+</span><span class="">  160: =over 4
+</span><span class="">  161: 
+</span><span class="">  162: =item * The listing has to run after the routines are compiled, which is
+</span><span class="">  163: why the C&lt;BEGIN&gt; block goes at the end of the file.  A routine compiled
+</span><span class="">  164: after it (by a string C&lt;eval&gt;, say) is not protected.
+</span><span class="">  165: 
+</span><span class="">  166: =item * Privacy is checked on every call, by walking C&lt;caller&gt;, so a private
+</span><span class="">  167: routine costs more to call than a public one.  None of this distribution&#39;s
+</span><span class="">  168: private routines is called in a tight loop.
+</span><span class="">  169: 
+</span><span class="">  170: =item * The check is bypassed under a test harness (C&lt;HARNESS_ACTIVE&gt;), which
+</span><span class="">  171: is how the white-box tests reach the private routines.  Run a test file
+</span><span class="">  172: without the harness to see the checks in force.
+</span><span class="">  173: 
+</span><span class="">  174: =item * A private routine handed to another package as a code reference is
+</span><span class="">  175: checked when that package calls it, and fails.  Hand over a closure that
+</span><span class="">  176: calls it instead.
+</span><span class="">  177: 
+</span><span class="">  178: =back
+</span><span class="">  179: 
+</span><span class="">  180: =head1 COMMON PITFALLS
+</span><span class="">  181: 
+</span><span class="">  182: =over 4
+</span><span class="">  183: 
+</span><span class="">  184: =item * B&lt;Call it at the end of the file.&gt;  It sees only the routines that
+</span><span class="">  185: are already compiled.  Put the C&lt;BEGIN&gt; block after the last C&lt;sub&gt;.
+</span><span class="">  186: 
+</span><span class="">  187: =item * B&lt;Always use C&lt;local&gt; for the mode.&gt;  Write C&lt;local
+</span><span class="">  188: $Sub::Private::config{mode} = &#39;enforce&#39;;&gt; inside the C&lt;BEGIN&gt; block.
+</span><span class="">  189: Without C&lt;local&gt;, every module loaded later is enforced too.
+</span><span class="">  190: 
+</span><span class="">  191: =item * B&lt;Leave out protected routines.&gt;  A routine that a subclass may
+</span><span class="">  192: call must be passed in C&lt;@except&gt; (and given to L&lt;Sub::Protected&gt;), or the
+</span><span class="">  193: subclass&#39;s calls will die.
+</span><span class="">  194: 
+</span><span class="">  195: =item * B&lt;Names starting with two underscores are not listed.&gt;  C&lt;__foo&gt;
+</span><span class="">  196: does not match; only C&lt;_&gt; followed by a letter or digit does.
+</span><span class="">  197: 
+</span><span class="">  198: =item * B&lt;Imported routines are not listed.&gt;  A routine imported from
+</span><span class="">  199: another module belongs to that module.
+</span><span class="">  200: 
+</span><span class="">  201: =item * B&lt;Once Sub::Private has wrapped them, they are not listed either.&gt;
+</span><span class="">  202: The wrapper belongs to L&lt;Sub::Private&gt;, so asking about a module that has
+</span><span class="">  203: already run its C&lt;BEGIN&gt; block (for example C&lt;App::Actions::Util&gt;, once it
+</span><span class="">  204: is loaded) returns an empty list.  Ask before the C&lt;import&gt;, as the
+</span><span class="">  205: C&lt;BEGIN&gt; block does.
+</span><span class="">  206: 
+</span><span class="">  207: =item * B&lt;Tests run with the checks off.&gt;  Under C&lt;prove&gt;,
+</span><span class="">  208: C&lt;HARNESS_ACTIVE&gt; is set and the checks are bypassed.  Run
+</span><span class="">  209: C&lt;perl -Ilib t/file.t&gt; (without C&lt;prove&gt;) to test with them on.
+</span><span class="">  210: 
+</span><span class="">  211: =back
+</span><span class="">  212: 
+</span><span class="">  213: =head1 ENCODING
+</span><span class="">  214: 
+</span><span class="">  215: Package and routine names must be ASCII word characters (letters, digits
+</span><span class="">  216: and C&lt;_&gt;, separated by C&lt;::&gt;).  A package name with other characters is
+</span><span class="">  217: refused with C&lt;A package name is required&gt;.
+</span><span class="">  218: 
+</span><span class="">  219: =head1 AUTHOR
+</span><span class="">  220: 
+</span><span class="">  221: Nigel Horne, C&lt;njh@nigelhorne.com&gt;
+</span><span class="">  222: 
+</span><span class="">  223: =head1 FORMAL SPECIFICATION
+</span><span class="">  224: 
+</span><span class="">  225: This section describes each routine in the Z notation, a precise
+</span><span class="">  226: mathematical language for describing programs.  You do not need to read it
+</span><span class="">  227: to use the module: everything here is also said in plain words in the
+</span><span class="">  228: sections above.  It is for readers who want to check exactly what a routine
+</span><span class="">  229: promises.
+</span><span class="">  230: 
+</span><span class="">  231: How to read it: a box names a routine.  The lines above the middle rule
+</span><span class="">  232: declare the values it works with.  A name ending in C&lt;?&gt; is an input, and a
+</span><span class="">  233: name ending in C&lt;!&gt; is an output.  C&lt;&Icirc;&#158;State&gt; means the routine changes
+</span><span class="">  234: nothing, and C&lt;&Icirc;&#148;State&gt; means it can change the state.  The lines below the
+</span><span class="">  235: rule are the conditions that are always true when the routine returns.
+</span><span class="">  236: 
+</span><span class="">  237: =head2 private_names
+</span><span class="">  238: 
+</span><span class="">  239: 	&acirc;&#148;&#140;&acirc;&#148;&#128; PrivateNames &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  240: 	&acirc;&#148;&#130; package? : PACKAGE
+</span><span class="">  241: 	&acirc;&#148;&#130; except?  : &acirc;&#132;&#153; NAME
+</span><span class="">  242: 	&acirc;&#148;&#130; names!   : seq NAME
+</span><span class="">  243: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  244: 	&acirc;&#148;&#130; ran names! = { n : dom stash(package?) |
+</span><span class="">  245: 	&acirc;&#148;&#130;     n matches /\A_[A-Za-z0-9]\w*\z/ &acirc;&#136;&sect; defined(code(package?, n)) &acirc;&#136;&sect;
+</span><span class="">  246: 	&acirc;&#148;&#130;     owner(code(package?, n)) = package? } &acirc;&#136;&#150; except?
+</span><span class="">  247: 	&acirc;&#148;&#130; names! is sorted
+</span><span class="">  248: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  249: 
+</span><span class="">  250: =head1 STATE DIAGRAM
+</span><span class="">  251: 
+</span><span class="">  252: The module keeps no state.  This is how one package&#39;s private routines
+</span><span class="">  253: become protected while the file is loaded:
+</span><span class="">  254: 
+</span><span class="">  255: 	 perl loads Package.pm
+</span><span class="">  256: 	          |
+</span><span class="">  257: 	          v
+</span><span class="">  258: 	+--------------------+  each &quot;sub _name { }&quot; is compiled; at this
+</span><span class="">  259: 	| COMPILING ROUTINES |  point any code may call _name
+</span><span class="">  260: 	+--------------------+
+</span><span class="">  261: 	          |
+</span><span class="">  262: 	          | final BEGIN block runs
+</span><span class="">  263: 	          v
+</span><span class="">  264: 	+--------------------+  private_names(__PACKAGE__, @except):
+</span><span class="">  265: 	| LISTING            |  own routines matching _[A-Za-z0-9]\w*,
+</span><span class="">  266: 	+--------------------+  minus @except, sorted
+</span><span class="">  267: 	          |
+</span><span class="">  268: 	          | local mode = &#39;enforce&#39;; Sub::Private-&gt;import(@names)
+</span><span class="">  269: 	          v
+</span><span class="">  270: 	+--------------------+  calls from outside the package die;
+</span><span class="">  271: 	| ENFORCED           |  calls from inside work;
+</span><span class="">  272: 	+--------------------+  protected names: Sub::Protected rules
+</span><span class="">  273: 	          |
+</span><span class="">  274: 	          | BEGIN block ends: the &quot;local&quot; mode is restored,
+</span><span class="">  275: 	          v so later packages are not affected
+</span><span class="">  276: 	+--------------------+
+</span><span class="">  277: 	| OTHER PACKAGES     |  unchanged
+</span><span class="">  278: 	| LOAD AS BEFORE     |
+</span><span class="">  279: 	+--------------------+
+</span><span class="">  280: 
+</span><span class="">  281: 	Under a test harness (HARNESS_ACTIVE) the ENFORCED checks are bypassed.
+</span><span class="">  282: 
+</span><span class="">  283: =head1 LICENSE AND COPYRIGHT
+</span><span class="">  284: 
+</span><span class="">  285: Copyright 2026 Nigel Horne.
+</span><span class="">  286: 
+</span><span class="">  287: This program is released under the GNU General Public License, version 2.
+</span><span class="">  288: See the F&lt;LICENSE&gt; file that comes with this distribution.
+</span><span class="">  289: If you use it, please let me know.
+</span><span class="">  290: 
+</span><span class="">  291: =cut
+</span></pre>
+
+<script>
+function toggleTheme() {
+    const html = document.documentElement;
+    const current = html.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+}
+
+(function() {
+    const saved = localStorage.getItem('theme');
+    if(saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+    }
+})();
+
+document.addEventListener("mousemove", function(e) {
+	document.querySelectorAll(".lcsaj-tip-text, .cpd-tip-text").forEach(function(tip) {
+		tip.style.left = (e.clientX + 12) + "px";
+		tip.style.top  = (e.clientY + 12) + "px";
+	});
+});
+</script>
+</body>
+</html>
+	

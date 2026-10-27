@@ -1,0 +1,1105 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>File: lib/App/Actions/Error.pm</title>
+<style>
+
+/* --------------------------------------------------
+   CSS Variables (Light Mode Default)
+-------------------------------------------------- */
+
+:root {
+    --bg: #ffffff;
+    --text: #000000;
+    --table-header: #333;
+    --table-header-text: #ffffff;
+
+    --survived-1: #f8d7da;
+    --survived-2: #f5b7b1;
+    --survived-3: #ec7063;
+
+    --killed: #d4edda;
+    --border: #cccccc;
+}
+
+/* --------------------------------------------------
+   Dark Mode Overrides
+-------------------------------------------------- */
+
+html[data-theme='dark'] {
+    --bg: #1e1e1e;
+    --text: #dddddd;
+    --table-header: #222;
+    --table-header-text: #ffffff;
+
+    --survived-1: #5c2b2e;
+    --survived-2: #7b2c2f;
+    --survived-3: #a93226;
+
+    --killed: #1e4620;
+    --border: #555;
+}
+
+/* --------------------------------------------------
+   Global Styles
+-------------------------------------------------- */
+
+body {
+	font-family: sans-serif;
+	background: var(--bg);
+	color: var(--text);
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+th {
+    background: var(--table-header);
+    color: var(--table-header-text);
+}
+
+.survived-1 { background-color: var(--survived-1); }
+.survived-2 { background-color: var(--survived-2); }
+.survived-3 { background-color: var(--survived-3); }
+
+.killed { background-color: var(--killed); }
+
+.legend {
+    border: 1px solid #ccc;
+    background: #fafafa;
+    padding: 10px;
+    margin: 15px 0;
+    font-size: 0.9em;
+}
+
+.legend pre {
+    background: #f4f4f4;
+    padding: 5px;
+}
+
+.legend-box {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    margin: 0 6px 0 20px;
+    vertical-align: middle;
+    border: 1px solid var(--border);
+}
+
+/* White box for non-mutated lines */
+.legend-box.none {
+	background-color: var(--bg);
+}
+
+/* --------------------------------------------------
+   Suggested Test Box Styling
+   Theme-aware and readable in light & dark modes
+-------------------------------------------------- */
+
+.suggested-test {
+    margin-top: 6px;
+    margin-bottom: 12px;
+
+    /* Use theme variables instead of hardcoded colors */
+    background: var(--bg);
+    color: var(--text);
+
+    padding: 8px;
+    border-radius: 4px;
+
+    /* Subtle border for visual separation */
+    border: 1px solid var(--border);
+}
+
+/* Label styling */
+.suggest-label {
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+/* Ensure the test code block inherits readable colors */
+.suggested-test pre {
+    background: transparent;   /* Prevent nested dark blocks */
+    color: inherit;            /* Match theme text color */
+    margin: 0;
+    font-family: monospace;
+}
+
+pre { line-height: 1.4; }
+
+pre > details {
+    margin: 0.2em 0;
+}
+
+pre > details:first-child {
+    margin-top: 0;
+}
+
+pre > details:last-child {
+    margin-bottom: 0;
+}
+
+pre details,
+pre summary,
+pre ul,
+pre li {
+    white-space: normal;
+    margin: 0;
+    padding: 0;
+    line-height: 1.2;
+}
+
+.nav { margin-bottom: 1em; }
+
+.toggle {
+    float: right;
+    cursor: pointer;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+/* Tooltip container */
+.tooltip {
+	position: relative;
+	cursor: help;
+}
+
+/* Tooltip bubble */
+.tooltip:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 0;
+    top: 100%;
+    background: var(--table-header);
+    color: var(--table-header-text);
+    padding: 6px 10px;
+    white-space: normal;
+    max-width: 300px;
+    min-width: 30ch;
+    font-size: 12px;
+    border-radius: 6px;
+    z-index: 1000;
+    margin-left: 10ch;   /* move tooltip ~10 characters to the right */
+}
+
+.mutant-details {
+	margin-left: 2em;
+	font-size: 0.9em;
+}
+
+/* Indent the list of mutations that displays when expanding by 8 characters */
+pre details.mutant-details ul {
+	padding-left: 8ch;
+	margin: 0.2em 0;
+}
+
+.mutant-details summary {
+	cursor: pointer;
+	font-weight: bold;
+}
+
+.lcsaj-dot {
+    color: #5555ff;
+    font-size: 10px;
+    margin-right: 3px;
+}
+
+.lcsaj-dot-uncovered {
+    color: #cc4444;
+    font-size: 10px;
+    margin-right: 3px;
+}
+
+.lcsaj-tip {
+	position: relative;
+	display: inline-block;
+}
+
+.lcsaj-tip .lcsaj-tip-text {
+	visibility: hidden;
+	background-color: #333;
+	color: #fff;
+	padding: 4px 8px;
+	border-radius: 4px;
+	font-size: 11px;
+	white-space: nowrap;
+	position: fixed;
+	z-index: 9999;
+	pointer-events: none;
+}
+
+.lcsaj-tip:hover .lcsaj-tip-text {
+	visibility: visible;
+}
+
+.cpd-dot {
+    color: #cc8800;
+    font-size: 10px;
+    margin-right: 3px;
+    cursor: help;
+    text-decoration: none;
+}
+a.cpd-dot { cursor: pointer; }
+a.cpd-dot:hover { color: #ff8800; }
+
+.cpd-tip {
+    position: relative;
+    display: inline-block;
+}
+
+.cpd-tip .cpd-tip-text {
+    visibility: hidden;
+    background-color: #333;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: nowrap;
+    position: fixed;
+    z-index: 9999;
+    pointer-events: none;
+}
+
+.cpd-tip:hover .cpd-tip-text {
+    visibility: visible;
+}
+
+/* CPD drill-down page styles */
+.dup-line { background-color: #fff3cd; display: block; }
+.dup-line:hover { background-color: #ffe082; }
+.intra-dot { color: #9944cc; margin-right: 4px; cursor: help; text-decoration: none; }
+a.intra-dot { cursor: pointer; }
+a.intra-dot:hover { color: #7700bb; }
+.cpd-legend {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    display: inline-block;
+    padding: 6px 10px;
+    margin-bottom: 1em;
+    font-size: 0.9em;
+}
+
+</style>
+</head>
+<body>
+<button class="toggle" onclick="toggleTheme()">🌙 Toggle Theme</button>
+<h1>lib/App/Actions/Error.pm</h1>
+<div class="nav"><a href="Docker/Variable.pm.html">⬅ Previous</a> <a href="../../../../index.html">Index</a>
+</div><div class='summary'>
+<strong>Structural Coverage (Approximate)</strong><p>
+TER1 (Statement): 100.00%<br>
+TER2 (Branch): 95.00%<br>
+TER3 (LCSAJ): 100.0% (2/2)<br>
+Approximate LCSAJ segments: 21<br>
+</div>
+
+    <div class="legend">
+        <h3>LCSAJ Legend</h3>
+
+        <p>
+        <span class="lcsaj-dot">●</span>
+        <b>Covered</b> — this LCSAJ path was executed during testing.
+        </p>
+
+        <p>
+        <span class="lcsaj-dot-uncovered">●</span>
+        <b>Not covered</b> — this LCSAJ path was never executed. These are the paths to focus on.
+        </p>
+
+        <p>
+        Multiple dots on a line indicate that multiple control-flow paths begin at that line.
+        Hovering over any dot shows:
+        </p>
+
+        <pre>
+        start → end → jump
+        </pre>
+
+        <ul>
+        <li><b>start</b> – first line of the linear sequence</li>
+        <li><b>end</b> – last line before control flow changes</li>
+        <li><b>jump</b> – line execution jumps to next</li>
+        </ul>
+
+        <p>
+        Uncovered paths show <b>[NOT COVERED]</b> in the tooltip.
+	</p>
+    </div>
+
+		<div class="legend">
+			<h3>Mutant Testing Legend</h3>
+			<span class="legend-box survived-1"></span> Survived (tests missed this)
+			<span class="legend-box killed"></span> Killed (tests detected this)
+			<span class="legend-box none"></span> No mutation
+		</div>
+	<pre>
+<span class="">    1: package App::Actions::Error;
+</span><span class="">    2: 
+</span><span class="">    3: use strict;
+</span><span class="">    4: use warnings;
+</span><span class="">    5: use autodie qw(:all);
+</span><span class="">    6: 
+</span><span class="">    7: use Carp qw(croak);
+</span><span class="">    8: use Params::Get qw(get_params);
+</span><span class="">    9: use Params::Validate::Strict qw(validate_strict);
+</span><span class="">   10: use Readonly;
+</span><span class="">   11: use Scalar::Util qw(blessed);
+</span><span class="">   12: 
+</span><span class="">   13: # Stringifying the object gives what croak would have printed, so code that
+</span><span class="">   14: # reads &quot;$@&quot;, matches it with a regex or prints it sees no difference; code
+</span><span class="">   15: # that wants to tell failures apart asks for the code instead.
+</span><span class="">   16: use overload
+</span><span class="">   17: 	&#39;&quot;&quot;&#39; =&gt; sub { $_[0]-&gt;text },
+</span><span class="">   18: 	bool =&gt; sub { 1 },
+</span><span class="">   19: 	fallback =&gt; 1;
+</span><span class="">   20: 
+</span><span class="">   21: our $VERSION = &#39;0.002.1&#39;;
+</span><span class="">   22: 
+</span><span class="">   23: # What Carp appends to a message: &quot; at FILE line N.&quot;.  It is found in two
+</span><span class="">   24: # steps, the tail and then the &quot; at &quot; before it, because one pattern that
+</span><span class="">   25: # does both - \A(.*)\s+at\s+.+?\s+line\s+\d+\.?\z - tries every &quot; at &quot; and
+</span><span class="">   26: # scans to the end from each, which is quadratic: 40,000 characters of
+</span><span class="">   27: # &quot;x at f line &quot; took three seconds.  Each step below is linear.
+</span><span class="">   28: #
+</span><span class="">   29: # The tail: &quot; line N.&quot; at the very end.  It is tried only where a run of
+</span><span class="">   30: # white space starts, and its quantifiers never give back, so no run of
+</span><span class="">   31: # spaces is scanned twice.
+</span><span class="">   32: Readonly::Scalar my $LOCATION_TAIL =&gt; qr/
+</span><span class="">   33: 	(?&lt;!\s)        # the start of a run of white space, or of the text
+</span><span class="">   34: 	\s++ line      # &quot; line&quot;
+</span><span class="">   35: 	\s++ \d++      # &quot; N&quot;
+</span><span class="">   36: 	\.?            # Carp&#39;s full stop
+</span><span class="">   37: 	\z
+</span><span class="">   38: /x;
+</span><span class="">   39: 
+</span><span class="">   40: # The message: everything before the last &quot; at &quot; that is followed by a file
+</span><span class="">   41: # name.  The greedy prefix is what makes it the last, because a message may
+</span><span class="">   42: # quote a position of its own (&quot;at character offset 9&quot;) and a file name may
+</span><span class="">   43: # contain spaces; ending the prefix at a non-space (or leaving it empty)
+</span><span class="">   44: # means each run of white space is tried from its start only.
+</span><span class="">   45: Readonly::Scalar my $LOCATION_HEAD =&gt; qr/
+</span><span class="">   46: 	\A
+</span><span class="">   47: 	(.*\S|)        # the message: ends at a non-space, or is empty
+</span><span class="">   48: 	\s+ at \s+     # &quot; at &quot;
+</span><span class="">   49: 	\S             # the start of the file name
+</span><span class="">   50: /xs;
+</span><span class="">   51: 
+</span><span class="">   52: # A message key is a dotted lower-case name such as workflow.no_jobs.
+</span><span class="">   53: Readonly::Scalar my $CODE =&gt; qr/\A[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\z/;
+</span><span class="">   54: 
+</span><span class="">   55: =encoding utf-8
+</span><span class="">   56: 
+</span><span class="">   57: =head1 NAME
+</span><span class="">   58: 
+</span><span class="">   59: App::Actions::Error - an exception that carries a stable code
+</span><span class="">   60: 
+</span><span class="">   61: =head1 SYNOPSIS
+</span><span class="">   62: 
+</span><span class="">   63: Tell one failure from another by its code:
+</span><span class="">   64: 
+</span><span class="">   65: 	use App::Actions::Error;
+</span><span class="">   66: 	use App::Actions::Workflow;
+</span><span class="">   67: 
+</span><span class="">   68: 	my $workflow = eval { App::Actions::Workflow-&gt;load($file) };
+</span><span class="">   69: 	if (!$workflow) {
+</span><span class="">   70: 		my $error = App::Actions::Error-&gt;caught($@);
+</span><span class="">   71: 		if ($error &amp;&amp; $error-&gt;is(&#39;workflow.file_missing&#39;)) {
+</span><span class="">   72: 			print &#39;No workflow at &#39;, $error-&gt;args-&gt;{file}, &quot;\n&quot;;
+</span><span class="">   73: 		} else {
+</span><span class="">   74: 			die $@;    # not one we handle: pass it on
+</span><span class="">   75: 		}
+</span><span class="">   76: 	}
+</span><span class="">   77: 
+</span><span class="">   78: Handle a whole family of failures:
+</span><span class="">   79: 
+</span><span class="">   80: 	if (my $error = App::Actions::Error-&gt;caught($@)) {
+</span><span class="">   81: 		exit 3 if $error-&gt;is(&#39;runner.image.&#39;);    # any image problem
+</span><span class="">   82: 	}
+</span><span class="">   83: 
+</span><span class="">   84: Show any failure to a person, without the file and line number:
+</span><span class="">   85: 
+</span><span class="">   86: 	eval { $runner-&gt;run; 1 }
+</span><span class="">   87: 		or print STDERR &#39;action-run: &#39;, App::Actions::Error-&gt;describe($@), &quot;\n&quot;;
+</span><span class="">   88: 
+</span><span class="">   89: Code that treats exceptions as strings keeps working:
+</span><span class="">   90: 
+</span><span class="">   91: 	eval { App::Actions::Workflow-&gt;load(&#39;missing.yml&#39;) };
+</span><span class="">   92: 	print &quot;not found\n&quot; if $@ =~ /does not exist/;
+</span><span class="">   93: 
+</span><span class="">   94: =head1 DESCRIPTION
+</span><span class="">   95: 
+</span><span class="">   96: When something goes wrong, this distribution throws (C&lt;die&gt;s with) an
+</span><span class="">   97: C&lt;App::Actions::Error&gt; object.  The object has:
+</span><span class="">   98: 
+</span><span class="">   99: =over 4
+</span><span class="">  100: 
+</span><span class="">  101: =item * a B&lt;code&gt;, such as C&lt;workflow.file_missing&gt;.  The code never
+</span><span class="">  102: changes when the message is translated or reworded, so your program can
+</span><span class="">  103: check it safely;
+</span><span class="">  104: 
+</span><span class="">  105: =item * a B&lt;message&gt;, such as C&lt;Workflow file &#39;ci.yml&#39; does not exist&gt;, in
+</span><span class="">  106: the user&#39;s language;
+</span><span class="">  107: 
+</span><span class="">  108: =item * the B&lt;arguments&gt; used to build the message, such as C&lt;{ file =E&lt;gt&gt;
+</span><span class="">  109: &#39;ci.yml&#39; }&gt;;
+</span><span class="">  110: 
+</span><span class="">  111: =item * a B&lt;location&gt;, such as C&lt; at lib/App/Actions.pm line 42.&gt;, the same
+</span><span class="">  112: text C&lt;croak&gt; adds.
+</span><span class="">  113: 
+</span><span class="">  114: =back
+</span><span class="">  115: 
+</span><span class="">  116: As a string, the object is exactly the message followed by the location: the
+</span><span class="">  117: same text C&lt;croak&gt; would have died with.  So older code that reads C&lt;$@&gt; as
+</span><span class="">  118: a string, prints it or matches it with a regular expression sees no
+</span><span class="">  119: difference.
+</span><span class="">  120: 
+</span><span class="">  121: You do not usually make these objects yourself.  Code inside the
+</span><span class="">  122: distribution calls C&lt;&lt; $self-&gt;throw($code, \%args) &gt;&gt; from
+</span><span class="">  123: L&lt;App::Actions::I18N&gt;, which looks the code up in the message catalogue,
+</span><span class="">  124: translates and fills in the message, and throws the object.  The codes are
+</span><span class="">  125: the keys of the catalogue in L&lt;App::Actions::I18N::en&gt;.
+</span><span class="">  126: 
+</span><span class="">  127: =head1 METHODS
+</span><span class="">  128: 
+</span><span class="">  129: =head2 new
+</span><span class="">  130: 
+</span><span class="">  131: Creates an exception without throwing it.  Most code never calls this: it
+</span><span class="">  132: uses C&lt;&lt; $self-&gt;throw($key, \%args) &gt;&gt; from L&lt;App::Actions::I18N&gt;, which
+</span><span class="">  133: renders the message and records where it was thrown from.
+</span><span class="">  134: 
+</span><span class="">  135: =head3 ARGUMENTS
+</span><span class="">  136: 
+</span><span class="">  137: =over 4
+</span><span class="">  138: 
+</span><span class="">  139: =item * C&lt;code&gt; - the catalogue key, such as C&lt;workflow.no_jobs&gt;.
+</span><span class="">  140: 
+</span><span class="">  141: =item * C&lt;message&gt; - the rendered text, without a location.
+</span><span class="">  142: 
+</span><span class="">  143: =item * C&lt;args&gt; - optional; the values the message was rendered with.
+</span><span class="">  144: 
+</span><span class="">  145: =item * C&lt;location&gt; - optional; what follows the message when it is
+</span><span class="">  146: stringified, normally C&lt;&quot; at FILE line N.\n&quot;&gt;.  Defaults to C&lt;&quot;\n&quot;&gt;.
+</span><span class="">  147: 
+</span><span class="">  148: =back
+</span><span class="">  149: 
+</span><span class="">  150: =head3 RETURNS
+</span><span class="">  151: 
+</span><span class="">  152: An C&lt;App::Actions::Error&gt; object.
+</span><span class="">  153: 
+</span><span class="">  154: =head3 SIDE EFFECTS
+</span><span class="">  155: 
+</span><span class="">  156: None.
+</span><span class="">  157: 
+</span><span class="">  158: =head3 EXAMPLE
+</span><span class="">  159: 
+</span><span class="">  160: 	my $error = App::Actions::Error-&gt;new(
+</span><span class="">  161: 		code    =&gt; &#39;workflow.empty&#39;,
+</span><span class="">  162: 		message =&gt; &quot;Workflow &#39;ci.yml&#39; is empty&quot;,
+</span><span class="">  163: 		args    =&gt; { file =&gt; &#39;ci.yml&#39; },
+</span><span class="">  164: 	);
+</span><span class="">  165: 	die $error;
+</span><span class="">  166: 
+</span><span class="">  167: =head3 API SPECIFICATION
+</span><span class="">  168: 
+</span><span class="">  169: =head4 INPUT
+</span><span class="">  170: 
+</span><span class="">  171: 	{
+</span><span class="">  172: 		code     =&gt; { type =&gt; &#39;string&#39;, matches =&gt; qr/\A[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\z/ },
+</span><span class="">  173: 		message  =&gt; { type =&gt; &#39;string&#39; },
+</span><span class="">  174: 		args     =&gt; { type =&gt; &#39;hashref&#39;, optional =&gt; 1 },
+</span><span class="">  175: 		location =&gt; { type =&gt; &#39;string&#39;, optional =&gt; 1 },
+</span><span class="">  176: 	}
+</span><span class="">  177: 
+</span><span class="">  178: =head4 OUTPUT
+</span><span class="">  179: 
+</span><span class="">  180: 	{ type =&gt; &#39;object&#39;, isa =&gt; &#39;App::Actions::Error&#39; }
+</span><span class="">  181: 
+</span><span class="">  182: =head3 MESSAGES
+</span><span class="">  183: 
+</span><span class="">  184: 	+---------------------------+------------------------------+-----------------------------+
+</span><span class="">  185: 	| Message                   | Meaning                      | Resolution                  |
+</span><span class="">  186: 	+---------------------------+------------------------------+-----------------------------+
+</span><span class="">  187: 	| Invalid arguments to      | A required argument is       | Pass a dotted code and a    |
+</span><span class="">  188: 	| App::Actions::Error::new  | missing or has the wrong type| message string              |
+</span><span class="">  189: 	+---------------------------+------------------------------+-----------------------------+
+</span><span class="">  190: 
+</span><span class="">  191: =cut
+</span><span class="">  192: 
+</span><span class="">  193: sub new {
+</span><span class=""><span class="lcsaj-tip"><span class="lcsaj-dot">●</span><span class="lcsaj-tip-text">194 → 222 → 230</span></span>  194: 	my $class = shift;
+</span><span class="">  195: 
+</span><span class="">  196: 	# The validator is called directly rather than through
+</span><span class="">  197: 	# App::Actions::I18N::validate_args, because that module throws these
+</span><span class="">  198: 	# objects and so loads this one first.
+</span><span class="">  199: 	# $@ is localised: an exception is often made while the caller is still
+</span><span class="">  200: 	# looking at the one it caught.
+</span><span class="">  201: 	my @arguments = @_;
+</span><span class="">  202: 	my ($params, $failure);
+</span><span class="">  203: 	{
+</span><span class="">  204: 		local $@;
+</span><span class="">  205: 		$params = eval {
+</span><span class="">  206: 			# The validator takes a key that holds undef as given; an exception
+</span><span class="">  207: 			# with no code or no message is a mistake, so undef counts as left out.
+</span><span class="">  208: 			my $given = get_params(undef, @arguments);
+</span><span class="">  209: 			delete @{$given}{ grep { !defined $given-&gt;{$_} } keys %{$given} };
+</span><span class="">  210: 			validate_strict({
+</span><span class="">  211: 				args =&gt; $given,
+</span><span class="">  212: 				schema =&gt; {
+</span><span class="">  213: 					code =&gt; { type =&gt; &#39;string&#39;, matches =&gt; $CODE },
+</span><span class="">  214: 					message =&gt; { type =&gt; &#39;string&#39; },
+</span><span class="">  215: 					args =&gt; { type =&gt; &#39;hashref&#39;, optional =&gt; 1 },
+</span><span class="">  216: 					location =&gt; { type =&gt; &#39;string&#39;, optional =&gt; 1 },
+</span><span class="">  217: 				},
+</span><span class="">  218: 			});
+</span><span class="">  219: 		};
+</span><span class="">  220: 		$failure = $@;
+</span><span class="">  221: 	}
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  222: 	if (!$params) {
+</span><p> <b> Mutants (Total: 1, Killed: 1, Survived: 0)</b><p><span class="">  223: 		# The innermost &quot;validate_strict:&quot; clause is the reason; the
+</span><span class="">  224: 		# validator&#39;s own name and its &quot; at FILE line N.&quot; suffixes are not.
+</span><span class="">  225: 		(my $reason = $failure || &#39;invalid&#39;) =~ s/\A.*validate_strict:\s*//s;
+</span><span class="">  226: 		1 while $reason =~ s/\s+at \S+ line \d+\.?\s*\z//s;
+</span><span class="">  227: 		croak(&quot;Invalid arguments to ${class}::new: $reason&quot;);
+</span><span class="">  228: 	}
+</span><span class="">  229: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  230: 	return bless {
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  231: 		code =&gt; $params-&gt;{code},
+</span><span class="">  232: 		message =&gt; $params-&gt;{message},
+</span><span class="">  233: 		args =&gt; { %{ $params-&gt;{args} || {} } },
+</span><span class="">  234: 		location =&gt; defined $params-&gt;{location} ? $params-&gt;{location} : &quot;\n&quot;,
+</span><span class="">  235: 	}, $class;
+</span><span class="">  236: }
+</span><span class="">  237: 
+</span><span class="">  238: =head2 code
+</span><span class="">  239: 
+</span><span class="">  240: Returns the catalogue key the exception was raised with.
+</span><span class="">  241: 
+</span><span class="">  242: =head3 EXAMPLE
+</span><span class="">  243: 
+</span><span class="">  244: 	print $error-&gt;code;    # workflow.file_missing
+</span><span class="">  245: 
+</span><span class="">  246: =head3 API SPECIFICATION
+</span><span class="">  247: 
+</span><span class="">  248: =head4 INPUT
+</span><span class="">  249: 
+</span><span class="">  250: 	{}
+</span><span class="">  251: 
+</span><span class="">  252: =head4 OUTPUT
+</span><span class="">  253: 
+</span><span class="">  254: 	{ type =&gt; &#39;string&#39; }
+</span><span class="">  255: 
+</span><span class="">  256: =head3 MESSAGES
+</span><span class="">  257: 
+</span><span class="">  258: None.
+</span><span class="">  259: 
+</span><span class="">  260: =cut
+</span><span class="">  261: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  262: sub code { return $_[0]-&gt;{code} }
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  263: 
+</span><span class="">  264: =head2 message
+</span><span class="">  265: 
+</span><span class="">  266: Returns the rendered message without the location, as a person would want to
+</span><span class="">  267: read it.
+</span><span class="">  268: 
+</span><span class="">  269: =head3 EXAMPLE
+</span><span class="">  270: 
+</span><span class="">  271: 	print STDERR &#39;action-run: &#39;, $error-&gt;message, &quot;\n&quot;;
+</span><span class="">  272: 
+</span><span class="">  273: =head3 API SPECIFICATION
+</span><span class="">  274: 
+</span><span class="">  275: =head4 INPUT
+</span><span class="">  276: 
+</span><span class="">  277: 	{}
+</span><span class="">  278: 
+</span><span class="">  279: =head4 OUTPUT
+</span><span class="">  280: 
+</span><span class="">  281: 	{ type =&gt; &#39;string&#39; }
+</span><span class="">  282: 
+</span><span class="">  283: =head3 MESSAGES
+</span><span class="">  284: 
+</span><span class="">  285: None.
+</span><span class="">  286: 
+</span><span class="">  287: =cut
+</span><span class="">  288: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  289: sub message { return $_[0]-&gt;{message} }
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  290: 
+</span><span class="">  291: =head2 args
+</span><span class="">  292: 
+</span><span class="">  293: Returns a copy of the values the message was rendered with, so a caller can
+</span><span class="">  294: act on the file, job or image the failure is about.
+</span><span class="">  295: 
+</span><span class="">  296: =head3 EXAMPLE
+</span><span class="">  297: 
+</span><span class="">  298: 	my $file = $error-&gt;args-&gt;{file};
+</span><span class="">  299: 
+</span><span class="">  300: =head3 API SPECIFICATION
+</span><span class="">  301: 
+</span><span class="">  302: =head4 INPUT
+</span><span class="">  303: 
+</span><span class="">  304: 	{}
+</span><span class="">  305: 
+</span><span class="">  306: =head4 OUTPUT
+</span><span class="">  307: 
+</span><span class="">  308: 	{ type =&gt; &#39;hashref&#39; }
+</span><span class="">  309: 
+</span><span class="">  310: =head3 MESSAGES
+</span><span class="">  311: 
+</span><span class="">  312: None.
+</span><span class="">  313: 
+</span><span class="">  314: =cut
+</span><span class="">  315: 
+</span><span class="">  316: sub args { return { %{ $_[0]-&gt;{args} } } }
+</span><span class="">  317: 
+</span><span class="">  318: =head2 location
+</span><span class="">  319: 
+</span><span class="">  320: Returns what follows the message when it is stringified: C&lt;&quot; at FILE line
+</span><span class="">  321: N.\n&quot;&gt;, a stack trace for an exception raised with C&lt;&lt; trace =&gt; 1 &gt;&gt;, or
+</span><span class="">  322: C&lt;&quot;\n&quot;&gt; for one that names no place in the code.
+</span><span class="">  323: 
+</span><span class="">  324: =head3 EXAMPLE
+</span><span class="">  325: 
+</span><span class="">  326: 	warn &#39;raised&#39;, $error-&gt;location;
+</span><span class="">  327: 
+</span><span class="">  328: =head3 API SPECIFICATION
+</span><span class="">  329: 
+</span><span class="">  330: =head4 INPUT
+</span><span class="">  331: 
+</span><span class="">  332: 	{}
+</span><span class="">  333: 
+</span><span class="">  334: =head4 OUTPUT
+</span><span class="">  335: 
+</span><span class="">  336: 	{ type =&gt; &#39;string&#39; }
+</span><span class="">  337: 
+</span><span class="">  338: =head3 MESSAGES
+</span><span class="">  339: 
+</span><span class="">  340: None.
+</span><span class="">  341: 
+</span><span class="">  342: =cut
+</span><span class="">  343: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  344: sub location { return $_[0]-&gt;{location} }
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  345: 
+</span><span class="">  346: =head2 text
+</span><span class="">  347: 
+</span><span class="">  348: Returns the message followed by the location: what the object stringifies
+</span><span class="">  349: to, and what C&lt;croak&gt; would have died with.
+</span><span class="">  350: 
+</span><span class="">  351: =head3 EXAMPLE
+</span><span class="">  352: 
+</span><span class="">  353: 	is(&quot;$error&quot;, $error-&gt;text, &#39;stringification is the text&#39;);
+</span><span class="">  354: 
+</span><span class="">  355: =head3 API SPECIFICATION
+</span><span class="">  356: 
+</span><span class="">  357: =head4 INPUT
+</span><span class="">  358: 
+</span><span class="">  359: 	{}
+</span><span class="">  360: 
+</span><span class="">  361: =head4 OUTPUT
+</span><span class="">  362: 
+</span><span class="">  363: 	{ type =&gt; &#39;string&#39; }
+</span><span class="">  364: 
+</span><span class="">  365: =head3 MESSAGES
+</span><span class="">  366: 
+</span><span class="">  367: None.
+</span><span class="">  368: 
+</span><span class="">  369: =cut
+</span><span class="">  370: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  371: sub text { return $_[0]-&gt;{message} . $_[0]-&gt;{location} }
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  372: 
+</span><span class="">  373: =head2 is
+</span><span class="">  374: 
+</span><span class="">  375: Says whether the exception has a code, or belongs to a family of codes.
+</span><span class="">  376: 
+</span><span class="">  377: =head3 ARGUMENTS
+</span><span class="">  378: 
+</span><span class="">  379: =over 4
+</span><span class="">  380: 
+</span><span class="">  381: =item * C&lt;$code&gt; - a full code (C&lt;workflow.no_jobs&gt;), or a prefix ending in a
+</span><span class="">  382: dot (C&lt;workflow.&gt;) for every code that starts with it.
+</span><span class="">  383: 
+</span><span class="">  384: =back
+</span><span class="">  385: 
+</span><span class="">  386: =head3 RETURNS
+</span><span class="">  387: 
+</span><span class="">  388: 1 or 0.
+</span><span class="">  389: 
+</span><span class="">  390: =head3 EXAMPLE
+</span><span class="">  391: 
+</span><span class="">  392: 	if ($error-&gt;is(&#39;runner.image.&#39;)) { ... }    # any image failure
+</span><span class="">  393: 
+</span><span class="">  394: =head3 API SPECIFICATION
+</span><span class="">  395: 
+</span><span class="">  396: =head4 INPUT
+</span><span class="">  397: 
+</span><span class="">  398: 	{ code =&gt; { type =&gt; &#39;string&#39;, min =&gt; 1 } }
+</span><span class="">  399: 
+</span><span class="">  400: =head4 OUTPUT
+</span><span class="">  401: 
+</span><span class="">  402: 	{ type =&gt; &#39;boolean&#39; }
+</span><span class="">  403: 
+</span><span class="">  404: =head3 MESSAGES
+</span><span class="">  405: 
+</span><span class="">  406: None.
+</span><span class="">  407: 
+</span><span class="">  408: =cut
+</span><span class="">  409: 
+</span><span class="">  410: sub is {
+</span><span class="">  411: 	my ($self, $code) = @_;
+</span><span class="">  412: 
+</span><span class="">  413: 	my $mine = $self-&gt;{code};
+</span><span class="">  414: 
+</span><span class="">  415: 	# A trailing dot names a family, so a caller can handle every image
+</span><span class="">  416: 	# failure without listing their codes.
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  417: 	return ($code =~ /\.\z/ ? index($mine, $code) == 0 : $mine eq $code) ? 1 : 0;
+</span><p> <b> Mutants (Total: 3, Killed: 3, Survived: 0)</b><p><span class="">  418: }
+</span><span class="">  419: 
+</span><span class="">  420: =head2 caught
+</span><span class="">  421: 
+</span><span class="">  422: 	my $error = App::Actions::Error-&gt;caught($@);
+</span><span class="">  423: 
+</span><span class="">  424: Returns the value if it is an C&lt;App::Actions::Error&gt; (or a subclass of the
+</span><span class="">  425: class it is called on), and C&lt;undef&gt; otherwise, so a caller can ask for the
+</span><span class="">  426: code without first checking what kind of value C&lt;$@&gt; holds.
+</span><span class="">  427: 
+</span><span class="">  428: =head3 EXAMPLE
+</span><span class="">  429: 
+</span><span class="">  430: 	if (my $error = App::Actions::Error-&gt;caught($@)) {
+</span><span class="">  431: 		exit 70 if $error-&gt;is(&#39;schema.invalid&#39;);
+</span><span class="">  432: 	}
+</span><span class="">  433: 
+</span><span class="">  434: =head3 API SPECIFICATION
+</span><span class="">  435: 
+</span><span class="">  436: =head4 INPUT
+</span><span class="">  437: 
+</span><span class="">  438: 	{ error =&gt; { type =&gt; &#39;any&#39;, optional =&gt; 1 } }
+</span><span class="">  439: 
+</span><span class="">  440: =head4 OUTPUT
+</span><span class="">  441: 
+</span><span class="">  442: 	{ type =&gt; &#39;object&#39;, isa =&gt; &#39;App::Actions::Error&#39;, optional =&gt; 1 }
+</span><span class="">  443: 
+</span><span class="">  444: =head3 MESSAGES
+</span><span class="">  445: 
+</span><span class="">  446: None.
+</span><span class="">  447: 
+</span><span class="">  448: =cut
+</span><span class="">  449: 
+</span><span class="">  450: sub caught {
+</span><span class="">  451: 	my ($class, $error) = @_;
+</span><span class="">  452: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  453: 	return (blessed($error) &amp;&amp; $error-&gt;isa($class)) ? $error : undef;
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  454: }
+</span><span class="">  455: 
+</span><span class="">  456: =head2 describe
+</span><span class="">  457: 
+</span><span class="">  458: 	print STDERR &#39;action-run: &#39;, App::Actions::Error-&gt;describe($@), &quot;\n&quot;;
+</span><span class="">  459: 
+</span><span class="">  460: Returns any exception as a sentence for a person: the message of an
+</span><span class="">  461: C&lt;App::Actions::Error&gt;, or a string exception with its final
+</span><span class="">  462: C&lt;&quot; at FILE line N.&quot;&gt; and trailing white space removed.  A position the
+</span><span class="">  463: message gives of its own, such as JSON::PP&#39;s C&lt;at character offset 9&gt;, is
+</span><span class="">  464: kept, because it is part of the diagnosis.
+</span><span class="">  465: 
+</span><span class="">  466: =head3 ARGUMENTS
+</span><span class="">  467: 
+</span><span class="">  468: =over 4
+</span><span class="">  469: 
+</span><span class="">  470: =item * C&lt;$error&gt; - an exception: an object or a string.  C&lt;undef&gt; gives
+</span><span class="">  471: the empty string.
+</span><span class="">  472: 
+</span><span class="">  473: =back
+</span><span class="">  474: 
+</span><span class="">  475: =head3 RETURNS
+</span><span class="">  476: 
+</span><span class="">  477: A string.
+</span><span class="">  478: 
+</span><span class="">  479: =head3 EXAMPLE
+</span><span class="">  480: 
+</span><span class="">  481: 	App::Actions::Error-&gt;describe(&quot;No job matched &#39;x&#39; at lib/App/Actions.pm line 9.\n&quot;);
+</span><span class="">  482: 	# No job matched &#39;x&#39;
+</span><span class="">  483: 
+</span><span class="">  484: =head3 API SPECIFICATION
+</span><span class="">  485: 
+</span><span class="">  486: =head4 INPUT
+</span><span class="">  487: 
+</span><span class="">  488: 	{ error =&gt; { type =&gt; &#39;any&#39;, optional =&gt; 1 } }
+</span><span class="">  489: 
+</span><span class="">  490: =head4 OUTPUT
+</span><span class="">  491: 
+</span><span class="">  492: 	{ type =&gt; &#39;string&#39; }
+</span><span class="">  493: 
+</span><span class="">  494: =head3 MESSAGES
+</span><span class="">  495: 
+</span><span class="">  496: None.
+</span><span class="">  497: 
+</span><span class="">  498: =cut
+</span><span class="">  499: 
+</span><span class="">  500: sub describe {
+</span><span class=""><span class="lcsaj-tip"><span class="lcsaj-dot">●</span><span class="lcsaj-tip-text">501 → 509 → 513</span></span>  501: 	my ($class, $error) = @_;
+</span><span class="">  502: 
+</span><span class="">  503: 	# An exception of this kind knows its message apart from its location;
+</span><span class="">  504: 	# anything else is a string and has the location cut off.
+</span><span class="">  505: 	my $text = !defined $error ? &#39;&#39;
+</span><span class="">  506: 		: $class-&gt;caught($error) ? $error-&gt;message
+</span><span class="">  507: 		: &quot;$error&quot;;
+</span><span class="">  508: 	$text =~ s/\s+\z//;
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  509: 	if ($text =~ $LOCATION_TAIL) {
+</span><p> <b> Mutants (Total: 1, Killed: 1, Survived: 0)</b><p><span class="">  510: 		my $before = substr($text, 0, $-[0]);
+</span><span class="">  511: 		$text = $1 if $before =~ $LOCATION_HEAD;
+</span><span class="">  512: 	}
+</span><span class="">  513: 	$text =~ s/\s+\z//;
+</span><span class="">  514: 
+</span><span class="killed tooltip" data-tooltip="Mutations here were killed. Tests are effectively covering this logic.">  515: 	return $text;
+</span><p> <b> Mutants (Total: 2, Killed: 2, Survived: 0)</b><p><span class="">  516: }
+</span><span class="">  517: 
+</span><span class="">  518: 1;
+</span><span class="">  519: 
+</span><span class="">  520: __END__
+</span><span class="">  521: 
+</span><span class="">  522: =head1 LIMITATIONS
+</span><span class="">  523: 
+</span><span class="">  524: =over 4
+</span><span class="">  525: 
+</span><span class="">  526: =item * Only messages raised through the catalogue are objects.  Errors from
+</span><span class="">  527: Perl itself, from CPAN modules and from code that still calls C&lt;croak&gt; with a
+</span><span class="">  528: literal are strings; L&lt;/describe&gt; and L&lt;/caught&gt; accept both so a caller does
+</span><span class="">  529: not have to know which it was given.
+</span><span class="">  530: 
+</span><span class="">  531: =item * The code is the catalogue key, so renaming a key is an interface
+</span><span class="">  532: change.  The keys are listed in the language modules under
+</span><span class="">  533: L&lt;App::Actions::I18N&gt;.
+</span><span class="">  534: 
+</span><span class="">  535: =item * The arguments are copied when the exception is made, but values in
+</span><span class="">  536: them that are references are shared with the code that threw it.
+</span><span class="">  537: 
+</span><span class="">  538: =back
+</span><span class="">  539: 
+</span><span class="">  540: =head1 COMMON PITFALLS
+</span><span class="">  541: 
+</span><span class="">  542: =over 4
+</span><span class="">  543: 
+</span><span class="">  544: =item * B&lt;Do not match the message text.&gt;  It is translated, and its
+</span><span class="">  545: wording may change.  Use L&lt;/is&gt; with the code.
+</span><span class="">  546: 
+</span><span class="">  547: =item * B&lt;Not every exception is an object.&gt;  Errors from Perl and from
+</span><span class="">  548: other modules are strings.  Use L&lt;/caught&gt;, which returns C&lt;undef&gt; for them,
+</span><span class="">  549: before you call a method on C&lt;$@&gt;.
+</span><span class="">  550: 
+</span><span class="">  551: =item * B&lt;C&lt;is&gt; needs a trailing dot for a family.&gt;  C&lt;is(&#39;runner.image&#39;)&gt;
+</span><span class="">  552: matches only that exact code; C&lt;is(&#39;runner.image.&#39;)&gt; matches every code
+</span><span class="">  553: that starts with C&lt;runner.image.&gt;.
+</span><span class="">  554: 
+</span><span class="">  555: =item * B&lt;C&lt;args&gt; returns a copy of the hash, but not of what is inside
+</span><span class="">  556: it.&gt;  If an argument is a reference, changing what it points to changes the
+</span><span class="">  557: error too.
+</span><span class="">  558: 
+</span><span class="">  559: =item * B&lt;A method call does not work inside a string.&gt;  C&lt;&quot;$error-E&lt;gt&gt;code&quot;&gt;
+</span><span class="">  560: prints the whole error followed by C&lt;-E&lt;gt&gt;code&gt;.  Write C&lt;&#39;...&#39; .
+</span><span class="">  561: $error-E&lt;gt&gt;code&gt;.
+</span><span class="">  562: 
+</span><span class="">  563: =item * B&lt;The object is always true.&gt;  Even an error with an empty message
+</span><span class="">  564: counts as true, so C&lt;if ($@)&gt; works as expected.
+</span><span class="">  565: 
+</span><span class="">  566: =item * B&lt;Keep a copy of C&lt;$@&gt;.&gt;  Any C&lt;eval&gt; you run later (even inside a
+</span><span class="">  567: destructor) can reset it.  Write C&lt;my $error = $@;&gt; first.
+</span><span class="">  568: 
+</span><span class="">  569: =back
+</span><span class="">  570: 
+</span><span class="">  571: =head1 ENCODING
+</span><span class="">  572: 
+</span><span class="">  573: The message is a Perl character string.  It may contain any Unicode text,
+</span><span class="">  574: including non-ASCII characters and emoji, because it may be a translation
+</span><span class="">  575: (for example into Chinese) and may quote a workflow&#39;s own text.  Set an
+</span><span class="">  576: encoding on the handle before you print it, for example C&lt;binmode STDERR,
+</span><span class="">  577: &#39;:encoding(UTF-8)&#39;&gt;.  The code is always ASCII: lower-case letters, digits,
+</span><span class="">  578: C&lt;_&gt; and dots.  The location is the file name as Perl knows it.
+</span><span class="">  579: 
+</span><span class="">  580: =head1 AUTHOR
+</span><span class="">  581: 
+</span><span class="">  582: Nigel Horne, C&lt;njh@nigelhorne.com&gt;
+</span><span class="">  583: 
+</span><span class="">  584: =head1 FORMAL SPECIFICATION
+</span><span class="">  585: 
+</span><span class="">  586: This section describes each routine in the Z notation, a precise
+</span><span class="">  587: mathematical language for describing programs.  You do not need to read it
+</span><span class="">  588: to use the module: everything here is also said in plain words in the
+</span><span class="">  589: sections above.  It is for readers who want to check exactly what a routine
+</span><span class="">  590: promises.
+</span><span class="">  591: 
+</span><span class="">  592: How to read it: a box names a routine.  The lines above the middle rule
+</span><span class="">  593: declare the values it works with.  A name ending in C&lt;?&gt; is an input, and a
+</span><span class="">  594: name ending in C&lt;!&gt; is an output.  C&lt;&Icirc;&#158;State&gt; means the routine changes
+</span><span class="">  595: nothing, and C&lt;&Icirc;&#148;State&gt; means it can change the state.  The lines below the
+</span><span class="">  596: rule are the conditions that are always true when the routine returns.
+</span><span class="">  597: 
+</span><span class="">  598: =head2 new
+</span><span class="">  599: 
+</span><span class="">  600: 	&acirc;&#148;&#140;&acirc;&#148;&#128; NewError &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  601: 	&acirc;&#148;&#130; code?     : KEY
+</span><span class="">  602: 	&acirc;&#148;&#130; message?  : seq CHAR
+</span><span class="">  603: 	&acirc;&#148;&#130; args?     : optional (NAME &acirc;&#135;&cedil; VALUE)
+</span><span class="">  604: 	&acirc;&#148;&#130; location? : optional seq CHAR
+</span><span class="">  605: 	&acirc;&#148;&#130; e!        : Error
+</span><span class="">  606: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  607: 	&acirc;&#148;&#130; e!.code = code? &acirc;&#136;&sect; e!.message = message?
+</span><span class="">  608: 	&acirc;&#148;&#130; e!.args = (if args? = &acirc;&#138;&yen; then &acirc;&#136;&#133; else args?)
+</span><span class="">  609: 	&acirc;&#148;&#130; e!.location = (if location? = &acirc;&#138;&yen; then &quot;\n&quot; else location?)
+</span><span class="">  610: 	&acirc;&#148;&#130; text(e!) = e!.message &acirc;&#129;&#128; e!.location
+</span><span class="">  611: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  612: 
+</span><span class="">  613: =head2 code
+</span><span class="">  614: 
+</span><span class="">  615: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Code &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  616: 	&acirc;&#148;&#130; &Icirc;&#158;Error
+</span><span class="">  617: 	&acirc;&#148;&#130; code! : KEY
+</span><span class="">  618: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  619: 	&acirc;&#148;&#130; code! = &Icirc;&cedil;Error.code
+</span><span class="">  620: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  621: 
+</span><span class="">  622: =head2 message
+</span><span class="">  623: 
+</span><span class="">  624: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Message &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  625: 	&acirc;&#148;&#130; &Icirc;&#158;Error
+</span><span class="">  626: 	&acirc;&#148;&#130; message! : seq CHAR
+</span><span class="">  627: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  628: 	&acirc;&#148;&#130; message! = &Icirc;&cedil;Error.message
+</span><span class="">  629: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  630: 
+</span><span class="">  631: =head2 args
+</span><span class="">  632: 
+</span><span class="">  633: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Args &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  634: 	&acirc;&#148;&#130; &Icirc;&#158;Error
+</span><span class="">  635: 	&acirc;&#148;&#130; args! : NAME &acirc;&#135;&cedil; VALUE
+</span><span class="">  636: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  637: 	&acirc;&#148;&#130; args! = &Icirc;&cedil;Error.args
+</span><span class="">  638: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  639: 
+</span><span class="">  640: =head2 location
+</span><span class="">  641: 
+</span><span class="">  642: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Location &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  643: 	&acirc;&#148;&#130; &Icirc;&#158;Error
+</span><span class="">  644: 	&acirc;&#148;&#130; location! : seq CHAR
+</span><span class="">  645: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  646: 	&acirc;&#148;&#130; location! = &Icirc;&cedil;Error.location
+</span><span class="">  647: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  648: 
+</span><span class="">  649: =head2 text
+</span><span class="">  650: 
+</span><span class="">  651: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Text &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  652: 	&acirc;&#148;&#130; &Icirc;&#158;Error
+</span><span class="">  653: 	&acirc;&#148;&#130; text! : seq CHAR
+</span><span class="">  654: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  655: 	&acirc;&#148;&#130; text! = &Icirc;&cedil;Error.message &acirc;&#129;&#128; &Icirc;&cedil;Error.location
+</span><span class="">  656: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  657: 
+</span><span class="">  658: =head2 is
+</span><span class="">  659: 
+</span><span class="">  660: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Is &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  661: 	&acirc;&#148;&#130; &Icirc;&#158;Error
+</span><span class="">  662: 	&acirc;&#148;&#130; code? : seq CHAR
+</span><span class="">  663: 	&acirc;&#148;&#130; r!    : &eth;&#157;&#148;&sup1;
+</span><span class="">  664: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  665: 	&acirc;&#148;&#130; last(code?) = &#39;.&#39; &acirc;&#135;&#146; (r! &acirc;&#135;&#148; code? prefix &Icirc;&cedil;Error.code)
+</span><span class="">  666: 	&acirc;&#148;&#130; last(code?) &acirc;&#137;&nbsp; &#39;.&#39; &acirc;&#135;&#146; (r! &acirc;&#135;&#148; code? = &Icirc;&cedil;Error.code)
+</span><span class="">  667: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  668: 
+</span><span class="">  669: =head2 caught
+</span><span class="">  670: 
+</span><span class="">  671: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Caught &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  672: 	&acirc;&#148;&#130; class? : CLASS
+</span><span class="">  673: 	&acirc;&#148;&#130; value? : VALUE
+</span><span class="">  674: 	&acirc;&#148;&#130; e!     : optional Error
+</span><span class="">  675: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  676: 	&acirc;&#148;&#130; value? &acirc;&#136;&#136; class? &acirc;&#135;&#146; e! = value?
+</span><span class="">  677: 	&acirc;&#148;&#130; value? &acirc;&#136;&#137; class? &acirc;&#135;&#146; e! = &acirc;&#138;&yen;
+</span><span class="">  678: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  679: 
+</span><span class="">  680: =head2 describe
+</span><span class="">  681: 
+</span><span class="">  682: 	&acirc;&#148;&#140;&acirc;&#148;&#128; Describe &acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  683: 	&acirc;&#148;&#130; error? : VALUE
+</span><span class="">  684: 	&acirc;&#148;&#130; s!     : seq CHAR
+</span><span class="">  685: 	&acirc;&#148;&#156;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  686: 	&acirc;&#148;&#130; error? &acirc;&#136;&#136; Error &acirc;&#135;&#146; s! = rtrim(error?.message)
+</span><span class="">  687: 	&acirc;&#148;&#130; error? = &acirc;&#138;&yen; &acirc;&#135;&#146; s! = &acirc;&#159;&uml;&acirc;&#159;&copy;
+</span><span class="">  688: 	&acirc;&#148;&#130; otherwise s! = rtrim(stripLocation(rtrim(error?)))
+</span><span class="">  689: 	&acirc;&#148;&#148;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;&acirc;&#148;&#128;
+</span><span class="">  690: 
+</span><span class="">  691: =head1 STATE DIAGRAM
+</span><span class="">  692: 
+</span><span class="">  693: An error object never changes after it is made.  This is its life:
+</span><span class="">  694: 
+</span><span class="">  695: 	 $self-&gt;throw($code, \%args)              App::Actions::Error-&gt;new(...)
+</span><span class="">  696: 	 (App::Actions::I18N: look up $code,       (rare: a caller that builds
+</span><span class="">  697: 	  translate, fill in %args, add the         its own)
+</span><span class="">  698: 	  caller&#39;s &quot; at FILE line N.&quot;)                    |
+</span><span class="">  699: 	           |                                      |
+</span><span class="">  700: 	           +------------------+-------------------+
+</span><span class="">  701: 	                              v
+</span><span class="">  702: 	                     +-----------------+
+</span><span class="">  703: 	                     |    CREATED      |  code, message, args,
+</span><span class="">  704: 	                     |   (immutable)   |  location fixed
+</span><span class="">  705: 	                     +-----------------+
+</span><span class="">  706: 	                              |
+</span><span class="">  707: 	                              | die
+</span><span class="">  708: 	                              v
+</span><span class="">  709: 	                     +-----------------+
+</span><span class="">  710: 	                     |    THROWN       |  in $@
+</span><span class="">  711: 	                     +-----------------+
+</span><span class="">  712: 	                       |      |      |
+</span><span class="">  713: 	   not caught by any   |      |      | caught as a string (&quot;$@&quot;, =~, print):
+</span><span class="">  714: 	   eval                |      |      | reads as message . location
+</span><span class="">  715: 	                       v      |      v
+</span><span class="">  716: 	        program stops;        |   old code works unchanged
+</span><span class="">  717: 	        STDERR shows the      |
+</span><span class="">  718: 	        message and location  | App::Actions::Error-&gt;caught($@)
+</span><span class="">  719: 	                              v
+</span><span class="">  720: 	                     +-----------------+
+</span><span class="">  721: 	                     |   INSPECTED     |  is($code) / is(&#39;family.&#39;)
+</span><span class="">  722: 	                     +-----------------+  code / message / args / location
+</span><span class="">  723: 	                              |
+</span><span class="">  724: 	                              | describe($@)
+</span><span class="">  725: 	                              v
+</span><span class="">  726: 	                     message without the location, for a person
+</span><span class="">  727: 
+</span><span class="">  728: =head1 LICENSE AND COPYRIGHT
+</span><span class="">  729: 
+</span><span class="">  730: Copyright 2026 Nigel Horne.
+</span><span class="">  731: 
+</span><span class="">  732: This program is released under the GNU General Public License, version 2.
+</span><span class="">  733: See the F&lt;LICENSE&gt; file that comes with this distribution.
+</span><span class="">  734: If you use it, please let me know.
+</span><span class="">  735: 
+</span><span class="">  736: =cut
+</span></pre>
+
+<script>
+function toggleTheme() {
+    const html = document.documentElement;
+    const current = html.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+}
+
+(function() {
+    const saved = localStorage.getItem('theme');
+    if(saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+    }
+})();
+
+document.addEventListener("mousemove", function(e) {
+	document.querySelectorAll(".lcsaj-tip-text, .cpd-tip-text").forEach(function(tip) {
+		tip.style.left = (e.clientX + 12) + "px";
+		tip.style.top  = (e.clientY + 12) + "px";
+	});
+});
+</script>
+</body>
+</html>
+	
