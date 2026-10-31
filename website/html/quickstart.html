@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick start — App::Actions</title>
+<meta name="description" content="From action-run check to a passing workflow: the first commands to run with App::Actions.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html" class="current" aria-current="page">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Quick start</h1>
+	<p class="lead">
+		Five minutes from a workflow file to a passing local run. The project
+		directory is optional when the workflow sits inside
+		<code>.github/workflows</code> — the repository root is found from there.
+	</p>
+
+	<h2>1. Check the host</h2>
+<pre><code>action-run check ~/src/my-project
+</code></pre>
+	<p>
+		This reports the platform, the Docker client and daemon versions, whether
+		the daemon runs Linux containers, and whether Docker can bind-mount a
+		temporary directory and your project. It is silent when everything works
+		and prints the full report, with a remedy after each problem, when it does
+		not. Fix those first; nothing else will work until it says
+		<code>Result: ready</code>.
+	</p>
+
+	<h2>2. See what would run</h2>
+<pre><code>action-run --list .github/workflows/ci.yml
+</code></pre>
+	<p>
+		One line per expanded job: its id, a tab, and its display name. A matrix
+		appears as one line per entry, so this is also the quickest way to see
+		whether a matrix is written the way you think it is.
+	</p>
+<pre><code>test	test (perl=5.38)
+test	test (perl=5.40)
+</code></pre>
+
+	<h2>3. Look before you run</h2>
+<pre><code>action-run --dry-run --verbose .github/workflows/ci.yml .
+</code></pre>
+	<p>
+		A dry run prints the Docker commands and the step scripts without starting
+		anything. <code>--explain</code> is the other half of the idea: it prints
+		one block per container the workflow would start, saying what each one
+		would be told to run, without contacting the daemon at all. That is how a
+		service that stops on start-up is told apart from one that was given a
+		bad command.
+	</p>
+
+	<h2>4. Run it</h2>
+<pre><code>action-run .github/workflows/ci.yml .
+</code></pre>
+	<p>
+		The exit status is the answer: <strong>0</strong> when every runnable job
+		passed, <strong>1</strong> when a job failed, <strong>2</strong> for a
+		usage, Docker or other infrastructure error. A failed job does not die —
+		the status says so.
+	</p>
+
+	<h2>5. One job, one secret, one image</h2>
+<pre><code>action-run --job test \
+           --secret CODECOV_TOKEN="$CODECOV_TOKEN" \
+           --image perl:5.40 \
+           .github/workflows/ci.yml .
+</code></pre>
+	<p>
+		<code>--job</code> may be repeated, and matches either a job's id or its
+		expanded display name. <code>--env NAME=VALUE</code> adds an environment
+		variable and <code>--secret NAME=VALUE</code> makes a value available to
+		<code>${{ secrets.NAME }}</code>; both are repeatable. Nothing is read
+		from GitHub, so a secret that is not passed in is empty, as it is on
+		GitHub for a fork.
+	</p>
+
+	<div class="warn">
+		<span class="warn-title">Secrets are on your command line</span>
+		<p>
+			<code>--secret</code> and <code>--env</code> values are visible to other
+			users of the computer while <code>action-run</code> runs. The Docker
+			commands it prints have them redacted, and they never appear in a
+			container's arguments. On a shared machine, pass a test value.
+		</p>
+	</div>
+
+	<h2>6. Read the output, then the logs</h2>
+	<p>
+		A matrix runs one job per processor by default. Each job's output is
+		streamed as it is written and prefixed with the job it came from, so two
+		jobs working at once can be told apart. Each job's full log is copied out
+		of the temporary directory before the run removes it, and the run ends by
+		saying where the copies are.
+	</p>
+<pre><code>action-run logs
+</code></pre>
+<pre><code>Logs directory: /home/me/.cache/action-run/logs
+
+  RUN                               LOG                          SIZE  AGE
+  20261021-121355-6ad8e4c30f83      job-1-test_n_one.log        1.2 KB  2 hours ago
+  20261021-121355-6ad8e4c30f83      job-2-test_n_two.log        0.8 KB  2 hours ago
+  20261020-091201-1f4b2c3d4e5f      job-1-test_n_one.log        1.0 KB  1 day ago
+
+3 logs, 3.0 KB on disk.
+</code></pre>
+	<p>
+		<code>--parallel=off</code> goes back to one job at a time, which is what
+		to use when jobs compete for something a unit of concurrency cannot see,
+		such as a fixed port.
+	</p>
+
+	<h2>7. Know what the run kept</h2>
+<pre><code>action-run cache
+</code></pre>
+<pre><code>Cache file: /home/me/.cache/action-run/cache.json
+
+  IMAGE                                  SIZE  LAST USED          AGE
+  alpine:3.20                         11.8 MB  2026-10-21 15:04  2 minutes ago
+  perl:5.38                          157.2 MB  2026-10-21 15:04  2 minutes ago
+
+2 images, 169.0 MB on disk.
+</code></pre>
+	<p>
+		Images a run pulled are kept, so the next run starts warm. When they are
+		no longer wanted, <code>action-run cache --prune</code> removes them;
+		<code>--older-than 30d</code> narrows that to the ones at least that old.
+		<code>--no-keep-images</code> makes a single run remove what it pulled.
+	</p>
+
+	<h2>8. Ask before you push</h2>
+<pre><code>action-run preflight .github/workflows/ci.yml .
+</code></pre>
+	<p>
+		<code>preflight</code> makes the checks a run makes and prepares every
+		image the selected jobs need, then stops. Nothing is started, so it is the
+		cheap way to ask whether a workflow could start on this host — and a
+		mistyped image is caught here rather than halfway through a job.
+	</p>
+
+	<div class="pager">
+		<a href="install.html">← Install</a>
+		<a href="commands.html">Commands →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

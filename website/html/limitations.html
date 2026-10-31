@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Limits and pitfalls — App::Actions</title>
+<meta name="description" content="What App::Actions cannot emulate, and the mistakes that waste the most time when running a workflow locally.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html" class="current" aria-current="page">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Limits and pitfalls</h1>
+	<p class="lead">
+		A local run is not a runner. Knowing where the two differ is the
+		difference between a tool that saves time and one that reports success
+		for something GitHub would reject.
+	</p>
+
+	<h2>Limitations</h2>
+	<ul>
+		<li><strong>Only Linux jobs</strong> can be emulated. Windows and macOS jobs are skipped.</li>
+		<li><strong>Local composite and JavaScript actions run; remote actions and local <code>docker</code> actions cannot.</strong> Checkout, setup-perl, cache, artifact and Codecov actions are no-ops. <code>--strict-actions</code> turns an unknown action into a failure instead of a skip.</li>
+		<li><strong>JavaScript actions need <code>node</code> in the job image.</strong></li>
+		<li><strong>Job outputs, <code>needs.*.outputs</code> and <code>timeout-minutes</code> are not implemented.</strong></li>
+		<li><strong>Images are pulled concurrently only where <code>fork()</code> is reliable.</strong> On Windows they are pulled one at a time, because Perl's emulation of <code>fork()</code> shares the parent's handles with the child.</li>
+		<li><strong>The host may run UNIX or Windows; only the containers are Linux.</strong> Command output is captured without <code>fork</code> or a piped <code>open</code>, and paths, volumes and permissions are handled in a platform-neutral way. Step scripts, the <code>sudo</code> and <code>apt</code> shims and <code>event.json</code> are written with LF line endings.</li>
+	</ul>
+
+	<h2>Pitfalls</h2>
+
+	<h3>Run <code>action-run check</code> first</h3>
+	<p>
+		Most failures before the first job are a Docker problem — not running,
+		Windows containers, a drive not shared — and <code>check</code> names the
+		remedy for each one. A run makes the same probes itself and prints the
+		same report, but running it deliberately is quicker to read.
+	</p>
+
+	<h3>Secrets are on the command line</h3>
+	<p>
+		<code>--secret</code> and <code>--env</code> values are visible to every
+		user of the computer in <code>ps</code> while the run is in progress. The
+		Docker command lines the tool starts keep them hidden, and hints in the
+		workflow are redacted from printed commands, but the tool's own arguments
+		are not. On a shared machine, pass a test value — or pass the secrets
+		through a Perl caller instead.
+	</p>
+
+	<h3>Give the project directory when the workflow is elsewhere</h3>
+	<p>
+		If the workflow file is not inside a <code>.github/workflows</code>
+		directory, the project directory must be the second argument. Otherwise
+		the repository root found from the workflow's path is used.
+	</p>
+
+	<h3>Skipped is not failed</h3>
+	<p>
+		macOS and Windows jobs are skipped, and unsupported remote actions are
+		skipped with a warning. The exit status can therefore be 0 even though
+		some jobs did not run; the summary lists them as skipped.
+	</p>
+
+	<h3>Images are kept after the run</h3>
+	<p>
+		That is the cache working. Use <code>action-run cache</code> to see what
+		it holds, <code>action-run cache --prune</code> to free the space, or
+		<code>--no-keep-images</code> for a one-off image.
+	</p>
+
+	<h3>A setting in a file or the environment beats the command line</h3>
+	<p>
+		An <code>App__Actions</code> section in <code>~/.conf/local.yaml</code>
+		(or <code>base.yaml</code>), or an <code>App__Actions__parallel</code>
+		variable, wins over <code>--parallel</code> and the other run options.
+		When an option seems to be ignored, look there. Values from those places
+		are not checked, so a mistyped one is accepted silently.
+	</p>
+
+	<h3>A <code>UNIVERSAL</code> logger takes the messages off the terminal</h3>
+	<p>
+		<code>Object::Configure</code> applies a <code>UNIVERSAL</code> section of
+		<code>universal.yaml</code> to every class that uses it, this one
+		included. If that section has a <code>logger</code> writing to a file or
+		to syslog, a failed step is reported there and not on standard error. Give
+		this module its own <code>logger</code> in an <code>App__Actions</code>
+		section, or pass one.
+	</p>
+
+	<h3><code>--older-than</code> needs a unit</h3>
+	<p>
+		<code>30d</code> or <code>2 weeks</code>, not <code>30</code>. An
+		unreadable duration is a usage error, not a silent fall back to no filter.
+	</p>
+
+	<h3>Exit status 70 is a bug</h3>
+	<p>
+		It means a JSON document did not match its own schema. Nothing was
+		printed, so a CI job cannot mistake a malformed document for a good one.
+		That is this distribution's fault, not your workflow's: please report it.
+	</p>
+
+	<h3>Only run workflows you trust</h3>
+	<p>
+		A workflow's <code>container.volumes</code> and <code>options</code> can
+		mount any folder of your computer into a container, as they can on
+		GitHub's own runners. Running a workflow from an unknown source is
+		running its code on your machine.
+	</p>
+
+	<h3>Run as yourself or root</h3>
+	<p>
+		With <code>--user</code> set to another user, the job's files — secrets
+		included — must be readable by every user of the computer, and a warning
+		says so.
+	</p>
+
+	<h2>Design weaknesses that remain</h2>
+	<ul>
+		<li>
+			The runner plans the run and hands the work to five parts — images,
+			containers, steps, parallel jobs and the report — each in its own module
+			under <code>App/Actions/Runner/</code>. The parts are built from copies of
+			the runner's options rather than given the runner, so they can be tested
+			alone, but a change to an option after construction is not seen by them.
+		</li>
+		<li>
+			Errors raised through the catalogue are <code>App::Actions::Error</code>
+			objects carrying the message key as a stable code; the errors of Check,
+			Docker, Expression, Process, Cache and Logs are still strings.
+		</li>
+		<li>
+			The option rules are one table, but the options are checked twice: once
+			by <code>App::Actions</code> and once by the runner, which is a public
+			class and so checks its own arguments.
+		</li>
+		<li>
+			Settings merged in from configuration files and
+			<code>App__Actions__*</code> variables are applied after the arguments
+			have been checked, so they are not checked at all.
+		</li>
+		<li>
+			Not everything a run prints goes through the logger: progress, command
+			echoes and the summary are output and stay on standard output.
+		</li>
+	</ul>
+
+	<div class="pager">
+		<a href="json.html">← JSON &amp; CI</a>
+		<a href="changelog.html">Changes →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

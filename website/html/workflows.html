@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow support — App::Actions</title>
+<meta name="description" content="Which parts of a GitHub Actions workflow App::Actions understands, and what it does with the rest.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html" class="current" aria-current="page">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Workflow support</h1>
+	<p class="lead">
+		App::Actions implements the parts of a workflow that are useful for local
+		testing. Everything else is skipped, with a warning where silence would
+		mislead, or refused where pretending would be worse.
+	</p>
+
+	<h2>A job's life</h2>
+	<p>Every selected job goes through the same shape, whether it came from a matrix or not:</p>
+	<ol>
+		<li>A private Docker network is created for the job and its services.</li>
+		<li>The job's service containers start on that network, with the aliases and ports the workflow gives them. A service that stops, or that a restart policy keeps bringing back, stops the run with the state and restart count the daemon reports and the last lines the container printed.</li>
+		<li>One long-lived container starts with the project mounted in it, as the configured user or the image's default.</li>
+		<li>Each step that passes its <code>if:</code> condition is run in that container with <code>docker exec</code>. Files and installed modules stay between steps, as on GitHub.</li>
+		<li>The containers and network are removed — unless the run is kept — and the images stay as the next run's cache.</li>
+	</ol>
+
+	<h2>Understood</h2>
+	<ul>
+		<li><strong>Jobs</strong> — selected by id or display name, with <code>env</code>, <code>defaults</code>, <code>container</code> and <code>services</code>.</li>
+		<li><strong>Matrices</strong> — <code>strategy.matrix</code> is expanded before anything runs, so <code>--list</code> shows every combination and each entry gets its own container, network, runner directory and log.</li>
+		<li><strong>Containers and services</strong> — <code>image</code>, <code>env</code>, <code>ports</code>, <code>volumes</code>, <code>options</code> and <code>credentials</code>, with matrix values resolved.</li>
+		<li><strong>Steps</strong> — <code>run</code>, <code>uses</code>, <code>with</code>, <code>env</code>, <code>if</code>, <code>shell</code>, <code>working-directory</code> and <code>continue-on-error</code>.</li>
+		<li><strong>Conditions</strong> — <code>if:</code> on jobs and steps, including <code>failure()</code> and <code>always()</code>, so the steps after a failed one run only when the workflow asks them to.</li>
+		<li><strong>Expressions</strong> — <code>${{ }}</code> over contexts, with comparisons, logic, indexing and the usual functions.</li>
+		<li><strong>Shells and working directories</strong> — the job's and the step's, with the job's defaults.</li>
+		<li><strong>GitHub's step files</strong> — <code>GITHUB_ENV</code>, <code>GITHUB_PATH</code>, <code>GITHUB_OUTPUT</code>, <code>GITHUB_STATE</code> and <code>GITHUB_STEP_SUMMARY</code>. A value written by one step is seen by the next.</li>
+		<li><strong><code>continue-on-error</code> and <code>fail-fast</code></strong> — a failing matrix entry does not cancel the others when the workflow says it should not.</li>
+	</ul>
+
+	<h3>Which image a job gets</h3>
+	<p>
+		A job with a <code>container:</code> uses that image. Without one, the job
+		uses <code>--image</code> (default <code>ubuntu:latest</code>, or
+		<code>ubuntu:24.04</code> for <code>runs-on: ubuntu-24.04</code>). A job
+		that sets up Perl with <code>shogo82148/actions-setup-perl</code> uses
+		<code>--perl-image</code>, which is <code>perl:%s</code> by default.
+	</p>
+
+	<h2>Actions</h2>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Kind of action</th><th>What happens locally</th></tr></thead>
+			<tbody>
+				<tr>
+					<td>Local composite action (<code>./.github/actions/…</code>)</td>
+					<td>Read and run, including actions used inside other actions. Their images are prepared before the first step.</td>
+				</tr>
+				<tr>
+					<td>Local JavaScript action</td>
+					<td>Run, so the job image needs <code>node</code>.</td>
+				</tr>
+				<tr>
+					<td><code>docker://</code> actions</td>
+					<td>The image is pulled during preparation and the action's container is run. A local <code>docker</code> action cannot be run.</td>
+				</tr>
+				<tr>
+					<td><code>actions/checkout</code>, <code>shogo82148/actions-setup-perl</code></td>
+					<td>No-ops: the project is already mounted, and the Perl image is chosen from the requested version.</td>
+				</tr>
+				<tr>
+					<td>Cache, artifact and Codecov actions</td>
+					<td>No-ops.</td>
+				</tr>
+				<tr>
+					<td>Any other remote action</td>
+					<td>Skipped with a warning. <code>--strict-actions</code> makes that a failure instead.</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+	<p class="small muted">
+		Nothing is downloaded from GitHub, so a remote action cannot silently
+		succeed: it is skipped, or it fails when you ask it to.
+	</p>
+
+	<h2>Not implemented</h2>
+	<ul>
+		<li>Job outputs, <code>needs.*.outputs</code> and <code>timeout-minutes</code>.</li>
+		<li>macOS and Windows runners. A job with <code>runs-on: macos-*</code> or <code>windows-*</code> is skipped, not failed, and the exit status can be 0 even though some jobs did not run. The summary lists them as skipped.</li>
+		<li>Remote actions, as above.</li>
+	</ul>
+
+	<h2>Running as root, and <code>sudo</code></h2>
+	<p>
+		Many job images run as root and have no <code>sudo</code>, which would make
+		an ordinary <code>sudo apt update</code> step fail locally but pass on
+		GitHub. When the image has no <code>sudo</code> and the container runs as
+		root, a small <code>sudo</code> shim is placed on <code>PATH</code>, along
+		with an <code>apt</code> shim, so those steps mean what they mean on a
+		runner.
+	</p>
+
+	<h2>Diagnosing a container that will not start</h2>
+	<p>
+		<code>--explain</code> prints what each container would be told to run,
+		without starting anything and without contacting the daemon. A service
+		has no command of its own in a workflow, so its block reports
+		<em>(the image's own)</em> for the entrypoint and command, or the
+		entrypoint its <code>options</code> replace. That is what tells a service
+		that stops on start-up from one that was given a bad command.
+	</p>
+<pre><code>==&gt; Service 'helper' of job 'test'
+    container  action-run-0123abcd-2-svc-test-0-helper
+    image      postgres:16
+    entrypoint (the image's own)
+    command    (the image's own)
+</code></pre>
+
+	<div class="pager">
+		<a href="options.html">← Options</a>
+		<a href="json.html">JSON &amp; CI →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

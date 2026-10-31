@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changes — App::Actions</title>
+<meta name="description" content="What changed in recent releases of App::Actions.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html" class="current" aria-current="page">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Changes</h1>
+	<p class="lead">
+		The highlights of each release. The full revision history, including test
+		and documentation changes, is in the <code>Changes</code> file that ships
+		with the distribution.
+	</p>
+
+	<h2>0.002.1 <span class="muted small">— 25 October 2026</span></h2>
+	<ul>
+		<li><code>action-run cache</code> no longer reports an image as missing when Docker has it but gives no size for it, and <code>--prune</code> removes such an image instead of forgetting it.</li>
+		<li>A run that uses a kept image without pulling it again updates the image's last use, so <code>cache --prune --older-than</code> no longer removes an image that runs still use.</li>
+		<li><code>if: false</code> and <code>fail-fast: false</code> work on Perl 5.36 again, where a core boolean copied through Storable became an empty string and ran the job.</li>
+		<li>YAML::PP 0.38 is required: older versions do not load <code>true</code> and <code>false</code> as Perl's own booleans.</li>
+		<li>A pull that fails while a job runs is reported in the chosen language, as the preflight's already was.</li>
+		<li>The tests pass from a checkout with CRLF line endings, and the suite copies itself to a path containing spaces and runs there again.</li>
+		<li>New <code>t/integration.t</code>: end-to-end tests across the modules, with unwritable and unsearchable directories, an unreachable daemon, slow and failing pulls, and malformed answers and files.</li>
+		<li>The core modules the tool and its tests use are all declared as prerequisites.</li>
+	</ul>
+
+	<h2>0.002.0 <span class="muted small">— 23 October 2026</span></h2>
+	<ul>
+		<li>Security: an environment value is interpolated only once, so <code>${{ }}</code> text from a context value — a commit message, say — is not evaluated again. A variable that refers to itself is an error.</li>
+		<li>Security: a <code>docker://</code> image is likewise interpolated once, and log names and run ids that are not plain file names are refused.</li>
+		<li>Warnings and errors go through a <a href="https://metacpan.org/pod/Log::Abstraction">Log::Abstraction</a> logger, so they can be collected, filed or discarded. Progress and the summary stay on standard output.</li>
+		<li>The configuration that <code>Object::Configure</code> adds — <code>App__Actions</code> sections and <code>App__Actions__*</code> variables — is documented.</li>
+		<li>The cache and logs listings, and a child process's error lines, are translated.</li>
+		<li>Windows: a missing program is status 255 and is no longer retried through <code>cmd.exe</code>, which would have read <code>&amp;</code> and <code>|</code> in the arguments.</li>
+		<li>Bug fixes across Expression, Workflow, Runner, Steps, Containers, Images, Parallel, Process, Cache, Check, Schema, Action and the preflight's deferred images.</li>
+		<li>New white-box, black-box-against-the-POD, and <code>Changes</code> tests.</li>
+	</ul>
+
+	<h2>0.001.0 <span class="muted small">— 22 October 2026</span></h2>
+	<ul>
+		<li>First release.</li>
+	</ul>
+
+	<h2>Reading the whole history</h2>
+	<p>
+		The distribution's <code>Changes</code> file is on
+		<a href="https://metacpan.org/dist/App-Actions/changes">MetaCPAN</a>, and
+		the commit history is in the
+		<a href="https://github.com/nigelhorne/App-Actions">repository</a>.
+	</p>
+
+	<div class="pager">
+		<a href="limitations.html">← Limits</a>
+		<span></span>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

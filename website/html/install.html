@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install — App::Actions</title>
+<meta name="description" content="Install App::Actions from CPAN or a checkout, and set Docker up the way action-run expects.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html" class="current" aria-current="page">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Install</h1>
+	<p class="lead">
+		App::Actions is a Perl distribution. It installs one module tree and two
+		commands, <code>action-run</code> and <code>action-run-smoke</code>, and it
+		needs a Docker daemon that can run Linux containers.
+	</p>
+
+	<h2>From CPAN</h2>
+<pre><code>cpanm App::Actions
+</code></pre>
+	<p>
+		That pulls in everything the module needs, including
+		<a href="https://metacpan.org/pod/YAML::PP">YAML::PP</a>,
+		<a href="https://metacpan.org/pod/Object::Configure">Object::Configure</a>,
+		<a href="https://metacpan.org/pod/Log::Abstraction">Log::Abstraction</a> and
+		<a href="https://metacpan.org/pod/Params::Validate::Strict">Params::Validate::Strict</a>.
+	</p>
+
+	<h2>From a checkout</h2>
+<pre><code>git clone https://github.com/nigelhorne/App-Actions.git
+cd App-Actions
+perl Makefile.PL
+make
+make test
+make install
+</code></pre>
+	<p>
+		The test suite runs against a fake Docker command, so <code>make test</code>
+		needs neither Docker nor a daemon. <code>prove -l t</code> runs the same
+		suite from the checkout without installing.
+	</p>
+
+	<div class="note">
+		<span class="note-title">No Docker for the tests</span>
+		<p>
+			The tests that need a real daemon are opt-in:
+			<code>make test LIVE_TESTING=1</code>. <code>t/self_test.t</code> runs the
+			command a user runs, <code>bin/action-run t/lib/self_test.yml .</code>, in a
+			real container rather than the fake one.
+		</p>
+	</div>
+
+	<h2>Requirements</h2>
+	<div class="table-wrap">
+		<table>
+			<thead>
+				<tr><th>Needs</th><th>Why</th></tr>
+			</thead>
+			<tbody>
+				<tr>
+					<td>Perl 5.14 or later</td>
+					<td>What the distribution declares. Continuous integration runs the suite on Perl 5.36 and later.</td>
+				</tr>
+				<tr>
+					<td>Docker, running Linux containers</td>
+					<td>Every job, its services and its <code>docker://</code> actions are containers. Windows and macOS hosts work; only the containers are Linux.</td>
+				</tr>
+				<tr>
+					<td>A reachable daemon that can bind-mount your project</td>
+					<td>The project directory is mounted into the job container. On Docker Desktop the drive holding the project must be shared.</td>
+				</tr>
+				<tr>
+					<td>Disk space for images</td>
+					<td>Images are kept between runs as a cache. <code>action-run cache</code> shows what they take.</td>
+				</tr>
+				<tr>
+					<td><code>node</code>, only for JavaScript actions</td>
+					<td>A local JavaScript action is run inside the job image, so that image needs a <code>node</code>.</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+
+	<h2>Docker, on each platform</h2>
+	<h3>Linux</h3>
+	<p>
+		Install Docker Engine from your distribution, start it, and make sure your
+		user may talk to the socket — usually by being in the <code>docker</code>
+		group. Then run <code>action-run check</code>.
+	</p>
+
+	<h3>macOS and Windows</h3>
+	<p>
+		Install Docker Desktop and wait until it says it is running. On Windows,
+		the engine must be in Linux-container mode (Docker Desktop's default);
+		on Windows the per-job logs and the image cache live under
+		<code>%LOCALAPPDATA%</code>. Ensure the drive that holds your project is
+		shared with Docker, or the bind-mount probe in
+		<code>action-run check</code> will report the entries it could not see.
+	</p>
+
+	<div class="warn">
+		<span class="warn-title">Prove it with the smoke test</span>
+		<p>
+			After installing, or after changing Docker, a virtual machine or a
+			drive's sharing settings, run <code>action-run-smoke</code>. It checks the
+			environment and then runs a small workflow against the real daemon. If it
+			says <em>ready</em> and the workflow passes, <code>action-run</code> will
+			work on this computer.
+		</p>
+	</div>
+
+	<h2>Verify the install</h2>
+<pre><code>action-run --version
+<span class="comment">action-run 0.002.1</span>
+
+action-run check ~/src/my-project
+<span class="comment">host      Linux (linux), perl 5.40.0, x86_64-linux
+...
+schema    version 2 (action-run schema check)
+Result: ready</span>
+
+action-run-smoke
+</code></pre>
+	<p>
+		<code>check</code> says nothing but its report, and ends with
+		<code>Result: ready</code> when everything it tested works. Each problem it
+		finds is followed by a <code>remedy</code> line naming the step that fixes
+		it, and the command exits 2. If <code>action-run</code> is not on your
+		<code>PATH</code>, find where the scripts went with
+		<code>perl -V:installscript</code>.
+	</p>
+
+	<div class="pager">
+		<a href="index.html">← Home</a>
+		<a href="quickstart.html">Quick start →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

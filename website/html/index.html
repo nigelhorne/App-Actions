@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App::Actions — run GitHub Actions workflows locally</title>
+<meta name="description" content="App::Actions runs a GitHub Actions workflow on your own computer, in Docker containers, so you can test and debug it without pushing to GitHub.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html" class="current" aria-current="page">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Run GitHub Actions workflows locally</h1>
+	<p class="lead">
+		App::Actions runs a GitHub Actions workflow on your own computer, in Docker
+		containers, so a broken workflow can be debugged without a commit, a push
+		and a wait for a runner.
+	</p>
+
+<pre><code>cpanm App::Actions
+
+action-run check ~/src/my-project
+action-run .github/workflows/ci.yml .
+</code></pre>
+
+	<p>
+		The workflow is read as GitHub would read it: jobs are selected, matrices
+		are expanded, service containers start, and each step runs in turn inside a
+		long-lived job container with the project mounted. Files and installed
+		modules stay between steps, exactly as they do on GitHub. When the run is
+		over, the containers and networks are removed and the images are kept as
+		the next run's cache.
+	</p>
+
+	<ul class="cards">
+		<li class="card">
+			<h3>The same steps, locally</h3>
+			<p>Jobs, matrix expansion, containers, services, working directories, shells, <code>if:</code> conditions and <code>${{ }}</code> expressions.</p>
+		</li>
+		<li class="card">
+			<h3>GitHub's step files</h3>
+			<p><code>GITHUB_ENV</code>, <code>PATH</code>, <code>OUTPUT</code>, <code>STATE</code> and <code>STEP_SUMMARY</code> written by one step are seen by the next.</p>
+		</li>
+		<li class="card">
+			<h3>Matrices in parallel</h3>
+			<p>One job per CPU by default, each with its own container, network and log, so a wide matrix uses the machine instead of queueing.</p>
+		</li>
+		<li class="card">
+			<h3>A real preflight</h3>
+			<p>The daemon, Linux containers and bind mounts are probed, and every image is pulled before the first job starts.</p>
+		</li>
+		<li class="card">
+			<h3>Kept images and logs</h3>
+			<p>A run's images become the next run's cache, and parallel job logs survive the containers. Both can be listed and pruned.</p>
+		</li>
+		<li class="card">
+			<h3>Documents for CI</h3>
+			<p><code>check</code>, <code>preflight</code>, <code>cache</code> and <code>logs</code> each print a versioned JSON document with a published schema.</p>
+		</li>
+	</ul>
+
+	<h2>How a run works</h2>
+	<ol>
+		<li>The workflow file is read and each job's matrix is expanded — <code>action-run --list</code> prints the jobs without running anything.</li>
+		<li>The host is checked: the Docker daemon must be reachable, running Linux containers, and able to bind-mount both a temporary directory and the project.</li>
+		<li>The images the selected jobs need are prepared — job images, service images and <code>docker://</code> action images — four at a time by default, before any container starts.</li>
+		<li>For each job, a private Docker network is made, the job's service containers start, and one long-lived job container starts with the project mounted in it.</li>
+		<li>Each step is executed in that container with <code>docker exec</code>, so files and installed modules persist between steps.</li>
+		<li>The job's containers and network are removed and the result is reported. Images stay, unless <code>--no-keep-images</code> is given.</li>
+	</ol>
+
+<pre><code><span class="comment"># what would run, and in what order</span>
+action-run --list .github/workflows/ci.yml
+
+<span class="comment"># the Docker commands, without starting anything</span>
+action-run --dry-run --verbose .github/workflows/ci.yml .
+
+<span class="comment"># one job only, with a secret</span>
+action-run --job test --secret CODECOV_TOKEN="$CODECOV_TOKEN" \
+           .github/workflows/ci.yml .
+</code></pre>
+
+	<h2>What it does not do</h2>
+	<p>
+		Only Linux jobs can be emulated: jobs with <code>runs-on: macos-*</code> or
+		<code>windows-*</code> are skipped, not failed. Remote actions are not
+		fetched — <code>actions/checkout</code> and
+		<code>shogo82148/actions-setup-perl</code> become no-ops because the project
+		is already mounted and the image is chosen from the requested Perl version.
+		Local composite and JavaScript actions do run. Job outputs,
+		<code>needs.*.outputs</code> and <code>timeout-minutes</code> are not
+		implemented. <a href="limitations.html">The whole list is here</a>.
+	</p>
+
+	<h2>Where to go next</h2>
+	<ul>
+		<li><a href="install.html">Install</a> — from CPAN or from a checkout, plus the Docker setup the tool expects.</li>
+		<li><a href="quickstart.html">Quick start</a> — from <code>action-run check</code> to a passing workflow.</li>
+		<li><a href="commands.html">Commands</a> — <code>run</code>, <code>check</code>, <code>preflight</code>, <code>cache</code>, <code>logs</code>, <code>schema</code> and <code>validate</code>.</li>
+		<li><a href="workflows.html">Workflow support</a> — exactly which parts of a workflow are understood.</li>
+	</ul>
+
+	<div class="pager">
+		<span></span>
+		<a href="install.html">Install →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

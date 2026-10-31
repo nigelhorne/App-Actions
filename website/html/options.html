@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Options — App::Actions</title>
+<meta name="description" content="Every action-run option, environment variable and configuration file setting.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html" class="current" aria-current="page">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Options</h1>
+	<p class="lead">
+		What to run, what to run it in, how much of it to run at once, and what to
+		print. The same names are options of <code>App::Actions-&gt;new</code>, so
+		a Perl program can pass any of them directly.
+	</p>
+
+	<h2>Jobs and images</h2>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Option</th><th>Effect</th></tr></thead>
+			<tbody>
+				<tr>
+					<td><code>--job NAME</code><br><span class="muted small">also <code>-j</code></span></td>
+					<td>Only run jobs whose id or expanded display name matches. Repeatable.</td>
+				</tr>
+				<tr>
+					<td><code>--image IMAGE</code></td>
+					<td>Fallback image for Linux jobs that declare no <code>container:</code> and do not use <code>shogo82148/actions-setup-perl</code>. Default <code>ubuntu:latest</code>; a job with <code>runs-on: ubuntu-24.04</code> changes the default to <code>ubuntu:24.04</code>.</td>
+				</tr>
+				<tr>
+					<td><code>--perl-image TEMPLATE</code></td>
+					<td>Image template used for <code>shogo82148/actions-setup-perl</code>. Default <code>perl:%s</code>, so <code>perl-version: "5.38"</code> uses <code>perl:5.38</code>.</td>
+				</tr>
+				<tr>
+					<td><code>--platform PLATFORM</code></td>
+					<td>Pass <code>--platform</code> to Docker, for example <code>linux/amd64</code> on an ARM computer.</td>
+				</tr>
+				<tr>
+					<td><code>--docker PROGRAM</code></td>
+					<td>The Docker program to run — a path, or a wrapper script. A wrapper written in Perl runs with the same Perl as <code>action-run</code>, so it works on Windows too. Default <code>$DOCKER</code>, then <code>docker</code>.</td>
+				</tr>
+				<tr>
+					<td><code>--user USER[:GROUP]</code></td>
+					<td>Run the job and service containers as this user. By default they run as the image's default user, usually root. If the user is neither you nor root, the job's runner folder must be readable by every user, and a warning says so.</td>
+				</tr>
+				<tr>
+					<td><code>--env NAME=VALUE</code></td>
+					<td>Add or override an environment variable. Repeatable.</td>
+				</tr>
+				<tr>
+					<td><code>--secret NAME=VALUE</code></td>
+					<td>Make a value available to <code>${{ secrets.NAME }}</code>. Repeatable. Values are redacted from printed Docker commands and never put on a Docker command line.</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+
+	<h2>What the run does</h2>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Option</th><th>Effect</th></tr></thead>
+			<tbody>
+				<tr>
+					<td><code>--pull</code>, <code>--no-pull</code></td>
+					<td>Force an image pull, or fail instead of pulling a missing image. With <code>--pull</code> each image is pulled once per run, however many jobs, services or steps use it.</td>
+				</tr>
+				<tr>
+					<td><code>--dry-run</code><br><span class="muted small">also <code>-n</code></span></td>
+					<td>Print the Docker commands and run scripts without starting containers.</td>
+				</tr>
+				<tr>
+					<td><code>--explain</code></td>
+					<td>A dry run for containers rather than commands: starts nothing, needs no daemon, and prints one block per container saying what it would be told to run. Only a run has containers to explain, so the other commands reject it.</td>
+				</tr>
+				<tr>
+					<td><code>--list</code></td>
+					<td>List the expanded jobs and exit.</td>
+				</tr>
+				<tr>
+					<td><code>--keep</code><br><span class="muted small">also <code>-k</code></span></td>
+					<td>Keep containers, networks, images and the temporary directory for debugging. A run that keeps its containers always goes one job at a time.</td>
+				</tr>
+				<tr>
+					<td><code>--keep-images</code>, <code>--no-keep-images</code></td>
+					<td>Keep the images the run pulled, so the next run starts from them. This is the default. <code>--no-keep-images</code> removes the ones this run pulled once its containers and networks are gone.</td>
+				</tr>
+				<tr>
+					<td><code>--strict-actions</code></td>
+					<td>Treat unsupported actions as failures instead of skipping them with a warning.</td>
+				</tr>
+				<tr>
+					<td><code>--skip-check</code></td>
+					<td>Skip the environment probes and the up-front image preparation, while still checking that the Docker command answers. Images are then pulled when first used.</td>
+				</tr>
+				<tr>
+					<td><code>--older-than DURATION</code></td>
+					<td>With <code>cache</code> or <code>logs</code>: show only entries at least this old, and make <code>--prune</code> remove only those. A duration is a number and a unit — <code>30s</code>, <code>15m</code>, <code>12h</code>, <code>7d</code>, <code>2w</code>, <code>3mo</code>, <code>1y</code> — with the unit optionally spelled out. The unit is required.</td>
+				</tr>
+				<tr>
+					<td><code>--prune</code></td>
+					<td>With <code>cache</code>, remove the images the record holds; with <code>logs</code>, remove the kept job logs. Rejected by every other command.</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+
+	<h2>Concurrency and output</h2>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Option</th><th>Effect</th></tr></thead>
+			<tbody>
+				<tr>
+					<td><code>--parallel NUMBER</code>, <code>--parallel=off</code></td>
+					<td>How many jobs of a matrix may run at once. Default: the number of processors, so a matrix uses the machine. <code>off</code> runs them one at a time, for jobs that compete for a fixed port or a shared service. The workflow's own <code>strategy.max-parallel</code> still caps the number. A kept run, a dry run and an explain run always go one at a time, and so does Windows, where <code>fork()</code> is not reliable.</td>
+				</tr>
+				<tr>
+					<td><code>--pull-concurrency NUMBER</code></td>
+					<td>How many images may be pulled at the same time. Default: <code>ACTION_RUN_PULL_CONCURRENCY</code>, then four. <code>1</code> pulls them one after another, which is easier to read when one is slow. Must be a positive integer. Windows always pulls one at a time.</td>
+				</tr>
+				<tr>
+					<td><code>--json</code></td>
+					<td>With <code>check</code>, <code>preflight</code>, <code>cache</code> or <code>logs</code>: print a versioned document instead of the text report. Rejected for a workflow run and unnecessary for <code>schema</code>.</td>
+				</tr>
+				<tr>
+					<td><code>--verbose</code><br><span class="muted small">also <code>-v</code></span></td>
+					<td>Print Docker commands and extra diagnostics.</td>
+				</tr>
+				<tr>
+					<td><code>--quiet</code><br><span class="muted small">also <code>-q</code></span></td>
+					<td>Suppress progress output. Command output is still shown, and the job logs are still kept.</td>
+				</tr>
+				<tr>
+					<td><code>--help</code>, <code>--version</code></td>
+					<td>Show the help or the version and exit 0.</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+
+	<h2>Environment variables</h2>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Variable</th><th>Meaning</th></tr></thead>
+			<tbody>
+				<tr>
+					<td><code>ACTION_RUN_LANG</code></td>
+					<td>Language of the messages: <code>en</code> (default), <code>fr</code>, <code>de</code> or <code>zh</code>. The system locale is not consulted, so a script on a CI machine always sees English unless it asks.</td>
+				</tr>
+				<tr>
+					<td><code>DOCKER</code></td>
+					<td>The Docker program, when <code>--docker</code> is not given.</td>
+				</tr>
+				<tr>
+					<td><code>ACTION_RUN_PULL_CONCURRENCY</code></td>
+					<td>The default for <code>--pull-concurrency</code>. The option wins, and this wins over the built-in four.</td>
+				</tr>
+				<tr>
+					<td><code>ACTION_RUN_LOG_DIR</code></td>
+					<td>Where parallel runs keep their per-job logs, and where <code>action-run logs</code> reads them. Default <code>$XDG_CACHE_HOME/action-run/logs</code>, or <code>~/.cache/action-run/logs</code>; <code>%LOCALAPPDATA%\action-run\logs</code> on Windows.</td>
+				</tr>
+				<tr>
+					<td><code>ACTION_RUN_CACHE_FILE</code></td>
+					<td>Where the image cache record lives. Default <code>$XDG_CACHE_HOME/action-run/cache.json</code>, or <code>~/.cache/action-run/cache.json</code>; <code>%LOCALAPPDATA%\action-run\cache.json</code> on Windows. Set it to keep one project's images out of the machine-wide record.</td>
+				</tr>
+				<tr>
+					<td><code>App__Actions__OPTION</code></td>
+					<td>Sets one of the run options, for example <code>App__Actions__parallel=2</code> or <code>App__Actions__keep_images=0</code>. It <strong>wins over the command line</strong> and over the configuration files, and its value is not checked.</td>
+				</tr>
+				<tr>
+					<td><code>CONFIG_DIR</code></td>
+					<td>The directory searched for configuration files. Default <code>~/.conf</code>, <code>~/config</code>, <code>~/conf</code>, then <code>conf</code>.</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+
+	<h2>Configuration files</h2>
+	<p>
+		<a href="https://metacpan.org/pod/Object::Configure">Object::Configure</a>
+		looks for files named <code>base.yaml</code> and then <code>local.yaml</code>
+		(or <code>.json</code>, <code>.xml</code>, <code>.ini</code> and so on) in
+		the directory <code>CONFIG_DIR</code> names, or in those default
+		directories. Settings for this tool go in an <code>App__Actions</code>
+		section:
+	</p>
+<pre><code><span class="comment"># ~/.conf/local.yaml</span>
+---
+App__Actions:
+  parallel: 2
+  keep_images: 0
+</code></pre>
+	<p>
+		That is convenient on a computer where every run should use two job slots,
+		and surprising on the day you forget it exists. A
+		<code>logger</code> may be set there too, and a
+		<code>UNIVERSAL</code> section of <code>universal.yaml</code> applies to
+		every class that uses <code>Object::Configure</code>, this one included.
+	</p>
+
+	<div class="warn">
+		<span class="warn-title">Precedence is the reverse of what you may expect</span>
+		<p>
+			From weakest to strongest: the arguments, then the configuration files,
+			then the <code>App__Actions__*</code> environment variables. If
+			<code>~/.conf/local.yaml</code> says <code>parallel: 8</code>, then
+			<code>parallel =&gt; 2</code> and <code>--parallel=2</code> still run
+			eight jobs at a time. When an option seems to be ignored, look there
+			(<code>env | grep App__Actions</code>). Values from those places are not
+			validated, so a nonsense value is not reported as an argument would be.
+		</p>
+	</div>
+
+	<h2>As a Perl API</h2>
+<pre><code>use App::Actions;
+
+my $actions = App::Actions-&gt;new(
+        workflow_file =&gt; '.github/workflows/ci.yml',
+        jobs          =&gt; [ 'test' ],
+        secrets       =&gt; { CODECOV_TOKEN =&gt; $ENV{CODECOV_TOKEN} },
+        parallel      =&gt; 4,
+);
+
+exit $actions-&gt;run;   <span class="comment"># 0, 1 or 2</span>
+</code></pre>
+	<p>
+		<code>run</code>, <code>preflight</code> and <code>list_jobs</code> accept
+		any of the run options as per-call overrides. <code>logger</code> chooses
+		where warnings and errors go: a
+		<a href="https://metacpan.org/pod/Log::Abstraction">Log::Abstraction</a>
+		object, an array reference to collect them in, a hash of logger options, or
+		the string <code>'NULL'</code> to discard them. Progress, Docker command
+		echoes and the job summary are output, not diagnostics, and stay on
+		standard output.
+	</p>
+
+	<div class="pager">
+		<a href="commands.html">← Commands</a>
+		<a href="workflows.html">Workflow support →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

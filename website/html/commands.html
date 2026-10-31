@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commands — App::Actions</title>
+<meta name="description" content="action-run run, check, preflight, schema, validate, cache and logs, and the action-run-smoke check.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html" class="current" aria-current="page">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>Commands</h1>
+	<p class="lead">
+		One program, <code>action-run</code>. With a workflow file it runs the
+		workflow; with a subcommand it checks the host, prepares images, or
+		inspects and validates what earlier runs kept.
+	</p>
+
+<pre><code>action-run [options] &lt;workflow.yml&gt; [project-directory]
+action-run [options] check [directory]
+action-run [options] preflight &lt;workflow.yml&gt; [project-directory]
+action-run [options] schema &lt;check|preflight|cache|logs&gt;
+action-run [options] validate &lt;check|preflight|cache|logs&gt; &lt;document.json&gt;
+action-run [options] cache [--prune] [--older-than DURATION] [--json]
+action-run [options] logs  [--prune] [--older-than DURATION] [--json]
+</code></pre>
+
+	<div class="cmd">
+		<h2>run</h2>
+		<span class="tag">default</span>
+	</div>
+	<p>
+		Reads the workflow and executes its Linux jobs in Docker. Each job gets a
+		private network, its service containers and one long-lived container; the
+		steps run in that container with <code>docker exec</code>, so files and
+		installed modules persist between them. Containers and networks are
+		removed when the job finishes.
+	</p>
+	<p>
+		Before anything starts, the same probes as <code>check</code> run, and the
+		images of the selected jobs, their services and their
+		<code>docker://</code> actions are prepared — <code>pull_concurrency</code>
+		at a time, four by default. A failed step fails the job; the jobs of a
+		matrix run in parallel up to <code>--parallel</code> (one per processor by
+		default).
+	</p>
+<pre><code>action-run ~/src/njh/CGI-Info/.github/workflows/perl-ci.yml \
+           ~/src/njh/CGI-Info
+
+action-run --job test --image perl:5.40 .github/workflows/test.yml .
+
+action-run --dry-run --verbose .github/workflows/alpine.yml .
+</code></pre>
+
+	<div class="cmd">
+		<h2>check</h2>
+		<span class="tag">host probe</span>
+	</div>
+	<p>
+		Reports the platform, whether the Docker daemon is reachable and can run
+		Linux containers, and whether Docker can bind-mount the host directories a
+		run needs. The mount probe starts one short-lived container using
+		<code>--image</code> and reads a file back from a temporary directory.
+		The directory given as an argument — the current directory by default — is
+		mounted read-only as well, and the entries visible inside the container
+		are compared with the host, which catches a drive Docker Desktop has not
+		shared.
+	</p>
+	<p>
+		Each problem is followed by the step that fixes it, and the command exits
+		0 when the environment is ready and 2 when a problem was found.
+	</p>
+<pre><code>  problem   the daemon is not reachable; is Docker running and can this user access it?
+  remedy    start Docker Desktop and wait until it is running, then try again
+  remedy    if the engine will not start, run "wsl --shutdown" and start Docker Desktop again
+</code></pre>
+	<p>
+		<code>--json</code> prints a single versioned document instead of the text
+		report, for a CI job to assert on. See <a href="json.html">JSON &amp; CI</a>.
+	</p>
+
+	<div class="cmd">
+		<h2>preflight</h2>
+		<span class="tag">checks + images</span>
+	</div>
+	<p>
+		Runs the checks a normal run makes before its first job and stops there:
+		the environment probes, then the preparation of every image the selected
+		jobs need. Nothing is started, so this is the cheap way to ask whether a
+		workflow could start on this host.
+	</p>
+	<p>
+		The text output is the check report, the pull progress, and one line per
+		image naming the job, service or action that needs it and whether it was
+		pulled, already present, failed, skipped or deferred. A deferred image is
+		one whose name only a step can supply: it is printed by its expression,
+		and the step prepares it when the workflow runs. It ends with a
+		<code>schema</code> line naming the version of the preflight document.
+	</p>
+	<p>
+		It exits 0 when the images are ready and 2 when they are not. Unlike a
+		run, it keeps the images it pulled, so a run that follows starts warm.
+	</p>
+<pre><code>action-run preflight .github/workflows/ci.yml .
+action-run preflight --json .github/workflows/ci.yml . &gt; preflight.json
+</code></pre>
+
+	<div class="cmd">
+		<h2>schema</h2>
+		<span class="tag">contract</span>
+	</div>
+	<p>
+		Prints the JSON schema of the named document — <code>check</code>,
+		<code>preflight</code>, <code>cache</code> or <code>logs</code> — and
+		exits. The schema and the version it declares come from the module that
+		produces the document, so the two cannot disagree. It always prints JSON,
+		so <code>--json</code> is rejected.
+	</p>
+<pre><code>action-run schema preflight &gt; preflight-schema.json
+action-run preflight --json .github/workflows/test.yml . \
+    | check-jsonschema --schemafile preflight-schema.json -
+</code></pre>
+
+	<div class="cmd">
+		<h2>validate</h2>
+		<span class="tag">without Docker</span>
+	</div>
+	<p>
+		Checks a saved document against the schema <code>action-run schema</code>
+		prints, without Docker and without a workflow. The document name is
+		required because a document says which shape its <code>schema_version</code>
+		refers to, but not which command produced it.
+	</p>
+<pre><code>action-run validate preflight preflight.json
+<span class="comment">'preflight.json' is a valid preflight document (schema version 3)</span>
+</code></pre>
+	<p>
+		A document that does not match prints the first mismatch and how many
+		others there are, then exits 70. A file that is not JSON is rejected the
+		same way; an unknown document name or an unreadable file is a usage error
+		and exits 2.
+	</p>
+
+	<div class="cmd">
+		<h2>cache</h2>
+		<span class="tag">images kept</span>
+	</div>
+	<p>
+		Lists the images that runs have kept, with the size each one takes and
+		when a run last used it. This is about the daemon's images rather than a
+		workflow, so it takes no workflow file and no project directory. A name
+		is removed from the record only when the image is gone or was removed by
+		<code>--prune</code>, so an image deleted outside <code>action-run</code>
+		is shown as missing rather than silently forgotten.
+	</p>
+<pre><code>Cache file: /home/me/.cache/action-run/cache.json
+
+  IMAGE                                  SIZE  LAST USED          AGE
+  alpine:3.20                         11.8 MB  2026-10-21 15:04  2 minutes ago
+  perl:5.38                          157.2 MB  2026-10-21 15:04  2 minutes ago
+
+2 images, 169.0 MB on disk.
+</code></pre>
+	<p>
+		Listing works with the daemon switched off: the names and dates are still
+		printed and the sizes are reported as unknown. <code>--prune</code> needs
+		the daemon, because it has to know what is still there; an image it cannot
+		remove stays in the record and makes the command exit 1. An unreachable
+		daemon exits 2 without touching the record.
+	</p>
+<pre><code>action-run cache --older-than 30d
+action-run cache --prune --older-than 7d
+action-run cache --json | jq -r '.totals.size'
+</code></pre>
+
+	<div class="cmd">
+		<h2>logs</h2>
+		<span class="tag">job output kept</span>
+	</div>
+	<p>
+		Lists the per-job logs that parallel runs kept, with the size each one
+		takes and how long ago the run wrote it. A sequential run has no
+		interleaved output to untangle and keeps no copies, so only parallel runs
+		appear. The age is the file's own modification time.
+	</p>
+<pre><code>Logs directory: /home/me/.cache/action-run/logs
+
+  RUN                               LOG                          SIZE  AGE
+  20261021-121355-6ad8e4c30f83      job-1-test_n_one.log        1.2 KB  2 hours ago
+  20261021-121355-6ad8e4c30f83      job-2-test_n_two.log        0.8 KB  2 hours ago
+  20261020-091201-1f4b2c3d4e5f      job-1-test_n_one.log        1.0 KB  1 day ago
+
+3 logs, 3.0 KB on disk.
+</code></pre>
+	<p>
+		<code>--prune</code> removes every selected log and the run directory once
+		that is empty. Only a file that matched the listing is unlinked, so a note
+		left in a run directory survives, and only a directory named the way
+		<code>action-run</code> writes one is considered. A removal that fails is
+		reported, the rest of the prune carries on, and the command exits 1.
+	</p>
+<pre><code>action-run logs --older-than 30d
+action-run logs --prune --older-than 7d
+</code></pre>
+
+	<div class="cmd">
+		<h2>--list</h2>
+		<span class="tag">nothing runs</span>
+	</div>
+	<p>
+		Prints one line per expanded job — its id, a tab, and its display name —
+		and exits 0. With <code>--job</code> it lists only the jobs that filter
+		selects.
+	</p>
+
+	<div class="cmd">
+		<h2>action-run-smoke</h2>
+		<span class="tag">second program</span>
+	</div>
+	<p>
+		The end-to-end check to run after installing, or after changing Docker, a
+		virtual machine or a drive's sharing settings. It does what
+		<code>check</code> does and then runs a small workflow against the real
+		daemon: four steps in one container, proving that a variable written to
+		<code>GITHUB_ENV</code> and an output written to
+		<code>GITHUB_OUTPUT</code> by one step are seen by the next, and that the
+		container is Linux. It needs no <code>prove</code> and reports the
+		environment before it runs anything.
+	</p>
+<pre><code>action-run-smoke
+action-run-smoke --directory ~/src --verbose
+action-run-smoke --platform linux/amd64
+action-run-smoke --scenario deferred
+</code></pre>
+
+	<h2>Exit status</h2>
+	<div class="table-wrap">
+		<table>
+			<thead>
+				<tr><th>Status</th><th>Meaning</th></tr>
+			</thead>
+			<tbody>
+				<tr><td><code>0</code></td><td>Every runnable job succeeded; <code>check</code> found the environment ready; a prune removed everything it selected.</td></tr>
+				<tr><td><code>1</code></td><td>A job failed, or a prune could not remove an entry (it stays in the record).</td></tr>
+				<tr><td><code>2</code></td><td>A usage, Docker or infrastructure error: an unknown option, an unreachable daemon, an image that cannot be pulled, a missing workflow.</td></tr>
+				<tr><td><code>70</code></td><td>A JSON document did not match the schema it is checked against. It is <code>EX_SOFTWARE</code>: the document is at fault, not the host. Please report it.</td></tr>
+			</tbody>
+		</table>
+	</div>
+
+	<div class="pager">
+		<a href="quickstart.html">← Quick start</a>
+		<a href="options.html">Options →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>

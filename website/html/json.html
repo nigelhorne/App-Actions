@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JSON and CI — App::Actions</title>
+<meta name="description" content="The versioned JSON documents action-run prints, their schemas, and how a CI job asserts on them.">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<div class="wrap header-inner">
+		<a class="brand" href="index.html">
+			<span class="brand-name">App::Actions</span>
+			<span class="brand-tag">GitHub Actions, locally</span>
+		</a>
+		<nav class="site-nav" aria-label="Main">
+			<a href="index.html">Home</a>
+			<a href="install.html">Install</a>
+			<a href="quickstart.html">Quick start</a>
+			<a href="commands.html">Commands</a>
+			<a href="options.html">Options</a>
+			<a href="workflows.html">Workflow support</a>
+			<a href="json.html" class="current" aria-current="page">JSON &amp; CI</a>
+			<a href="limitations.html">Limits</a>
+			<a href="changelog.html">Changes</a>
+		</nav>
+	</div>
+</header>
+
+<main id="main" class="wrap">
+	<h1>JSON and CI</h1>
+	<p class="lead">
+		Four commands can print a versioned JSON document instead of prose:
+		<code>check</code>, <code>preflight</code>, <code>cache</code> and
+		<code>logs</code>. Each one publishes the schema it is written against, so
+		an assertion can be written against the contract rather than a copy of it.
+	</p>
+
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Document</th><th>Printed by</th><th>Schema</th><th>Describes</th></tr></thead>
+			<tbody>
+				<tr><td><code>check</code></td><td><code>action-run check --json</code></td><td><code>action-run schema check</code></td><td>The host, the daemon, the mount probes and the problems found.</td></tr>
+				<tr><td><code>preflight</code></td><td><code>action-run preflight --json</code></td><td><code>action-run schema preflight</code></td><td>The same, plus every image the run needs and how preparing it went.</td></tr>
+				<tr><td><code>cache</code></td><td><code>action-run cache --json</code></td><td><code>action-run schema cache</code></td><td>The images runs kept, their sizes and ages, and what a prune did.</td></tr>
+				<tr><td><code>logs</code></td><td><code>action-run logs --json</code></td><td><code>action-run schema logs</code></td><td>The per-job logs parallel runs kept, and what a prune did.</td></tr>
+			</tbody>
+		</table>
+	</div>
+
+	<h2>Versioned, and checked before it is printed</h2>
+	<p>
+		Every document carries a <code>schema_version</code> naming the shape it
+		was written for, so an assertion can say which shape it expects instead
+		of failing on a key that moved. Before a document is printed it is checked
+		against its own schema: a key that was added, removed or retyped without
+		the schema changing exits <strong>70</strong> with a message naming the
+		first mismatch, and nothing is written to standard output. A CI job
+		therefore never receives a document its own contract would reject.
+	</p>
+	<p>
+		The schema and the version it declares come from the module that produces
+		the document, so the two cannot disagree. The preflight document is
+		versioned separately from the check document, because <code>images</code>
+		can change without the check document changing.
+	</p>
+
+	<h2>check --json</h2>
+<pre><code>{
+  "schema_version": 2,
+  "ready": true,
+  "problems": 0,
+  "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
+  "docker": { "bin": "docker", "client": "29.9.1", "daemon": "29.9.1", "containers": "linux" },
+  "image": "alpine:3.20",
+  "mounts": [
+    { "host": "/tmp/action-run-check-XXXX", "container": "/action-run-check", "ok": true },
+    { "host": "/src/project", "container": "/check-project", "entries": 17, "expected": 17, "ok": true }
+  ],
+  "issues": [ { "problem": "...", "remedies": [ "..." ] } ]
+}
+</code></pre>
+	<p>
+		The top-level keys and the keys of <code>docker</code> are always present;
+		a value that could not be discovered is <code>null</code>, so an
+		unreachable daemon shows as <code>"daemon": null</code> rather than a
+		missing key. Each entry in <code>mounts</code> carries <code>host</code>,
+		<code>container</code> and <code>ok</code>, and the project entry also
+		carries <code>entries</code> and <code>expected</code>.
+	</p>
+
+	<h2>preflight --json</h2>
+<pre><code>{
+  "schema_version": 3,
+  "ready": true,
+  "problems": 0,
+  "pull_concurrency": 4,
+  "host": { "os": "linux", "name": "Linux", "perl": "5.40.0", "archname": "x86_64-linux" },
+  "docker": { "bin": "docker", "client": "29.9.1", "daemon": "29.9.1", "containers": "linux" },
+  "image": "perl:5.38",
+  "mounts": [ ... ],
+  "issues": [],
+  "images": [
+    { "image": "perl:5.38", "source": "job 'test'", "status": "pulled" },
+    { "image": "postgres:15", "source": "service 'db' of job 'test'", "status": "present" }
+  ]
+}
+</code></pre>
+	<p>
+		<code>source</code> says what needs the image: a job, a service container,
+		or a <code>docker://</code> action naming its job. <code>status</code> is
+		<code>pulled</code>, <code>present</code>, <code>failed</code>,
+		<code>skipped</code> or <code>deferred</code>. A failed entry also carries
+		<code>error</code>, and the same failure appears in <code>issues</code>
+		with a remedy. <code>ready</code> is true only when the checks passed and
+		every image is present or was pulled.
+	</p>
+	<p>
+		An image built from a value no job has produced yet — another job's
+		result, for instance — is <code>deferred</code>: <code>image</code> is
+		<code>null</code>, and <code>expression</code> and <code>error</code> say
+		what could not be resolved and why. A deferral is not a problem, so it
+		leaves <code>ready</code> and <code>problems</code> alone; the job
+		resolves and prepares that image itself before it starts. This is what
+		lets CI distinguish an image that was verified from one that could not be
+		named yet.
+	</p>
+
+	<h2>cache --json and logs --json</h2>
+<pre><code>{
+  "schema_version": 3,
+  "generated_at": 1792540920,
+  "cache_file": "/home/me/.cache/action-run/cache.json",
+  "docker": { "bin": "docker", "reachable": true },
+  "images": [
+    { "image": "alpine:3.20", "pulls": 3, "last_used": 1792540800, "age": 120, "size": 12345678, "present": true },
+    { "image": "perl:5.38", "pulls": 1, "last_used": 1792440000, "age": 100920, "size": null, "present": false }
+  ],
+  "totals": { "images": 2, "size": 12345678, "present": 1, "missing": 1 },
+  "prune": null
+}
+</code></pre>
+	<p>
+		<code>generated_at</code> is the epoch second the document was made, so
+		<code>age</code> needs neither machine to agree on a clock. A daemon that
+		cannot be reached leaves its <code>reachable</code> flag false and the
+		sizes, the <code>present</code> values and the counts that depend on them
+		<code>null</code>, so an assertion can tell <em>unknown</em> from
+		<em>missing</em> rather than reading 0 as either. After
+		<code>--prune</code> the <code>prune</code> key is an object holding
+		<code>removed</code>, <code>freed</code>, <code>forgotten</code> and the
+		<code>failed</code> images that stayed in the record; the document is
+		printed even when a removal failed, and the exit status is 1.
+	</p>
+	<p>
+		The logs document has the same shape of header —
+		<code>schema_version</code>, <code>generated_at</code>,
+		<code>logs_directory</code>, <code>logs</code>, <code>totals</code>,
+		<code>prune</code> — with each log carrying <code>run</code>,
+		<code>name</code>, <code>path</code>, <code>size</code>,
+		<code>mtime</code> and <code>age</code>.
+	</p>
+
+	<h2>Assertions in a CI job</h2>
+<pre><code><span class="comment"># the host is ready, and the engine really is Linux</span>
+action-run check --json | jq -e '.ready and .docker.containers == "linux"'
+
+<span class="comment"># every image the workflow needs could be prepared</span>
+action-run preflight --json .github/workflows/test.yml . \
+    | jq -e '.ready and ([.images[].status] | all(. == "pulled" or . == "present"))'
+
+<span class="comment"># published schema, and a document checked against it elsewhere</span>
+action-run schema preflight &gt; preflight-schema.json
+action-run preflight --json .github/workflows/test.yml . &gt; preflight.json
+action-run validate preflight preflight.json
+
+<span class="comment"># how much disk the kept images take</span>
+action-run cache --json | jq -r '.totals.size'
+</code></pre>
+	<p>
+		<code>validate</code> is the piece that works anywhere: it needs neither
+		Docker nor the workflow, just the schema name and a saved document. That
+		is how a result produced by another job or on another machine can be
+		checked where Docker is not available.
+	</p>
+
+	<h2>Also usable from Perl</h2>
+<pre><code>use JSON::PP;
+
+my $result = App::Actions-&gt;new(workflow_file =&gt; 'ci.yml')-&gt;preflight(json =&gt; 1);
+print JSON::PP-&gt;new-&gt;canonical-&gt;encode($result-&gt;{summary}), "\n";
+exit $result-&gt;{exit};   <span class="comment"># 0 or 2</span>
+</code></pre>
+	<p>
+		With <code>json =&gt; 1</code> nothing is printed, so the caller's output
+		can be a single document. <code>summary</code> is the report as data, with
+		<code>ready</code> as a JSON boolean, and it has already been validated
+		against the schema. <code>App::Actions-&gt;json_schema('check')</code>
+		returns a schema as a hash reference, which is also what
+		<code>action-run schema</code> prints.
+	</p>
+
+	<div class="pager">
+		<a href="workflows.html">← Workflow support</a>
+		<a href="limitations.html">Limits →</a>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<p>App::Actions 0.002.1 — Copyright 2026 Nigel Horne. Released under the GNU General Public License, version 2.</p>
+		<p>
+			<a href="https://metacpan.org/pod/App::Actions">MetaCPAN</a> ·
+			<a href="https://metacpan.org/pod/action-run">action-run</a> ·
+			<a href="https://github.com/nigelhorne/App-Actions">Source</a> ·
+			<a href="https://nigelhorne.github.io/App-Actions/coverage/">Test dashboard</a>
+		</p>
+	</div>
+</footer>
+</body>
+</html>
