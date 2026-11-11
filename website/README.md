@@ -25,3 +25,50 @@ default) is all that is required. Nothing needs CGI, PHP, rewrites or modules.
 The pages are hand-written HTML. The version, release date and links in the
 header and footer are repeated in each page, so a version bump means editing
 every page's footer.
+
+## Shared conventions
+
+This site is one of four with the same look and feel — the others are
+App::FileSync, App::Test::Generator and Database::BI. `css/site.css` is
+**byte-identical in all four**; a change to it belongs in all four at once, or
+the sites drift apart again.
+
+Every page uses the same shell:
+
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="site-header">
+        <div class="wrap header-inner">
+            <a class="brand" href="index.html">
+                <span class="brand-name">App::Actions</span>
+                <span class="brand-tag">GitHub Actions, locally</span>
+            </a>
+            <nav class="site-nav" aria-label="Main"> ...
+    <main id="main" class="wrap">
+    <footer class="site-footer"><div class="wrap">
+
+and the same `<head>`:
+
+- `<meta name="viewport" content="width=device-width, initial-scale=1">`
+- a unique `<title>` and `<meta name="description">` per page
+- `<link rel="canonical" href="<this file's name>">`
+- the two `theme-color` hints (light and dark)
+- `og:type`, `og:site_name`, `og:title`, `og:description` and
+  `twitter:card`
+- `application/ld+json` on the home page only
+
+The top-level `index.html` is a redirect stub: it carries `noindex, follow` so
+it cannot compete in search results with the real home page.
+
+## Mobile
+
+Desktop is the primary target. Below 46rem the navigation becomes a single
+horizontally scrolling row inside the sticky header; below 34rem the cards
+become one column and the page gutters tighten. Tables live in
+`<div class="table-wrap">` so a wide one scrolls sideways instead of pushing
+the page out.
+
+## Adding a page
+
+Copy an existing page, then update the `<title>`, the description, the
+canonical, `og:title`/`og:description`, the `<h1>` and the `aria-current` on
+its own nav link — and add a nav entry to every other page.
